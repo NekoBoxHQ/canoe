@@ -47,16 +47,18 @@ class CanoeApp:
         self.main.hide()
 
     def shutdown(self) -> None:
-        """退出前兜底清理：内核必须停、系统代理必须还原。
+        """退出前兜底清理：系统代理必须还原、内核必须停。
 
         少这一步，用户关掉程序后会直接断网。
+
+        ★ 顺序：**先还原系统代理，再停内核**。内核（TUN 模式）停起来要一两秒，
+        先把代理还回去，这段时间用户也不会没网。理由同 `MainView._dock`。
         """
         try:
+            if sysproxy.has_backup():
+                sysproxy.clear_proxy()
             if session.sailing or kernel.running:
                 kernel.stop()
-                opts = RunOptions.from_dict(config["options"])
-                if opts.use_system_proxy:
-                    sysproxy.clear_proxy()
         except Exception:  # noqa: BLE001 - 退出流程不能抛
             try:
                 sysproxy.clear_proxy()
@@ -146,6 +148,16 @@ def main() -> int:
         app.setWindowIcon(icon)
 
     controller = CanoeApp()
+
+    # 启动自愈：上次如果是崩溃退出的，注册表里可能留着"代理开着但指向死端口"
+    # 的脏状态 —— 那会让用户从打开程序到点启航的这段时间完全没网。先修好它。
+    try:
+        opts = RunOptions.from_dict(config["options"])
+        if sysproxy.heal_on_start(int(opts.mixed_port)):
+            print("[canoe] 已清理上次异常退出残留的系统代理设置")
+    except Exception:  # noqa: BLE001 - 自愈失败不能拦住启动
+        pass
+
     app.aboutToQuit.connect(controller.shutdown)
     controller.start()
 

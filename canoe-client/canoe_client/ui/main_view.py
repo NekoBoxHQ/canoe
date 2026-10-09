@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -54,11 +55,15 @@ from ..worker import Worker
 
 LOG_POLL_MS = 300
 
-#: 结果框高度（px）。约 30mm，是原来日志面板的三分之一左右。
-RESULT_BOX_HEIGHT = 132
+#: 主界面宽度。高度不写死 —— 用内容高度（见 MainView.__init__）。
+WINDOW_WIDTH = 440
 
-#: 结果框最多保留几条。大字下 3 条正好铺满，不出现滚动条。
-RESULT_MAX_LINES = 3
+#: 结果框高度（px）：**只留一行**。大字行高 32px，加上边框/内边距取 46，
+#: 正好一行，底下不再拖一大块空白。
+RESULT_BOX_HEIGHT = 46
+
+#: 结果框最多保留几条 —— 只留最新一条。
+RESULT_MAX_LINES = 1
 
 #: 结果默认绿色大字，失败用橙色
 RESULT_COLOR = "#3FD07A"
@@ -128,7 +133,6 @@ class MainView(QWidget):
         super().__init__()
         self.setObjectName("Root")
         self.setWindowTitle(BRAND_CN)
-        self.setFixedSize(440, 502)
 
         self._opts = RunOptions.from_dict(config["options"])
         self._result_seq = 0
@@ -137,6 +141,11 @@ class MainView(QWidget):
         self._load_options_into_ui()
         self.refresh()
         self._set_state(STATE_DOCKED)
+
+        # 窗口高度 = 内容高度。布局里**没有任何 addStretch**，
+        # 所以不会有"兜底被推到底、中间空一条"的情况；
+        # 反过来这里也不能写死高度 —— 比内容矮就会挤压控件。
+        self.setFixedSize(WINDOW_WIDTH, self.sizeHint().height())
 
         # 日志面板定时拉增量
         self._log_timer = QTimer(self)
@@ -151,7 +160,7 @@ class MainView(QWidget):
     # ==================================================================
     def _build(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(22, 16, 22, 14)
+        root.setContentsMargins(22, 14, 22, 12)
         root.setSpacing(0)
 
         brand = QLabel(BRAND_CN)
@@ -172,7 +181,7 @@ class MainView(QWidget):
         root.addSpacing(4)
         root.addWidget(self.status_label)
 
-        root.addSpacing(14)
+        root.addSpacing(12)
 
         # --- 2) 启航  3) 靠岸 ---
         buttons = QHBoxLayout()
@@ -196,7 +205,7 @@ class MainView(QWidget):
         self.error_label.setObjectName("Error")
         self.error_label.setWordWrap(True)
         self.error_label.setAlignment(Qt.AlignCenter)
-        self.error_label.setMinimumHeight(30)
+        self.error_label.setMinimumHeight(26)
         root.addSpacing(4)
         root.addWidget(self.error_label)
 
@@ -204,7 +213,7 @@ class MainView(QWidget):
 
         # --- 可选设置 ---
         root.addWidget(self._options_card())
-        root.addSpacing(10)
+        root.addSpacing(8)
 
         # --- 工具按钮 ---
         tools = QHBoxLayout()
@@ -217,13 +226,16 @@ class MainView(QWidget):
         tools.addWidget(self.urltest_btn)
         root.addLayout(tools)
 
-        root.addSpacing(10)
-
-        # --- 输出日志 ---
-        root.addWidget(self._result_card())
-        root.addStretch(1)
-
         root.addSpacing(8)
+
+        # --- 结果框 ---
+        # 固定高度，**不给 stretch**：给 stretch 它会自己膨胀去填满，
+        # 结果框就变成一大块空白（实测会撑到 480px）。不拉伸、也不用
+        # 尾部 addStretch(1) 收尾 —— 那样会在它和账号行之间留一条空白。
+        # 窗口高度收到内容高度（见 __init__），自然就没有留白了。
+        root.addWidget(self._result_card())
+
+        root.addSpacing(6)
 
         # --- 账号 ---
         bottom = QHBoxLayout()
@@ -294,7 +306,7 @@ class MainView(QWidget):
     def _result_card(self) -> QFrame:
         """结果框：只显示 更新版本号 / TCping 毫秒 / URL 毫秒。
 
-        刻意做得小（约 30mm 高），字体用绿色大字，一眼能看完。
+        **只有一行高** —— 新的结果顶掉旧的，底下不留空白块。
 
         **绝不显示内核日志** —— 那里面带节点域名，显示出来就是泄漏。
         详见 logbus.py 顶部的说明。
@@ -312,13 +324,16 @@ class MainView(QWidget):
         self.result_view = QPlainTextEdit()
         self.result_view.setObjectName("ResultView")
         self.result_view.setReadOnly(True)
-        # 只留最近 3 条 —— 大字下正好放得下，滚动条也就不用出现了
+        # 只留最新一条 —— 一行高，新的顶掉旧的
         self.result_view.setMaximumBlockCount(RESULT_MAX_LINES)
         self.result_view.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         self.result_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         # 本来就没几行，不要右边的拖动条
         self.result_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.result_view.setFixedHeight(RESULT_BOX_HEIGHT)   # 约 30mm
+        # 固定高度：正好一行大字。不固定的话 Qt 会按 sizePolicy 把它拉去
+        # 填满剩余空间，结果框就成了一大块空白。
+        self.result_view.setFixedHeight(RESULT_BOX_HEIGHT)
+        self.result_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         lay.addWidget(self.result_view)
         return card
 
@@ -464,19 +479,24 @@ class MainView(QWidget):
         self.dock_btn.setText(Text.BTN_DOCK_BUSY)
         bus.system("正在靠岸…")
 
-        try:
-            kernel.stop()
-        except Exception as exc:  # noqa: BLE001
-            self.error_label.setText(f"关闭内核时出错：{exc}")
-            bus.error(f"关闭内核时出错：{exc}")
-
-        if self._opts.use_system_proxy:
+        # ★ 顺序不能反：**先还原系统代理，再停内核**。
+        #   反过来的话，TUN 模式下 kernel.stop() 要阻塞约两秒收网卡，
+        #   这两秒里注册表仍然指着 127.0.0.1:20818 而内核已经要没了 ——
+        #   用户此时要是觉得卡死了强关程序，就永久断网（脏备份黑洞）。
+        #   先把代理还回去，最坏情况也只是"代理没生效"，绝不会"没网"。
+        if sysproxy.has_backup():
             try:
                 sysproxy.clear_proxy()
                 bus.system("系统代理已还原")
             except OSError as exc:
                 self.error_label.setText(f"还原系统代理失败：{exc}")
                 bus.error(f"还原系统代理失败：{exc}")
+
+        try:
+            kernel.stop()
+        except Exception as exc:  # noqa: BLE001
+            self.error_label.setText(f"关闭内核时出错：{exc}")
+            bus.error(f"关闭内核时出错：{exc}")
 
         self._set_state(STATE_DOCKED)
         bus.system("已靠岸")
@@ -557,9 +577,13 @@ class MainView(QWidget):
         self.logged_out.emit()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
-        """关窗必须停内核并还原系统代理，否则用户会断网。"""
+        """关窗必须停内核并还原系统代理，否则用户会断网。
+
+        注意也要看 `kernel.running`：刚点完启航、内核正在起的那一两秒里
+        `session.sailing` 还是 False，只看它会漏掉这时候关窗的情况。
+        """
         self._log_timer.stop()
-        if session.sailing:
+        if session.sailing or kernel.running or sysproxy.has_backup():
             self._dock()
         super().closeEvent(event)
 

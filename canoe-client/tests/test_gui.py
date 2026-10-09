@@ -69,12 +69,20 @@ class FakeSysProxy:
 
     def __init__(self) -> None:
         self.calls: list[tuple] = []
+        # 和真实 sysproxy 一样：设过代理后 has_backup() 为真，靠岸清理后为假。
+        # MainView._dock 靠它决定要不要还原，所以要如实模拟。
+        self._active = False
 
     def set_proxy(self, host: str, port: int, bypass: str = "") -> None:
         self.calls.append(("set", host, port))
+        self._active = True
 
     def clear_proxy(self) -> None:
         self.calls.append(("clear",))
+        self._active = False
+
+    def has_backup(self) -> bool:
+        return self._active
 
     def current_proxy(self) -> dict:
         return {}
@@ -292,14 +300,19 @@ def main() -> int:
     # --- 结果框的可见性规则（这是安全要求，不只是 UI 偏好）---
     from canoe_client.logbus import bus as log_bus
     log_bus.result("TCP 延迟：65ms")
+    pump(app, 0.4)
+    shown = view.result_view.toPlainText()
+    check("★ 结果行会显示", "TCP 延迟：65ms" in shown, shown[-160:])
+
     log_bus.system("这行是系统日志，不该显示")
     log_bus.kernel("outbound/shadowsocks[proxy]: to one.leycc.com:443")
     log_bus.error("URL测试  需要先启航")
     pump(app, 0.6)
 
     shown = view.result_view.toPlainText()
-    check("★ 结果行会显示", "TCP 延迟：65ms" in shown, shown[-160:])
     check("★ 失败提示会显示", "先启航" in shown, shown[-160:])
+    check("★ 输出框只留一行（上一条被顶掉）",
+          "TCP 延迟：65ms" not in shown, shown[-160:])
     check("★ 系统日志不显示", "这行是系统日志" not in shown, shown[-160:])
     check("★ 内核日志不显示", "outbound" not in shown and "inbound" not in shown, shown[-160:])
     check("★★ 结果框里不出现节点域名（防止泄漏）",
@@ -313,8 +326,8 @@ def main() -> int:
           str(view.result_view.verticalScrollBarPolicy()))
     check("★ 结果框没有可见的滚动条",
           not view.result_view.verticalScrollBar().isVisible())
-    check("★ 结果只保留最近几条（不会挤到看不见）",
-          view.result_view.maximumBlockCount() <= 5,
+    check("★ 输出框只留一行",
+          view.result_view.maximumBlockCount() == 1,
           str(view.result_view.maximumBlockCount()))
 
     # URL 测试在未启航时应当给出提示而不是崩
