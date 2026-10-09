@@ -229,6 +229,43 @@ def qss() -> str:
         border-radius: 4px;
     }}
 
+    /* ---------------- 更新弹窗 ----------------
+     * 这一块是给 ui/update_dialog.py 用的。原来"有新版本"是个系统
+     * QMessageBox：它是浅色底，而上面那条 `* {{ color: 近白 }}` 照样
+     * 作用到它身上 —— 白字白底，整个框的字都是灰的看不清（用户截图报的）。
+     * 所以更新这条路整个换成自家的无边框窗口。
+     */
+    QLabel#UpdateVersion {{
+        font-size: 15px;
+        font-weight: 700;
+        color: {P.TEXT};
+    }}
+    QLabel#UpdateVersion b {{ color: {P.CYAN}; }}
+    QLabel#UpdateCaption {{ color: {P.TEXT}; font-size: 12px; font-weight: 600; }}
+    QLabel#UpdateNotes {{ color: {P.TEXT_DIM}; font-size: 12px; }}
+    QLabel#UpdateStatus {{ color: {P.TEXT_DIM}; font-size: 12px; }}
+    QLabel#UpdateError {{ color: {P.AMBER}; font-size: 12px; }}
+    QScrollArea#NotesScroll, QScrollArea#NotesScroll > QWidget > QWidget {{
+        background: transparent;
+        border: none;
+    }}
+
+    QProgressBar#UpdateBar {{
+        background: rgba(7, 18, 36, 190);
+        border: 1px solid {P.CARD_LINE};
+        border-radius: 6px;
+        min-height: 10px;
+        max-height: 10px;
+        /* 百分比用旁边那行字说，条上不叠字（小尺寸上糊成一坨） */
+        text-align: center;
+        color: transparent;
+    }}
+    QProgressBar#UpdateBar::chunk {{
+        border-radius: 5px;
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                    stop:0 {P.ACCENT}, stop:1 {P.CYAN});
+    }}
+
     /* ---------------- 滚动条 ---------------- */
     QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
     QScrollBar::handle:vertical {{ background: #2C3A48; border-radius: 4px; min-height: 24px; }}

@@ -15,10 +15,12 @@
 from __future__ import annotations
 
 import re
+import threading
 
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon, QPainter
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QFrame,
     QHBoxLayout,
@@ -52,6 +54,7 @@ from ..worker import Worker
 from . import artwork as A
 from .controls import CheckBox, RadioButton
 from .nodelights import NodeLights
+from .update_dialog import UpdateDialog
 from .window_base import FramelessWindow
 
 LOG_POLL_MS = 300
@@ -148,6 +151,12 @@ class MainView(FramelessWindow):
         self._active = 0
         #: 当前节点的显示名。启航前也可能有（登舟后就从订阅里解出来了）。
         self._node_name = ""
+
+        #: 「有新版本」那扇窗。同一时间只留一扇。
+        self._update_dialog: UpdateDialog | None = None
+        #: 下载的取消开关。**每次开下都换一个新的** —— 复用的话上次
+        #: 按过取消，这次一进来就是置位状态，下载立刻自己掐掉。
+        self._update_cancel = threading.Event()
 
         self._build()
         self._load_options_into_ui()
@@ -854,7 +863,13 @@ class MainView(FramelessWindow):
                 rel = api.latest_release()
                 if update.compare_versions(rel.version, VERSION) > 0:
                     parts.append(f"更新：{VERSION} → {rel.version}")
-                    newer = rel
+                    # 服务端返回的是接口模型，这里转成 update 模块那套 ——
+                    # 摘要和大小要跟着走，下载完得靠它们核对。
+                    newer = update.UpdateInfo(
+                        latest=rel.version, current=VERSION, url=rel.url,
+                        notes=rel.notes, size=rel.size, sha256=rel.sha256,
+                        min_version=rel.min_version,
+                    )
                 else:
                     parts.append(f"更新：{VERSION} 最新")
             except CanoeApiError as exc:
@@ -896,19 +911,119 @@ class MainView(FramelessWindow):
                 self._reload_subscription()
             bus.result(text)
             if newer is not None:
-                # 详细内容放弹窗，不塞进结果框（结果框只留一行）
-                detail = f"当前版本：{VERSION}\n最新版本：{newer.version}"
-                if newer.notes:
-                    detail += f"\n\n更新说明：\n{newer.notes}"
-                if newer.url:
-                    detail += f"\n\n下载地址：\n{newer.url}"
-                QMessageBox.information(self, "有新版本", detail)
+                self._show_update(newer)
 
         def on_err(code: str, message: str) -> None:
             self.update_btn.setEnabled(True)
             bus.error(f"更新：{message}")
 
         Worker(work).run_with(on_ok, on_err)
+
+    # ==================================================================
+    # 更新：查到新版本之后
+    # ------------------------------------------------------------------
+    # 这一段回答的是"然后呢"。以前查到新版本只弹一个 QMessageBox，把
+    # 下载地址念给用户听，剩下的（开浏览器、下载、解压、覆盖、重启）
+    # 全得自己来。现在整条链子在这几个方法里走完：
+    #
+    #     _show_update  摆出弹窗
+    #     _start_update 下载 -> 校验 -> 解包 -> 交班给 .bat
+    #     _finish_update 看到"重启就绪"再退出，把位置让给新版本
+    # ==================================================================
+    def _show_update(self, info: update.UpdateInfo) -> None:
+        if self._update_dialog is not None and self._update_dialog.isVisible():
+            self._update_dialog.raise_()
+            self._update_dialog.activateWindow()
+            return
+
+        dlg = UpdateDialog(info, parent=self)
+        dlg.install_requested.connect(lambda: self._start_update(info))
+        dlg.cancel_requested.connect(self._cancel_update)
+        dlg.closed.connect(self._forget_update_dialog)
+        self._update_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _forget_update_dialog(self) -> None:
+        self._update_dialog = None
+
+    def _cancel_update(self) -> None:
+        """用户不想更了。置位开关，线程下一次写块的时候自己收手。"""
+        self._update_cancel.set()
+        if self._update_dialog is not None:
+            self._update_dialog.fail("", cancelled=True)
+
+    def _fail_update(self, message: str, cancelled: bool = False) -> None:
+        if cancelled:
+            bus.system("已取消更新")
+        else:
+            bus.error(f"更新：{message}")
+        if self._update_dialog is not None:
+            self._update_dialog.fail(message, cancelled=cancelled)
+
+    def _start_update(self, info: update.UpdateInfo) -> None:
+        """下载 -> 校验 -> 解包 -> 交班。全程在后台线程，界面不卡。"""
+        if not info.url:
+            self._fail_update("服务端没给安装包地址")
+            return
+        if not update.can_self_update():
+            # 源码运行时"当前程序"是 python.exe，换了没意义。别让用户
+            # 干等半天才发现。地址给出来，他自己下。
+            self._fail_update(
+                "当前不是以安装包方式运行的，没法自动更新。\n"
+                f"安装包地址：{info.url}"
+            )
+            return
+
+        self._update_cancel = threading.Event()
+        cancel = self._update_cancel
+        archive = update.update_cache_dir() / f"Canoe-{info.latest}-win64.zip"
+
+        def work(on_progress=None):
+            # 1) 下载 + 摘要校验（校验不过 update.download 自己会把文件删掉）
+            update.download(
+                info.url, archive,
+                on_progress=on_progress,
+                expected_sha256=info.sha256,
+                expected_size=info.size,
+                cancelled=cancel,
+            )
+            # 2) 解出 exe 放到当前程序旁边。**写权限在这里就会撞出来** ——
+            #    宁可现在失败，也别等退了程序才发现换不了。
+            new_exe = update.prepare_update(archive)
+            # 3) 交班：写 .bat，等我们退出后由系统来完成替换和重启
+            update.install_and_restart(new_exe)
+            archive.unlink(missing_ok=True)
+
+        def on_ok(_result) -> None:
+            if self._update_dialog is not None:
+                self._update_dialog.set_stage("restarting", "更新就绪，正在重启…")
+            # 停一下让这句话画出来，不然窗口一闪就没了
+            QTimer.singleShot(500, self._finish_update)
+
+        def on_err(code: str, message: str) -> None:
+            self._fail_update(message, cancelled=(code == "cancelled"))
+
+        Worker(work).run_with(on_ok, on_err, on_progress=self._on_update_progress)
+
+    def _on_update_progress(self, done: int, total: int) -> None:
+        if self._update_dialog is not None:
+            self._update_dialog.set_progress(done, total)
+
+    def _finish_update(self) -> None:
+        """退出自己，把位置让给门外那个 .bat。
+
+        ★ 不能直接 os._exit：系统代理得还原、内核得停 —— 少这一步，
+          新版本启动之前用户是断网状态，TUN 模式还会留下占着端口的残留。
+          `QApplication.quit()` 会触发 aboutToQuit -> CanoeApp.shutdown()，
+          那条路本来就是干这个的（app.py 里接的）。
+        """
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+        else:                                   # pragma: no cover - 兜底
+            self.close()
 
     def _do_tcping(self) -> None:
         """测本机到**当前节点**的 TCP 握手延迟。

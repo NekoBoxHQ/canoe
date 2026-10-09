@@ -21,6 +21,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
 class _Signals(QObject):
     finished = Signal(object)   # 成功：返回值
     failed = Signal(str, str)   # 失败：(错误码, 错误信息)
+    progress = Signal(int, int)  # 进度：(已完成, 总量)。总量未知时为 0
 
 
 # 持有运行中的 Worker，防止被 GC 回收（见模块头第 1 条）
@@ -57,12 +58,23 @@ class Worker(QRunnable):
         self,
         on_ok: Callable[[Any], None] | None = None,
         on_err: Callable[[str, str], None] | None = None,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> None:
+        """排进线程池跑起来。
+
+        给了 on_progress 的话，会把信号本身当成回调**注入被调函数的
+        `on_progress` 参数** —— 被调函数只要按 `on_progress(done, total)`
+        调它就行，不用自己操心线程怎么回到界面线程（Qt 信号自动排队）。
+        下载安装包那条路就是这么报进度的。
+        """
         _ACTIVE.add(self)
         if on_ok:
             self.signals.finished.connect(on_ok)
         if on_err:
             self.signals.failed.connect(on_err)
+        if on_progress:
+            self._kwargs["on_progress"] = self.signals.progress.emit
+            self.signals.progress.connect(on_progress)
         # 释放必须最后连接，而且是延后执行（见模块头第 2 条）
         self.signals.finished.connect(self._schedule_release)
         self.signals.failed.connect(self._schedule_release)

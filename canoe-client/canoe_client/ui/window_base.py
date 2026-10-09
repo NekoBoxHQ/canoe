@@ -52,13 +52,13 @@ class _TitleBar(QWidget):
         mark.setFixedSize(18, 18)
         lay.addWidget(mark)
 
-        name = QLabel(BRAND_CN)
-        name.setObjectName("WinTitle")
-        lay.addWidget(name)
+        self.name = QLabel(BRAND_CN)
+        self.name.setObjectName("WinTitle")
+        lay.addWidget(self.name)
 
-        sub = QLabel(f"· {SLOGAN_CN}")
-        sub.setObjectName("WinSubtitle")
-        lay.addWidget(sub)
+        self.sub = QLabel(f"· {SLOGAN_CN}")
+        self.sub.setObjectName("WinSubtitle")
+        lay.addWidget(self.sub)
 
         lay.addStretch(1)
 
@@ -69,6 +69,13 @@ class _TitleBar(QWidget):
         self.close_btn = self._win_button("close", "关闭", danger=True)
         self.close_btn.clicked.connect(self._window.close)
         lay.addWidget(self.close_btn)
+
+    def set_title(self, title: str, subtitle: str | None = None) -> None:
+        """换掉标题栏上的字。弹窗用 —— 顶着「轻舟 · 轻舟已过万重山」说
+        「有新版本」会让人找不到重点。"""
+        self.name.setText(title)
+        self.sub.setText(f"· {subtitle}" if subtitle else "")
+        self.sub.setVisible(bool(subtitle))
 
     def _win_button(self, icon_name: str, tip: str, danger: bool = False) -> QPushButton:
         btn = QPushButton()

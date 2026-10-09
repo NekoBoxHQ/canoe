@@ -8,11 +8,12 @@ from PySide6.QtWidgets import QApplication
 
 from canoe_core import BRAND_CN, SLOGAN_CN
 
-from . import sysproxy
+from . import sysproxy, update
 from .api import api
 from .config import ASSETS_DIR, BIN_DIR, CONFIG_DIR, CONFIG_FILE, config
 from .events import stream
 from .kernel import kernel
+from .logbus import bus
 from .options import RunOptions
 from .session import session
 from .ui.auth_view import AuthView
@@ -253,6 +254,17 @@ def main() -> int:
         if sysproxy.heal_on_start(int(opts.mixed_port)):
             print("[canoe] 已清理上次异常退出残留的系统代理设置")
     except Exception:  # noqa: BLE001 - 自愈失败不能拦住启动
+        pass
+
+    # 上次自更新如果没替换成功，.bat 会留一份说明。捡起来报给用户 ——
+    # 不然他看到的只是"点了更新，程序关了，再打开还是旧版本"。
+    # 顺带把残留的 Canoe.exe.new / .bat 清掉。
+    try:
+        note = update.last_update_log()
+        update.cleanup_leftovers()
+        if note:
+            bus.error(f"上次更新没成功：{note}")
+    except Exception:  # noqa: BLE001 - 收尾失败不能拦住启动
         pass
 
     app.aboutToQuit.connect(controller.shutdown)

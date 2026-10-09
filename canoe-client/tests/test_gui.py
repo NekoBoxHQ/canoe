@@ -673,6 +673,62 @@ def main() -> int:
     t._quit_action.trigger()
     check("★ 点「退出」发出 quit_requested", seen == ["quit"], str(seen))
 
+    # ---- 更新弹窗 ----
+    # 以前"有新版本"是个 QMessageBox：只有 OK，点完什么也不发生，
+    # 而且浅色底配近白字，整框的字都糊了。现在换成自家的无边框窗口，
+    # 整条链子（下载 -> 校验 -> 替换 -> 重启）都在这一个框里走完。
+    print("\n[更新弹窗]")
+    from canoe_client.ui.update_dialog import UpdateDialog
+    from canoe_client.update import UpdateInfo
+
+    dlg = UpdateDialog(UpdateInfo(latest="1.1.0", current="1.0.0", size=63 * 1024 * 1024,
+                                  notes="修好了点更新没反应"))
+    # 真 show 出来 —— 没 show 过的窗口里 isVisible() 一律是 False，
+    # 拿它断言"按钮在不在"只会永远失败（踩过）
+    dlg.setAttribute(Qt.WA_DontShowOnScreen, True)
+    dlg.show()
+    app.processEvents()
+    check("弹窗标题带版本跨度", "1.1.0" in dlg.titlebar.sub.text(),
+          dlg.titlebar.sub.text())
+    check("★ 弹窗不给最小化（它是个对话框）", dlg.titlebar.min_btn.isHidden())
+    check("空闲态：两个按钮都在", dlg.action_btn.isVisible() and dlg.later_btn.isVisible())
+    check("空闲态：进度条藏着（一上来就摆个空条会让人以为在下）", dlg.bar.isHidden())
+    check("空闲态按钮写着「立即更新」", dlg.action_btn.text() == "立即更新")
+
+    fired = []
+    dlg.install_requested.connect(lambda: fired.append("go"))
+    dlg.action_btn.click()
+    app.processEvents()
+    check("★ 点「立即更新」发出 install_requested", fired == ["go"], str(fired))
+    check("★ 进入下载态：进度条出来了", not dlg.bar.isHidden())
+    check("★ 下载态只剩「取消」可点（避免重复触发）", dlg.action_btn.isHidden())
+
+    dlg.set_progress(21 * 1024 * 1024, 63 * 1024 * 1024)
+    check("★ 进度条真的在动", 0 < dlg.bar.value() < 1000, str(dlg.bar.value()))
+    check("★ 状态行报出百分比", "33%" in dlg.status.text(), dlg.status.text())
+
+    cancel = []
+    dlg.cancel_requested.connect(lambda: cancel.append("stop"))
+    dlg.later_btn.click()
+    app.processEvents()
+    check("★ 下载中点「取消」发出 cancel_requested", cancel == ["stop"], str(cancel))
+
+    dlg.fail("", cancelled=True)
+    check("取消后回到原样（不是报错）", dlg.stage == "idle" and dlg.error.isHidden())
+
+    dlg.fail("摘要对不上")
+    check("★ 失败时给出可读原因", dlg.error.isVisible() and "摘要" in dlg.error.text())
+    check("★ 失败后能重试", dlg.action_btn.text() == "重试")
+
+    closed = []
+    dlg.closed.connect(lambda: closed.append(1))
+    dlg.close()
+    app.processEvents()
+    check("★ 关掉时发 closed（主界面好把引用放掉）", closed == [1], str(closed))
+
+    forced = UpdateDialog(UpdateInfo(latest="2.0.0", current="1.0.0", min_version="2.0.0"))
+    check("★ 强制升级时不给「稍后再说」", forced.later_btn.isHidden())
+
     print(f"\n{'=' * 48}")
     print(f"通过 {passed} 项，失败 {failed} 项，跳过 {skipped} 项")
     print(f"{'=' * 48}\n")
