@@ -1,26 +1,26 @@
 """更新通道的数据层 —— 「客户端更新」和「订阅更新」两条。
 
     /api/client/latest   客户端有没有新版本   <- latest_release()
-    /api/subscription    我的订阅变了没有     <- subscription_for()
+    /api/subscription    我的订阅是什么       <- subscription_for()
 
-两条都**只回客户端该看的东西**：
-    · 更新记录里只有版本号和安装包元信息，没有任何节点信息；
-    · 订阅走 to_entry_payload()，和 /api/config 同一条白名单出口。
+订阅**以密文下发**：明文只有客户端拿登录时那把 sub_key 解得开（见
+canoe_core.crypto）。服务端随时可以不发 —— 空信封就是"没有"，
+客户端见到必须销毁本地订阅。
 """
 from __future__ import annotations
 
 import hashlib
 import re
+import time
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DBSession
 
-from canoe_core import Api, ClientReleaseResponse, SubscriptionResponse
+from canoe_core import Api, ClientReleaseResponse, Envelope, SubscriptionResponse, seal
 
 from ..config import settings
-from ..models import ClientRelease, Node, User, epoch
-from .nodes import get_config_version, pick_node, to_entry_payload
+from ..models import ClientRelease, User, epoch
 
 
 # --------------------------------------------------------------------------
@@ -128,46 +128,58 @@ def list_releases(db: DBSession) -> list[ClientRelease]:
 # --------------------------------------------------------------------------
 
 
-def revision_of(config_version: int, node: Node | None, entry) -> str:
+def subscription_revision(user: User, text: str) -> str:
     """订阅指纹。
 
-    入口域名、端口、UUID、路径、节点、配置版本 —— 任一变化都会让指纹变，
-    客户端只要存住上一轮的字符串比一比就知道要不要更新。
-    不接入任何真实节点字段（这里也拿不到）。
+    内容 / 账号状态 / 到期时间 任一变化，指纹就变。客户端存住上一轮的
+    字符串比一比就知道要不要重新解密。
+
+    ⚠ 指纹本身是**明文**发给客户端的。所以它只取哈希，不能把订阅内容
+    的任何片段直接拼进去 —— 否则等于绕开加密把内容泄出去。
     """
     parts = [
-        str(config_version),
-        str(node.id) if node is not None else "",
-        node.name if node is not None else "",
-        entry.host if entry else "",
-        str(entry.port) if entry else "",
-        entry.uuid if entry else "",
-        entry.path if entry else "",
-        entry.sni if entry else "",
+        hashlib.sha256((text or "").encode("utf-8")).hexdigest(),
+        user.status,
+        str(epoch(user.expire_at) or ""),
     ]
     blob = "|".join(parts).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()[:16]
 
 
-def subscription_for(db: DBSession, user: User) -> SubscriptionResponse:
-    """当前用户此刻的订阅。
+def subscription_for(db: DBSession, user: User, sub_key: str) -> SubscriptionResponse:
+    """当前用户此刻的订阅 —— 内容是**加密**的。
 
-    **不建会话、不发凭证** —— 只是个"看看现在是什么"的只读接口，
-    所以客户端可以在没启航的时候随手调。
+    **不建会话、不发凭证** —— 只读接口，客户端没启航时也能随手调。
+
+    什么情况下给空信封（客户端据此销毁本地订阅）：
+      · 账号被封
+      · 账号已到期
+      · 管理员把订阅栏清空了
+
+    空信封不是报错 —— 报错客户端会重试，空信封是明确的"没有"。
     """
-    node = pick_node(db, user)
-    entry = to_entry_payload(node) if node is not None else None
-    config_version = get_config_version(db)
+    text = ""
+
+    if user.status == "active" and not user_expired(user):
+        text = (user.subscription or "").strip()
+
+    revision = subscription_revision(user, text)
+    # sub_key 为空（老数据里的令牌没这把钥匙）时不加密也不报错，
+    # 直接给空信封 —— 客户端重新登舟就会拿到一把新的。
+    envelope = seal(text, sub_key, revision=revision) if sub_key else Envelope(revision=revision)
 
     resp = SubscriptionResponse(
-        config_version=config_version,
-        node_name=node.name if node is not None else None,
-        entry=entry,
+        node_name=None,
         expires_at=epoch(user.expire_at),
         heartbeat_interval=settings.heartbeat_interval,
-        revision=revision_of(config_version, node, entry),
+        revision=revision,
+        envelope=envelope,
     )
     resp.assert_no_real_fields()
-    if resp.entry is not None:
-        resp.entry.assert_whitelisted()
     return resp
+
+
+def user_expired(user: User) -> bool:
+    """账号是否已过期。没设到期时间的账号永不过期。"""
+    exp = epoch(user.expire_at)
+    return exp is not None and exp <= int(time.time())

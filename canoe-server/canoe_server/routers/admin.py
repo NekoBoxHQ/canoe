@@ -43,6 +43,7 @@ from ..services.updates import (
     release_dir,
     safe_filename,
     sha256_file,
+    subscription_revision,
     to_release_payload,
 )
 
@@ -109,6 +110,7 @@ class UserCreate(BaseModel):
     expire_days: int | None = None
     max_devices: int | None = None
     remark: str = ""
+    subscription: str = ""
 
 
 class UserUpdate(BaseModel):
@@ -117,6 +119,9 @@ class UserUpdate(BaseModel):
     max_devices: int | None = None
     remark: str | None = None
     role: str | None = None
+    #: 「订阅栏」内容 —— 节点链接列表（ss:// vmess:// vless:// trojan://，
+    #: 一行一条，也可以整体 base64）。清空 = 停止向这个账号分发。
+    subscription: str | None = None
 
 
 class BindNodes(BaseModel):
@@ -140,10 +145,18 @@ def _user_view(db: DBSession, user: User) -> dict:
         "expire_at": epoch(user.expire_at),
         "max_devices": user.max_devices,
         "remark": user.remark,
+        "subscription": user.subscription or "",
+        # 面板列表里只显示行数，不把整段订阅铺开 —— 内容可能几十行
+        "subscription_lines": len(_subscription_lines(user.subscription or "")),
         "created_at": epoch(user.created_at) or 0,
         "last_login_at": epoch(user.last_login_at),
         "online": online,
     }
+
+
+def _subscription_lines(text: str) -> list[str]:
+    """订阅文本 -> 非空行。整体 base64 的订阅也算一行，照样返回。"""
+    return [line.strip() for line in (text or "").splitlines() if line.strip()]
 
 
 @router.get(Api.ADMIN_USERS)
@@ -177,6 +190,7 @@ def create_user(
         status="active",
         max_devices=body.max_devices or settings.default_max_devices,
         remark=body.remark,
+        subscription=body.subscription or "",
         expire_at=utcnow() + timedelta(days=days) if days else None,
     )
     db.add(user)
@@ -211,10 +225,28 @@ def update_user(
     if body.role in {"user", "admin"}:
         user.role = body.role
 
+    subscription_changed = body.subscription is not None and body.subscription != user.subscription
+    if body.subscription is not None:
+        user.subscription = body.subscription
+
     db.commit()
-    db.add(AuditLog(user_id=admin.id, action="user_update", detail=user.username))
+    db.add(
+        AuditLog(
+            user_id=admin.id,
+            action="user_update",
+            detail=user.username + ("（改了订阅）" if subscription_changed else ""),
+        )
+    )
     db.commit()
-    return {"ok": True}
+
+    # 改了就推一下：在线的客户端收到后会重新拉订阅，
+    # 订阅被清空的话客户端那边会当场销毁本地订阅。
+    if subscription_changed:
+        from ..services.broadcast import notify_subscription_changed
+
+        notify_subscription_changed(user.id, subscription_revision(user, user.subscription or ""))
+
+    return {"ok": True, "subscription_changed": subscription_changed}
 
 
 @router.post(Api.ADMIN_USERS + "/{user_id}/ban")

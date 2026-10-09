@@ -28,14 +28,13 @@ from canoe_client.kernel import kernel  # noqa: E402
 from canoe_client.logbus import LogBus  # noqa: E402
 from canoe_client.nettest import tcping, url_test  # noqa: E402
 from canoe_client.options import RunOptions  # noqa: E402
-from canoe_client.entry import build_entry_outbound  # noqa: E402
-from canoe_core import EntryPayload  # noqa: E402
+from canoe_client import links  # noqa: E402
 
-#: 样例入口（真实运行时由服务端下发）
-SAMPLE_ENTRY = EntryPayload(
-    transport="ws", host="entry.example.com", port=443,
-    uuid="11111111-2222-3333-4444-555555555555",
-    path="/e/test", sni="entry.example.com", tls=True, insecure=False,
+#: 样例订阅（真实运行时是登舟后从服务端加密拉取、在内存里解开的）
+SAMPLE_SUB = (
+    "ss://2022-blake3-aes-128-gcm:AAAA:BBBB@one.leycc.com:33222#示例节点\n"
+    "vless://11111111-2222-3333-4444-555555555555@node.example.com:443"
+    "?security=tls&type=ws&path=%2Fx#备用"
 )
 
 passed = failed = skipped = 0

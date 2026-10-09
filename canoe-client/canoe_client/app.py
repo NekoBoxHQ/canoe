@@ -18,10 +18,11 @@ from .session import session
 from .ui.auth_view import AuthView
 from .ui.main_view import MainView
 from .ui.style import qss
+from .ui.tray import Tray, tray_available
 
 
 class CanoeApp:
-    def __init__(self) -> None:
+    def __init__(self, icon: QIcon | None = None) -> None:
         self.auth = AuthView()
         self.main = MainView()
 
@@ -30,8 +31,40 @@ class CanoeApp:
         # 服务端推来的事件（配置变更 / 踢下线 / 新版本）交给主界面处理
         stream.event.connect(self.main.on_push_event)
 
+        # 托盘：关窗收起来而不是退出，只有右键托盘 ->「退出」才真退。
+        # 没有托盘的环境（少见）保持原样：关窗就是关窗。
+        self.tray: Tray | None = None
+        if tray_available():
+            self.tray = Tray(icon)
+            self.tray.show_requested.connect(self._show_window)
+            self.tray.quit_requested.connect(self.quit)
+            self.main.close_to_tray = True
+            self.tray.show()
+
     def start(self) -> None:
         self.auth.show()
+
+    def _show_window(self) -> None:
+        """把界面叫回来（托盘菜单 / 双击图标）。"""
+        if self.main.isVisible():
+            self.main.raise_()
+            self.main.activateWindow()
+            return
+        if api.token:
+            self.main.show()
+            self.main.raise_()
+            self.main.activateWindow()
+        else:
+            self.auth.show()
+            self.auth.raise_()
+
+    def quit(self) -> None:
+        """真正的退出 —— 托盘右键菜单里那一条。
+
+        shutdown() 挂在 aboutToQuit 上，所以这里只需要让 Qt 退出。
+        """
+        self.main.force_close()
+        QApplication.instance().quit()
 
     def _on_logged_in(self, username: str) -> None:
         # 节点名是登录时服务端一起给的（主界面要在启航前就显示它）
@@ -49,8 +82,11 @@ class CanoeApp:
         self.auth.login_pass.clear()
         self.auth.login_err.setText("")
         self.auth.last_node_name = ""
-        self.auth.show()
         self.main.hide()
+        # 可能是被"踢下线"而从托盘里叫回来的，所以这里要 raise 一下
+        self.auth.show()
+        self.auth.raise_()
+        self.auth.activateWindow()
 
     def shutdown(self) -> None:
         """退出前兜底清理：系统代理必须还原、内核必须停。
@@ -126,6 +162,22 @@ def run_selftest() -> int:
         else {}
     )
 
+    # 订阅加解密能不能跑起来。
+    # 打包后这条路最容易坏（cryptography 带 Rust 绑定，PyInstaller 漏一个
+    # 动态库就是"登录成功但订阅永远解不开"），而它在界面上只表现为一句
+    # 看不懂的报错。这里主动跑一遍，坏了直接写在报告里。
+    try:
+        from canoe_core import Envelope, new_sub_key, seal, unseal
+
+        key = new_sub_key()
+        probe = "canoe-selftest"
+        report["crypto"] = {
+            "ok": unseal(seal(probe, key, revision="selftest"), key) == probe,
+            "empty_envelope_ok": Envelope().is_empty,
+        }
+    except Exception as exc:  # noqa: BLE001 - 自检不能因为这一步失败就崩
+        report["crypto"] = {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
+
     text = json.dumps(report, indent=2, ensure_ascii=False)
     print(text)
 
@@ -137,7 +189,11 @@ def run_selftest() -> int:
     except OSError:
         pass
 
-    ok = report["singbox_found"] and report["bin_dir_exists"]
+    ok = (
+        report["singbox_found"]
+        and report["bin_dir_exists"]
+        and bool(report["crypto"].get("ok"))
+    )
     return 0 if ok else 2
 
 
@@ -154,7 +210,10 @@ def main() -> int:
     if icon is not None:
         app.setWindowIcon(icon)
 
-    controller = CanoeApp()
+    controller = CanoeApp(icon)
+    if controller.tray is not None:
+        # 关窗只是收起来，窗口全没了也不许 Qt 自己退出 —— 退出由托盘菜单说了算
+        app.setQuitOnLastWindowClosed(False)
 
     # 启动自愈：上次如果是崩溃退出的，注册表里可能留着"代理开着但指向死端口"
     # 的脏状态 —— 那会让用户从打开程序到点启航的这段时间完全没网。先修好它。

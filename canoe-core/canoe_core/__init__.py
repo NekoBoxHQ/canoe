@@ -43,6 +43,7 @@ from .models import (
     SubscriptionResponse,
     UserInfo,
 )
+from .crypto import Envelope, SubCryptoError, new_sub_key, seal, unseal
 from .passwords import hash_password, new_token, token_hash, verify_password
 from .version import VERSION, __version__
 
@@ -59,4 +60,5 @@ __all__ = [
     "LoginRequest", "LoginResponse", "LogoutRequest", "MeResponse",
     "RegisterRequest", "RegisterResponse", "UserInfo",
     "ClientReleaseResponse", "SubscriptionResponse",
+    "Envelope", "SubCryptoError", "new_sub_key", "seal", "unseal",
 ]

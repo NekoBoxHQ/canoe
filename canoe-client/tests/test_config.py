@@ -34,16 +34,13 @@ from canoe_client.options import (  # noqa: E402
     PROFILE_SPLIT,
     RunOptions,
 )
-from canoe_client.entry import build_entry_outbound  # noqa: E402
+from canoe_client import links  # noqa: E402
 
-#: 样例入口。真实运行时它是服务端下发的（ConfigResponse.entry），
-#: 这里只是造一个形状一样的，用来测配置生成。
-from canoe_core import EntryPayload  # noqa: E402
-
-SAMPLE_ENTRY = EntryPayload(
-    transport="ws", host="entry.example.com", port=443,
-    uuid="11111111-2222-3333-4444-555555555555",
-    path="/e/test", sni="entry.example.com", tls=True, insecure=False,
+#: 样例订阅。真实运行时它是登舟后从服务端**加密**拉到、在内存里解开的
+#: （见 canoe_core.crypto）。这里只是一条形状一样的链接，用来测配置生成。
+SAMPLE_LINK = (
+    "vless://11111111-2222-3333-4444-555555555555@node.example.com:443"
+    "?encryption=none&security=tls&sni=node.example.com&type=ws&path=%2Fe%2Ftest#样例节点"
 )
 
 passed = failed = 0
@@ -86,7 +83,7 @@ def main() -> int:
         return 0
     print(f"内核: {exe}\n")
 
-    outbound = build_entry_outbound(SAMPLE_ENTRY)
+    outbound = links.pick(SAMPLE_LINK).outbound
 
     # --- 1. 两种模式都能通过 check ---
     print("[1] 配置能被 sing-box 接受")
@@ -175,32 +172,28 @@ def main() -> int:
     check("只监听本机 127.0.0.1", inb["listen"] == "127.0.0.1")
     check("端口取自选项", inb["listen_port"] == 20818)
 
-    # --- 6. 出站指向中转入口（不是真实节点）---
-    #
-    # 这一段是安全底线：客户端内核配置里只能出现**中转层入口**，
-    # 真实节点的主机/端口/UUID 一律不许出现在这里。
-    print("\n[6] 出站指向中转入口")
+    # --- 6. 出站来自订阅里的那条链接 ---
+    print("\n[6] 出站就是订阅里选中的那个节点")
     ob = cfg["outbounds"][0] if cfg["outbounds"][0]["tag"] == "proxy" else None
     check("第一个出站就是 proxy", ob is not None, str(cfg["outbounds"][0]))
     if ob is not None:
         check("出站类型是 vless", ob["type"] == "vless", str(ob.get("type")))
-        check("出站服务器是中转入口", ob["server"] == SAMPLE_ENTRY.host, str(ob.get("server")))
-        check("出站端口是中转入口端口", ob["server_port"] == SAMPLE_ENTRY.port, str(ob.get("server_port")))
+        check("出站服务器来自订阅", ob["server"] == "node.example.com", str(ob.get("server")))
+        check("出站端口来自订阅", ob["server_port"] == 443, str(ob.get("server_port")))
+        check("UUID 来自订阅", ob["uuid"] == "11111111-2222-3333-4444-555555555555")
         check("用了 WS 传输", ob.get("transport", {}).get("type") == "ws")
-        check("WS 的 Host 头是入口域名",
-              ob.get("transport", {}).get("headers", {}).get("Host") == SAMPLE_ENTRY.sni)
+        check("WS 路径来自订阅", ob.get("transport", {}).get("path") == "/e/test")
         check("开了 TLS", ob.get("tls", {}).get("enabled") is True)
-
-        blob = json.dumps(cfg, ensure_ascii=False)
-        check("★ 整份配置里没有任何 real_ 字段", "real_" not in blob)
-        check("★ 整份配置里不含真实节点标识",
-              "198.51.100.7" not in blob and "aaaaaaaa-bbbb" not in blob)
+        check("SNI 来自订阅", ob.get("tls", {}).get("server_name") == "node.example.com")
 
     check("★ 出站只有 proxy 与 direct 两个",
           [o["tag"] for o in cfg["outbounds"]] == ["proxy", "direct"],
           str([o["tag"] for o in cfg["outbounds"]]))
-    check("★ 没有可导出的节点列表（客户端不落任何节点）",
-          "outbounds_dump" not in cfg and "nodes" not in cfg)
+    check("★ 没有可导出的节点列表", "outbounds_dump" not in cfg and "nodes" not in cfg)
+
+    # 生成的配置只写临时文件、内核读完即删；这里断言的是"没有留下落盘入口"
+    check("★ 配置里没有把整份订阅塞进去",
+          "ss://" not in json.dumps(cfg) and "vless://" not in json.dumps(cfg))
 
     # --- 7. DNS 的 detour 要跟出站对得上（防回归）---
     #

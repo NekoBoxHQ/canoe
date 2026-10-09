@@ -1,5 +1,7 @@
 # 公共库（本地路径，先装它再装本文件）
 #   pip install -e ../canoe-core
+#
+# canoe-core 会带进 cryptography —— 订阅解密（canoe_core/crypto.py）要用。
 PySide6>=6.6,<7
 requests>=2.31,<3
 pydantic>=2.7,<3

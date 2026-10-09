@@ -95,28 +95,33 @@ class EventHub:
             self._drop(queue)
 
     # -- 发布 ----------------------------------------------------------
-    def publish(self, event: dict[str, Any]) -> int:
-        """把事件推给所有在线连接。**可以从任意线程调用。**
+    def publish(self, event: dict[str, Any], user_id: int | None = None) -> int:
+        """把事件推给在线连接。**可以从任意线程调用。**
 
-        返回投递前的连接数（用来判断"有没有人在听"，不是投递成功数）。
+        user_id 给了就只推给这个账号的连接（改某个人的订阅不该把
+        所有人叫醒）；不给就是广播。
+
+        返回投递前的目标连接数（用来判断"有没有人在听"，不是投递成功数）。
         """
         with self._lock:
-            count = len(self._subs)
+            targets = [
+                q for q, uid in self._subs.items() if user_id is None or uid == user_id
+            ]
+        if not targets:
+            return 0
         loop = self._loop
-        if loop is None or loop.is_closed() or count == 0:
-            return count
+        if loop is None or loop.is_closed():
+            return len(targets)
         try:
-            loop.call_soon_threadsafe(self._fanout, event)
+            loop.call_soon_threadsafe(self._fanout, event, targets)
         except RuntimeError:
             # 循环正在关闭（进程退出中）—— 丢掉这条推送即可，不要抛
             return 0
-        return count
+        return len(targets)
 
-    def _fanout(self, event: dict[str, Any]) -> None:
+    def _fanout(self, event: dict[str, Any], targets: list[asyncio.Queue]) -> None:
         """在事件循环线程里执行。"""
-        with self._lock:
-            queues = list(self._subs.keys())
-        for queue in queues:
+        for queue in targets:
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
@@ -145,6 +150,17 @@ def notify_config_changed(config_version: int, revision: str = "", node_name: st
             "revision": revision,
             "node_name": node_name,
         }
+    )
+
+
+def notify_subscription_changed(user_id: int, revision: str = "") -> int:
+    """只推给这一个账号：他的订阅栏被改了（包括被清空）。
+
+    客户端收到后会重新拉订阅；拉回来是空的话当场销毁本地订阅。
+    """
+    return hub.publish(
+        {"type": "config_changed", "config_version": 0, "revision": revision},
+        user_id=user_id,
     )
 
 

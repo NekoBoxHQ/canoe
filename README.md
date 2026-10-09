@@ -25,30 +25,50 @@ Windows 桌面代理工具。客户端极简到只有「节点名 + 启航 + 靠
 | 3 | 服务端（API + 数据库 + 更新通道 + 推送） | ✅ |
 | 4 | 部署材料（Debian 12 + HTTPS + Web 管理面板） | ✅ |
 | 5 | 客户端与服务端联调 | ✅ |
+| 6 | 订阅分发 + 传输加密 + 托盘 | ✅ |
 
 ---
 
-## 架构：客户端拿不到真实节点
+## 架构：服务端完全可控
 
-这是整个项目最重要的一条约束，其它设计都是围着它转的。
+模型的中心是一句话：**客户端手里有什么，完全由服务端在每次交互时决定。**
 
 ```
-客户端 ──VLESS+WS+TLS──► 中转层（服务端）──► 真实节点
-   │                          │
-   │ 只知道：入口域名           │ 真实主机/端口/UUID 只存在于
-   │         入口端口           │ 服务端数据库与中转层配置里
-   │         入口 UUID          │
-   │         自己的登录令牌      │
+            ①登舟：拿令牌 + 一把会话级订阅密钥
+   客户端  ─────────────────────────────────►  服务端
+            ②每次启航 / 点更新：
+              重新证明身份 -> 拉订阅（密文）-> 就地解密
+                     ◄─────────────────────────
+                        ③服务端随时可以不发（空信封）
+                          -> 客户端就地销毁本地订阅
 ```
 
-- 客户端**只**拿到：服务端地址（写死）+ 用户令牌 + 每次启航下发的中转入口。
-- 真实节点由服务端在中转层决定和路由，客户端全程不参与。
-- 客户端**没有**导出入口，**不落盘**任何节点信息，内核配置写到临时文件、读完即删。
-- 管理端能看到的真实节点信息，永远不会出现在任何面向客户端的响应里
-  （由 `canoe-core` 的 `assert_whitelisted()` 在模型层强制）。
+节点在**服务端后台的「订阅栏」**里逐用户配置（一行一个链接，
+`ss:// vmess:// vless:// trojan://`，也可以整体 base64）。
+你的节点服务器和 Canoe 服务端互不关联 —— Canoe 只负责"发不发"。
 
-对应测试：`canoe-client/tests/test_server.py`（33 项，含 4 条泄漏断言）、
-`canoe-server/smoke_test.py`（97 项，含多条「响应里不许出现 real_」）。
+几条关键性质：
+
+- **传输是密文**：订阅走 HTTPS 之外，服务端还用一把**登录时现发的会话密钥**
+  再包一层 AES-256-GCM（`canoe_core/crypto.py`）。反向代理、日志、
+  能碰服务端的中间环节看到的都只有密文。
+- **密钥只在内存**：`sub_key` 不落盘，进程一退就没了；下次登舟重新拿。
+  服务端不认这个会话了，客户端就什么都拉不到。
+- **撤回立刻生效**：管理员清空订阅栏 / 封禁 / 到期 → 客户端拉回来是空的
+  → **就地销毁**本地订阅；正在航行的会自动靠岸。
+  （改订阅会走 SSE 定向推送给该账号，最迟下一次心跳也会发现。）
+- **客户端不落节点**：订阅只在内存里，不写配置文件、不提供导出。
+
+对应测试：`canoe-client/tests/test_server.py`（49 项，对着真服务端跑，
+含"响应里没有订阅明文/域名/链接"等多条断言）、
+`canoe-server/smoke_test.py`（105 项）。
+
+> ⚠️ 说清楚边界：这一层加密**防不住拿到客户端的用户把节点扒出来** ——
+> 客户端必须能解密，密钥就在它手上。它防的是传输链路上的中间环节；
+> 真正决定"能不能用"的是服务端随时可以不发。
+
+> 中转层（`canoe_server/services/relay.py`、`/api/admin/relay/config`）
+> 是上一版模型的遗留，已经不在客户端链路上，保留只为兼容旧数据。
 
 ---
 
@@ -59,15 +79,15 @@ canoe/
 ├── canoe-core/            公共库（模型契约 / 常量 / 文案 / 密码哈希）
 ├── canoe-client/          桌面客户端
 │   ├── canoe_client/
-│   │   ├── app.py         入口 + 页面切换 + 退出兜底清理
+│   │   ├── app.py         入口 + 页面切换 + 托盘 + 退出兜底清理
 │   │   ├── api.py         与服务端通话
-│   │   ├── entry.py       中转入口 -> sing-box 出站
+│   │   ├── links.py       ★ 订阅里的链接 -> sing-box 出站
 │   │   ├── events.py      SSE 长连接（服务端推送）
 │   │   ├── kernel.py      sing-box 配置生成与进程管理
 │   │   ├── sysproxy.py    Windows 系统代理（含自愈）
-│   │   └── ui/            界面
+│   │   └── ui/            界面（含 tray.py 托盘）
 │   ├── build.bat          一键打包成 Canoe.exe
-│   └── tests/             5 套，共 215 项
+│   └── tests/             6 套，共 279 项
 │
 ├── canoe-server/          服务端
 │   ├── serve.py           统一启动器（双端口，单进程）
@@ -124,6 +144,12 @@ SERVER_BASE = "https://canoe.s-ui.com:58588"
 
 > 面板端口在部署时随便改；客户端更新与订阅用的 `58588` 是固定的，两者互不影响。
 
+### 关窗 ≠ 退出
+
+点右上角的关闭只是**收进托盘**，代理照常跑；要真正退出得
+**右键托盘图标 → 退出**（退出时会先还原系统代理、再停内核）。
+系统没有托盘时会自动退化成普通行为：关窗就是关窗。
+
 ---
 
 ## 服务端
@@ -165,50 +191,24 @@ Web 管理面板在 `<域名>:<面板端口>/panel`，管用户、节点、会�
 
 ```bash
 # —— 客户端（canoe-client/）——
-python tests/test_config.py     # 配置生成 + 安全断言（45 项）
+python tests/test_config.py     # 配置生成 + 安全断言（46 项）
+python tests/test_links.py      # 订阅链接解析（37 项）
 python tests/test_sysproxy.py   # 系统代理与自愈（33 项）
 python tests/test_tools.py      # 日志总线 / 版本 / TCping / URL 测试（31 项）
 set QT_QPA_PLATFORM=offscreen
-python tests/test_gui.py        # GUI 端到端，会真启航一次（73 项）
+python tests/test_gui.py        # GUI 端到端，会真启航一次（83 项）
 
 # 联调（要有一个在跑的服务端）
 set CANOE_SERVER_URL=https://127.0.0.1:8443
 set CANOE_CA_BUNDLE=..\canoe-server\data\certs\local-cert.pem
-python tests/test_server.py     # 33 项
+python tests/test_server.py     # 49 项
 
 # —— 服务端（canoe-server/）——
-python smoke_test.py https://127.0.0.1:8443 --insecure   # 97 项
-cd panel && bun test_panel.mjs                            # 面板 DOM（24 项）
+python smoke_test.py https://127.0.0.1:8443 --insecure   # 105 项
+cd panel && bun test_panel.mjs                            # 面板 DOM（30 项）
 ```
 
-合计 **336 项**。
-
----
-
-## 已知缺口
-
-### 中转层的 ticket 目前没有被强制执行
-
-服务端在 `/api/config` 里会签发一张短期的、绑设备的 ticket
-（`ConfigResponse.token`），但中转层（sing-box 的 VLESS 入站）认的是
-**节点固定的 `entry_uuid`**，不是这张 ticket：
-
-```python
-# canoe_server/services/relay.py
-"users": [{"uuid": node.entry_uuid, "flow": ""}],
-```
-
-后果：知道「入口域名 + 路径 + entry_uuid」的人，即使账号已被封禁，
-仍然能继续使用中转层 —— 因为这些值不会随封禁变化。ticket 现在是签了但没处验。
-
-要真正闭环，可选（成本从低到高）：
-
-1. **按用户分配 UUID**：中转层每个账号一个 UUID，封禁时重生成中转配置并热重载。
-   能立刻让封禁生效，代价是用户变更时要 reload 一次。
-2. **自建入口网关**：入口不用 sing-box，用一个能读 ticket 的网关终止 TLS，
-   校验通过再转发到真实节点。最彻底，但要自己写数据面。
-
-在决定之前，请不要把中转层入口当作「可撤销的凭据」来用。
+合计 **414 项**。
 
 ---
 

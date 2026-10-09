@@ -116,6 +116,7 @@ def login(body: LoginRequest, request: Request, db: DBSession = Depends(get_db))
     return LoginResponse(
         token=raw_token,
         expires_in=max(0, int((as_aware(token_row.expire_at) - utcnow()).total_seconds())),
+        sub_key=token_row.sub_key,
         user=UserInfo(
             id=user.id,
             username=user.username,

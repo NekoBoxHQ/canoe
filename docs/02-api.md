@@ -18,15 +18,15 @@
 | 方法 | 路径 | 说明 | 需求来源 |
 |---|---|---|---|
 | POST | `/api/register` | 注册 | 需求指定 |
-| POST | `/api/login` | 登录，返回 token | 需求指定 |
-| GET | `/api/config` | 拉取配置（入口 + token + 节点名） | 需求指定 |
-| POST | `/api/heartbeat` | 心跳，保持在线 | 需求指定 |
+| POST | `/api/login` | 登录，返回 token + 会话级订阅密钥 `sub_key` | 需求指定 |
+| GET | `/api/config` | 启航：建一条会话（**不下发节点**） | 需求指定 |
+| POST | `/api/heartbeat` | 心跳，保持在线 + 带回订阅指纹 | 需求指定 |
 | POST | `/api/logout` | 登出（吊销令牌） | 需求指定 |
 | POST | `/api/session/stop` | **本项目补充**：结束会话但保留令牌 | 见下方说明 |
 | GET | `/api/me` | 当前用户信息 | 辅助 |
 | GET | `/api/health` | 健康检查 | 辅助 |
 | GET | `/api/client/latest` | **客户端更新**：最新版本 + 安装包地址（**不需要登录**） | 更新通道 |
-| GET | `/api/subscription` | **订阅更新**：当前订阅 + 变更指纹 | 更新通道 |
+| GET | `/api/subscription` | **订阅**：加密的订阅载荷 + 变更指纹 | 更新通道 |
 | GET | `/api/events` | **推送**：SSE 长连接 | 推送 |
 | — | `/api/admin/*` | 管理后台 | 辅助 |
 | — | `/downloads/*` | 安装包静态下载 | 更新通道 |
@@ -95,31 +95,41 @@
 {
   "token": "Xk7f...Q2",
   "expires_in": 86400,
+  "sub_key": "9f3Ka...==",
   "user": {
     "id": 12,
     "username": "canoe",
     "status": "active",
     "expire_at": 1799000000,
-    "node_name": "香港-01"
+    "node_name": null
   }
 }
 ```
 
-`node_name` 在登录时就会返回 —— 主界面的「节点名称」要在点启航之前就显示出来，
-不能等启航才知道连哪个。
+`sub_key` 是**会话级订阅密钥**（32 字节随机数的 base64）：
+客户端拿它解密 `/api/subscription` 的响应。它和令牌同生命周期 ——
+令牌一吊销，服务端就再也取不到这把钥匙，客户端也就拉不到能解开的内容了。
+
+客户端**只把它放在内存里**，不落盘、不写配置文件。
+
+> `user.node_name` 是上一版模型（服务端分配节点）的遗留字段，
+> 订阅模式下恒为 `null`；节点名由客户端从解密出来的订阅里解析。
 
 `403 banned` / `403 expired` / `409 device_limit` 时客户端应停在登舟页并提示。
 
 ---
 
-## 3. GET /api/config  ★ 核心端点
+## 3. GET /api/config  ★ 启航时建会话
 
 ```
 GET /api/config?device_id=3f9c...&mode=system_proxy
 Authorization: Bearer <token>
 ```
 
-服务端在这里做全套校验：令牌有效 → 未封禁 → 未过期 → 设备数未超限 → 选出节点。
+服务端在这里做全套校验：令牌有效 → 未封禁 → 未过期 → 设备数未超限，
+然后记一条会话（管理端靠它看谁在线、靠它踢下线）。
+
+**这个接口不下发任何节点信息** —— 节点从 `/api/subscription` 的加密信封来。
 
 **200**
 
@@ -127,36 +137,32 @@ Authorization: Bearer <token>
 {
   "protocol": 1,
   "session_id": "7d2a...b1",
-  "node_name": "香港-01",
-  "token": "eyJ1IjoxMiwibiI6MywiZCI6ImFiYyIsImV4cCI6MTc5MDAwMDMwMH0.9mQ...",
+  "node_name": null,
   "expires_at": 1790000300,
   "heartbeat_interval": 30,
-  "config_version": 4,
-  "entry": {
-    "transport": "ws",
-    "host": "canoe.example.com",
-    "port": 443,
-    "uuid": "b8f1c2d4-....",
-    "path": "/e/hk01",
-    "sni": "canoe.example.com",
-    "tls": true,
-    "insecure": false
-  }
+  "revision": "fca8e285fa5cbc53"
 }
 ```
 
 ### 这个响应里**没有**什么
 
-没有 `address`、没有 `port`(真实端口)、没有 `protocol`(真实协议)、
-没有 `secret`、没有 `real_*`。需求的原文是：
+没有 `entry`、没有 `token`、没有 `address`/`port`/`protocol`/`secret`、
+没有 `real_*`。节点一律走订阅那条加密通道。
 
-> /api/config 返回里不能包含真实节点地址/端口/密码，
-> 只返回服务端入口 + token + 节点显示名。
+`revision` 是订阅指纹（明文，只取哈希，不含任何订阅内容片段）——
+客户端拿它和手里的比一比就知道要不要重新拉订阅。
 
-这条要求由 `canoe_core.ConfigResponse` 的**类型定义**保证，而不是靠写代码时的自觉。
-详见 `docs/04-security.md`。
+---
 
-响应体里 `token` 是**短期入口凭证**（默认 300 秒有效），绑定 `user_id + node_id + device_id`，
+## 3.1 历史：`entry` 与 `token`（中转层模型，已退役）
+
+早先版本在这里下发过 `entry`（`EntryPayload`，中转层入口白名单）
+和 `token`（绑定 `user_id + node_id + device_id` 的短期入口凭证，
+默认 300 秒有效）。阶段 6 转向订阅分发后，客户端不再需要它们，
+两个字段已从这个响应里移除。相关的类型与校验仍在 `canoe-core` 里保留，
+服务于仍在跑的中转层代码（`/api/admin/relay/config`）。
+
+原先 `token` 的说明保留在此，供读旧代码时对照：
 服务端可随时吊销。它和中转层入口一起构成本次会话的凭据。
 
 `503 no_node` 表示没有可用节点；`403 banned/expired` 表示账号级拒绝。
@@ -320,15 +326,27 @@ Authorization: Bearer <token>
 }
 ```
 
-`revision` 是**订阅指纹**：`config_version`、节点、入口域名/端口/UUID/路径/SNI
-任一变化都会让它变。客户端存住上一轮的字符串比一比即可：
+`revision` 是**订阅指纹**：订阅内容 / 账号状态 / 到期时间任一变化都会让它变。
+客户端存住上一轮的字符串比一比即可：
 
 ```
 revision 没变 -> 订阅已是最新
-revision 变了 -> 订阅有更新，提示"配置已更新，请重新启航"
+revision 变了 -> 重新拉一次并解密（内容可能是空的 = 服务端停止分发了）
 ```
 
-和 `/api/config` 一样，`entry` 走 `EntryPayload` 白名单，没有真实节点字段。
+> ⚠️ 指纹本身是**明文**发给客户端的。所以它只取哈希，绝不把订阅内容的
+> 任何片段拼进去 —— 否则等于绕开加密把内容泄出去。这条由
+> `services/updates.subscription_revision()` 保证，冒烟测试里有对应断言。
+
+### 内容为什么是密文
+
+`envelope.data` 是 AES-256-GCM 密文，密钥由**登录时下发的 `sub_key`**
+（每个会话一把）经 HKDF-SHA256 派生。信封里带了随机 `salt` 和 `nonce`，
+所以同一条订阅两次拉取密文不同。
+
+服务端在三种情况下回**空信封**（`data` 为空）：
+账号被封、账号到期、管理员把订阅栏清空了。
+客户端见到空信封必须**销毁本地订阅** —— 这是"服务端完全可控"的落点。
 
 ---
 
@@ -339,9 +357,9 @@ revision 变了 -> 订阅有更新，提示"配置已更新，请重新启航"
 一条 `text/event-stream` 长连接，事件体是 JSON：
 
 ```
-data: {"type":"hello","config_version":7,"revision":"3f9c...","node_name":"香港-01"}
+data: {"type":"hello","revision":"3f9c...","server_time":1791519900}
 
-data: {"type":"config_changed","config_version":8,"revision":"","node_name":""}
+data: {"type":"config_changed","config_version":0,"revision":"fca8..."}
 
 data: {"type":"release","version":"1.1.0","url":"...","notes":"..."}
 
@@ -350,15 +368,18 @@ data: {"type":"kick","user_id":12,"reason":"账号已被封禁"}
 
 | 事件 | 客户端该做什么 |
 |---|---|
-| `hello` | 连上就发。对齐 `config_version` / `revision` |
-| `config_changed` | 提示"配置已更新，请重新启航"，或自动重拉 `/api/subscription` |
+| `hello` | 连上就发。对齐 `revision` |
+| `config_changed` | 重新拉 `/api/subscription` 并解密；**是空的就销毁本地订阅** |
 | `release` | 结果框提示有新版本 |
 | `kick` | **立即靠岸**，不用等心跳 |
 | `ping` | 保活注释，忽略 |
 
 约定：
 
-- `config_changed` **不带节点名** —— 每个用户分配到的节点不同，带上就把别人的
+- `config_changed` 是**广播**，所以**不带订阅内容**（带了就是把一个人的订阅
+  发给所有人）。客户端收到后自己去拉自己那份。
+- 管理员改某一账号的订阅时，走的是**定向推送**（`hub.publish(..., user_id=...)`），
+  不会把无关的人叫醒。
   节点泄露给所有人了。客户端收到后自己去拉 `/api/subscription`。
 - 断线要自动重连（指数退避）。重连后先靠 `hello` 对齐，漏掉的事件不必补。
 - 服务端有连接数上限（默认全局 2000 / 单账号 5），超了返回 `429`。
@@ -398,7 +419,11 @@ data: {"type":"kick","user_id":12,"reason":"账号已被封禁"}
 ## 10. 安全约定（实现层）
 
 1. `/api/admin/*` 必须二次校验 `role == "admin"`，不能只靠前端隐藏入口。
-2. `real_*` 只出现在 `/api/admin/nodes` 的响应里。客户端可见的序列化一律走
-   `services/nodes.to_entry_payload()`，**不要用 `model_dump()` 全量序列化**。
-3. 生产必须 HTTPS + HSTS；`entry.insecure` 保持 `false`。
-4. 登录接口建议加频率限制（每 IP 10 次/分钟）。
+2. `real_*` 只出现在 `/api/admin/nodes` 的响应里（中转层遗留）。
+3. **订阅内容只以密文出网**：`/api/subscription` 回的是 `envelope`，
+   明文只能被登录时下发的 `sub_key` 解开。往这个响应里加任何明文节点
+   字段都是破坏这条约定。
+4. 订阅指纹 `revision` 是明文，**只取哈希**，不能拼入订阅内容的片段。
+5. 生产必须 HTTPS + HSTS。客户端的 TLS 校验默认是**开的**；
+   联调自签证书要用 `CANOE_CA_BUNDLE` 指一张 CA，**不要**关校验。
+6. 登录接口建议加频率限制（每 IP 10 次/分钟）。

@@ -56,8 +56,9 @@ const FIXTURES = [
     sessions_total: 40, sessions_online: 5, config_version: 7, push: { connections: 4, users: 2 },
   }],
   [/\/api\/admin\/users\?/, { items: [
-    { id: 1, username: 'admin', role: 'admin', status: 'active', online: true, expire_at: 0, max_devices: 3, remark: '主账号', last_login_at: 1790000000 },
-    { id: 2, username: 'demo', role: 'user', status: 'banned', online: false, expire_at: 1799000000, max_devices: 3, remark: '', last_login_at: null },
+    { id: 1, username: 'admin', role: 'admin', status: 'active', online: true, expire_at: 0, max_devices: 3, remark: '主账号', last_login_at: 1790000000, subscription: '', subscription_lines: 0 },
+    { id: 2, username: 'demo', role: 'user', status: 'banned', online: false, expire_at: 1799000000, max_devices: 3, remark: '', last_login_at: null,
+      subscription: 'ss://2022-blake3-aes-128-gcm:AAAA:BBBB@one.leycc.com:33222#日本\nss://x:y@two.example.com:443#备用', subscription_lines: 2 },
   ]}],
   [/\/api\/admin\/nodes$/, { items: [
     { id: 3, name: '香港-01', remark: '', enabled: true, sort_order: 10,
@@ -163,6 +164,30 @@ check('弹窗里有版本号/说明/文件字段',
       modalTxt.slice(0, 160));
 document.querySelector('#modal-close').dispatchEvent(new window.Event('click', { bubbles: true }));
 check('弹窗关掉了', document.querySelector('#modal-root').hidden);
+
+console.log('\n[7] 订阅编辑栏');
+navItems[1].dispatchEvent(new window.Event('click', { bubbles: true }));   // 用户页
+await tick(); await tick(); await tick();
+const usersPage = document.querySelector('#page');
+const usersNow = usersPage.textContent;
+check('用户列表显示分发状态', usersNow.includes('个节点') && usersNow.includes('未配置'),
+      usersNow.slice(0, 200));
+
+const subBtns = [...usersPage.querySelectorAll('button')].filter((b) => b.textContent.trim() === '订阅');
+check('每行有「订阅」按钮', subBtns.length === 2, String(subBtns.length));
+// 点 demo 那行（它有订阅内容，能验回填）
+subBtns[1].dispatchEvent(new window.Event('click', { bubbles: true }));
+await tick();
+const subModal = document.querySelector('#modal-body');
+const area = subModal.querySelector('textarea');
+check('弹窗里有订阅输入框', !!area);
+check('★ 订阅用多行文本框（一行一个链接）',
+      area && Number(area.getAttribute('rows')) >= 8,
+      area ? String(area.getAttribute('rows')) : '');
+check('★ 回填了现有订阅内容', area && area.value.includes('ss://'), area ? area.value.slice(0, 60) : '');
+check('弹窗里提示清空即停止分发',
+      subModal.textContent.includes('停止分发'), subModal.textContent.slice(0, 160));
+document.querySelector('#modal-close').dispatchEvent(new window.Event('click', { bubbles: true }));
 
 console.log(`\n${'='.repeat(48)}\n通过 ${pass} 项，失败 ${fail} 项\n${'='.repeat(48)}\n`);
 process.exit(fail ? 1 : 0);

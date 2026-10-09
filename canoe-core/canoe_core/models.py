@@ -18,6 +18,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from .constants import ENTRY_FIELDS, PROTOCOL_VERSION
+from .crypto import Envelope
 
 # --------------------------------------------------------------------------
 # 公共
@@ -69,6 +70,13 @@ class LoginResponse(BaseModel):
     token: str
     expires_in: int
     user: UserInfo
+    sub_key: str = Field(
+        default="",
+        description=(
+            "会话级订阅密钥。只在这个会话有效，客户端只放在内存里。"
+            "订阅响应用它解密；服务端不再认这个会话，客户端就什么都拉不到。"
+        ),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -126,23 +134,24 @@ def _assert_no_real_fields(blob: Any) -> None:
 
 
 class ConfigResponse(BaseModel):
-    """/api/config 的响应体。
+    """/api/config 的响应体 —— 启航时建一条会话。
 
-    需求原文：返回「入口地址 + token + 节点显示名」，
-    不能包含真实节点地址/端口/密码。这个模型就是那条要求的实现。
+    订阅模式下这个接口**不再下发任何节点信息**：节点由客户端从
+    自己的订阅里挑。这里只负责"记一笔你上线了"，供管理端看在线的
+    人和做踢下线。
+
+    节点信息一律走 /api/subscription 的加密信封（见 crypto.py）。
     """
 
     protocol: int = PROTOCOL_VERSION
     session_id: str
-    node_name: str = Field(description="节点显示名，客户端唯一能看到的节点信息")
-    token: str = Field(description="短期入口凭证 ticket")
+    node_name: str | None = Field(default=None, description="预留显示位；订阅模式下由客户端自己解析")
     expires_at: int
     heartbeat_interval: int = 30
-    config_version: int = 0
-    entry: EntryPayload
+    revision: str = Field(default="", description="订阅指纹，用于判断要不要重新拉订阅")
 
     def assert_no_real_fields(self) -> None:
-        """防御性断言：序列化结果里不能出现 real_* 字段，也不能出现入口之外的东西。"""
+        """防御性断言：序列化结果里不能出现 real_* 字段。"""
         _assert_no_real_fields(self.model_dump())
 
 
@@ -154,25 +163,22 @@ class ConfigResponse(BaseModel):
 class SubscriptionResponse(BaseModel):
     """/api/subscription 的响应体 —— 「订阅更新」用的。
 
-    和 /api/config 的区别：**不建会话、不发凭证**，只告诉客户端
-    「你当前的订阅长什么样、变了没有」。
+    订阅内容（节点链接）**不以明文出现**，只有密文信封。
+    明文由客户端用登录时拿到的 sub_key 在内存里解开。
 
-    客户端「更新」按钮拿它和本地记住的 revision 比：
-        revision 没变 -> 订阅已是最新
-        revision 变了 -> 订阅有更新，提示用户重新启航
-
-    和 /api/config 一样，这里也只有 EntryPayload —— 没有真实节点。
+    空信封（`envelope.is_empty`）= 服务端主动不给：账号被封、已到期、
+    或管理员把订阅栏清空了。客户端见到它必须销毁本地订阅 ——
+    这是"服务端完全可控"的落点。
     """
 
     protocol: int = PROTOCOL_VERSION
-    config_version: int = 0
     node_name: str | None = Field(default=None, description="当前会分配到的节点显示名")
-    entry: EntryPayload | None = Field(default=None, description="当前入口（非会话凭证）")
     expires_at: int | None = Field(default=None, description="账号到期时间")
     heartbeat_interval: int = 30
-    revision: str = Field(
-        default="",
-        description="订阅指纹。入口/节点/配置版本任一变化都会变，客户端拿它判断要不要更新",
+    revision: str = Field(default="", description="订阅指纹，客户端拿它判断要不要更新")
+    envelope: Envelope = Field(
+        default_factory=Envelope,
+        description="加密后的订阅载荷；为空表示服务端不给",
     )
 
     def assert_no_real_fields(self) -> None:
@@ -219,7 +225,8 @@ class HeartbeatRequest(BaseModel):
 class HeartbeatResponse(BaseModel):
     ok: bool = True
     expires_at: int
-    config_version: int
+    #: 服务端当前的订阅指纹。和客户端手里那份不一样，客户端就该重新拉订阅。
+    revision: str = ""
     revoked: bool = False
     node_name: str | None = None
 

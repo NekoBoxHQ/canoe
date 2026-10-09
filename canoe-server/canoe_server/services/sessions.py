@@ -1,17 +1,17 @@
 """令牌签发与撤销、会话生命周期。"""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session as DBSession
 
-from canoe_core import ErrorCode
+from canoe_core import ErrorCode, new_sub_key
 
 from ..config import settings
 from ..models import Session as SessionRow
 from ..models import Token, User, utcnow
-from ..security import gen_session_id, issue_ticket, new_token, ticket_digest, token_hash
+from ..security import gen_session_id, new_token, token_hash
 
 
 class CanoeError(Exception):
@@ -49,6 +49,9 @@ def issue_login_token(db: DBSession, user: User, device_id: str) -> tuple[str, T
         user_id=user.id,
         token_hash=token_hash(raw),
         device_id=device_id,
+        # 每个会话一把新的订阅密钥。登录时下发给客户端，服务端拿同一把
+        # 加密 /api/subscription 的响应。吊销令牌 = 这把钥匙一起失效。
+        sub_key=new_sub_key(),
         expire_at=utcnow() + timedelta(seconds=settings.token_ttl),
     )
     db.add(row)
@@ -121,9 +124,13 @@ def ensure_user_usable(user: User) -> None:
 
 
 def start_session(
-    db: DBSession, user: User, node_id: int, device_id: str, mode: str, client_ip: str = ""
-) -> tuple[SessionRow, str]:
-    """创建会话并签发入口凭证，返回 (会话行, ticket)。"""
+    db: DBSession, user: User, device_id: str, mode: str, client_ip: str = ""
+) -> SessionRow:
+    """创建一条会话：只记"这人在线"，不分配节点、不发凭证。
+
+    订阅模式下节点由客户端从自己的订阅里挑，服务端既不分配也不知道
+    客户端到底连的是哪台 —— 这正是"节点服务器与服务端不关联"的落点。
+    """
     ensure_user_usable(user)
 
     # 同一设备的旧会话先结束，避免僵尸会话堆积
@@ -137,25 +144,24 @@ def start_session(
         .values(ended_at=utcnow())
     )
 
-    session_id = gen_session_id()
-    ticket, exp_epoch = issue_ticket(user.id, node_id, device_id)
-
+    now = utcnow()
     row = SessionRow(
-        id=session_id,
+        id=gen_session_id(),
         user_id=user.id,
-        node_id=node_id,
+        node_id=None,
         device_id=device_id,
-        ticket_hash=ticket_digest(ticket),
+        ticket_hash="",
         client_ip=client_ip,
         mode=mode,
-        created_at=utcnow(),
-        expire_at=datetime.fromtimestamp(exp_epoch, tz=timezone.utc),
-        last_seen=utcnow(),
+        created_at=now,
+        # 会话跟登录令牌同寿：令牌一吊销，会话也就没意义了
+        expire_at=now + timedelta(seconds=settings.token_ttl),
+        last_seen=now,
     )
     db.add(row)
     db.commit()
     db.refresh(row)
-    return row, ticket
+    return row
 
 
 def heartbeat(db: DBSession, session_id: str, user: User) -> SessionRow:

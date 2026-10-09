@@ -30,7 +30,9 @@ from canoe_core import (
     ConfigResponse,
     ErrorCode,
     LoginResponse,
+    SubCryptoError,
     SubscriptionResponse,
+    unseal,
 )
 
 from .config import config
@@ -63,6 +65,8 @@ class CanoeApi:
         self._http = requests.Session()
         self._http.headers.update({"User-Agent": "Canoe-Client/1.0"})
         self.token: str | None = None
+        #: 会话级订阅密钥。**只在内存**，登舟时拿到，离舟时丢掉。
+        self.sub_key: str = ""
 
     @property
     def base(self) -> str:
@@ -133,6 +137,10 @@ class CanoeApi:
         )
         result = LoginResponse.model_validate(data)
         self.token = result.token
+        # 订阅密钥只活在内存里：进程一退就没了，下次登舟重新拿。
+        # 落盘的话就变成"关掉客户端还能解订阅"，服务端也就没法靠
+        # 吊销会话来收回控制权了。
+        self.sub_key = result.sub_key
         return result
 
     def logout(self, session_id: str | None = None) -> None:
@@ -143,6 +151,7 @@ class CanoeApi:
         except CanoeApiError:
             pass
         self.token = None
+        self.sub_key = ""
 
     def me(self) -> dict:
         return self._request("GET", Api.ME)
@@ -151,10 +160,9 @@ class CanoeApi:
     # 配置下发 / 心跳
     # ------------------------------------------------------------------
     def fetch_config(self, mode: str) -> ConfigResponse:
-        """拉取入口配置。
+        """启航：建一条会话。
 
-        ★ 返回类型 ConfigResponse 只含 node_name / entry / token，
-          没有任何真实节点字段 —— 这是类型层面的保证，不是约定。★
+        这个接口不下发任何节点信息 —— 节点从订阅里来（见 subscription_text）。
         """
         data = self._request(
             "GET",
@@ -168,10 +176,8 @@ class CanoeApi:
                 ErrorCode.INTERNAL, f"服务端返回的配置格式不对：{exc.error_count()} 处问题"
             ) from exc
 
-        # 出网前的自检：万一服务端有 bug 把 real_* 发过来了，这里直接拒绝，
-        # 而不是把真实节点信息喂给内核。
+        # 出网前的自检：万一服务端有 bug 把 real_* 发过来了，这里直接拒绝
         resp.assert_no_real_fields()
-        resp.entry.assert_whitelisted()
         return resp
 
     def heartbeat(self, session_id: str) -> dict:
@@ -191,16 +197,29 @@ class CanoeApi:
     # 更新通道（「更新」按钮对接的两条）
     # ------------------------------------------------------------------
     def subscription(self) -> SubscriptionResponse:
-        """订阅更新：我这条订阅变了没有。
+        """订阅：内容仍是密文。
 
         不建会话、不发凭证，只读 —— 没启航的时候也能随手调。
+        要明文请用 subscription_text()。
         """
         data = self._request("GET", Api.SUBSCRIPTION)
         resp = SubscriptionResponse.model_validate(data)
         resp.assert_no_real_fields()
-        if resp.entry is not None:
-            resp.entry.assert_whitelisted()
         return resp
+
+    def subscription_text(self) -> tuple[SubscriptionResponse, str]:
+        """订阅 + 解出来的明文（可能为空串）。
+
+        空串表示服务端不给 —— 被封、到期、或管理员把订阅栏清空了。
+        调用方见到空串必须销毁本地订阅，而不是当成"网络不好"重试。
+        """
+        resp = self.subscription()
+        try:
+            text = unseal(resp.envelope, self.sub_key or "")
+        except SubCryptoError as exc:
+            # 解不开基本只有一个原因：会话换了。提示重新登舟，别让用户干等重试。
+            raise CanoeApiError(ErrorCode.UNAUTHORIZED, f"{exc}，请重新登舟") from exc
+        return resp, text
 
     def latest_release(self) -> ClientReleaseResponse:
         """客户端更新：有没有新版本。这个接口**不需要登录**。"""

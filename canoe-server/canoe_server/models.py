@@ -67,6 +67,9 @@ class User(Base):
     expire_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     max_devices: Mapped[int] = mapped_column(Integer, default=3)
     remark: Mapped[str] = mapped_column(String(255), default="")
+    #: ★ 管理员在这个账号的「订阅栏」里贴的内容 —— 节点链接列表。
+    #: 客户端登舟后拿到的是它**加密后**的信封；清空这一栏就等于停止分发。
+    subscription: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -104,6 +107,9 @@ class Token(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     device_id: Mapped[str] = mapped_column(String(64), default="")
+    #: 会话级订阅密钥（base64）。登录时下发给客户端，之后服务端用它加密
+    #: 订阅响应。吊销令牌 = 这把钥匙一起作废，客户端再也解不开新订阅。
+    sub_key: Mapped[str] = mapped_column(String(64), default="")
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     expire_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -210,13 +216,18 @@ class Session(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    node_id: Mapped[int] = mapped_column(ForeignKey("nodes.id", ondelete="CASCADE"))
+    #: 可空 —— 订阅模式下服务端不分配节点，客户端从自己的订阅里挑。
+    #: 留着这一列只是为了兼容老数据和"以后可能再关联节点"。
+    node_id: Mapped[int | None] = mapped_column(
+        ForeignKey("nodes.id", ondelete="CASCADE"), nullable=True
+    )
     device_id: Mapped[str] = mapped_column(String(64), default="")
 
     # 需求: online / last_seen。online 不做成独立字段，而是由 last_seen 推算，
     # 避免"进程被 kill 后 online 永远是 true"的经典问题。见 is_online()。
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
+    #: 中转层时代的入口凭证摘要。订阅模式下发不出 ticket，恒为空串。
     ticket_hash: Mapped[str] = mapped_column(String(64), default="")
     client_ip: Mapped[str] = mapped_column(String(64), default="")
     mode: Mapped[str] = mapped_column(String(16), default="system_proxy")

@@ -89,6 +89,27 @@ def get_current_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+def current_sub_key(
+    request: Request,
+    db: DBSession = Depends(get_db),
+) -> str:
+    """当前会话的订阅密钥。
+
+    从令牌行里取 —— 令牌和密钥是**同一个生命周期**：令牌废了，
+    密钥也就取不到了，客户端拉回来的订阅解不开。
+
+    取不到就返回空串，由调用方决定怎么办（订阅接口会回空信封，
+    客户端据此销毁本地订阅，而不是报错重试）。
+    """
+    raw = bearer_token(request)
+    if not raw:
+        return ""
+    row = db.scalars(select(Token).where(Token.token_hash == token_hash(raw))).first()
+    if row is None or not row.is_valid:
+        return ""
+    return row.sub_key or ""
+
+
 def client_ip(request: Request) -> str:
     fwd = request.headers.get("x-forwarded-for")
     if fwd:

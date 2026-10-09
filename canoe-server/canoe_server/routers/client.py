@@ -1,15 +1,13 @@
-"""客户端接口：/api/config、/api/heartbeat、/api/health
+"""客户端接口：/api/config、/api/subscription、/api/heartbeat、/api/events
 
-★★ /api/config 是整条安全链路上最关键的一个端点 ★★
+★★ 节点信息只有一条出口：/api/subscription 的加密信封 ★★
 
-    它的响应类型是 canoe_core.ConfigResponse，里面只有：
-        node_name     节点显示名
-        entry         EntryPayload（中转层入口，白名单字段）
-        token         短期入口凭证
-    没有任何真实节点的地址/端口/协议/密钥。
+    · /api/config 只建会话，不下发任何节点信息；
+    · /api/subscription 回的是密文，客户端拿登录时那把 sub_key 才解得开；
+    · 服务端随时可以回空信封 —— 客户端据此销毁本地订阅。
 
-    需求原文："/api/config 返回里不能包含真实节点地址/端口/密码"。
-    这条要求由 ConfigResponse 的类型定义保证，而不是靠这里的代码自觉。
+    也就是说"客户端能不能用"完全由服务端说了算，而且订阅内容在
+    传输链路的中间环节（反向代理、日志）上也是密文。
 """
 from __future__ import annotations
 
@@ -36,15 +34,20 @@ from canoe_core import (
 
 from ..config import settings
 from ..database import SessionLocal, get_db
-from ..deps import authenticate, bearer_token, client_ip, get_current_user
-from ..models import AuditLog, Node, User, epoch
+from ..deps import (
+    authenticate,
+    bearer_token,
+    client_ip,
+    current_sub_key,
+    get_current_user,
+)
+from ..models import AuditLog, User, epoch
 from ..services.broadcast import hub
-from ..services.nodes import get_config_version, pick_node, to_entry_payload
 from ..services.sessions import CanoeError, heartbeat as svc_heartbeat, start_session
 from ..services.updates import (
     latest_release,
-    revision_of,
     subscription_for,
+    subscription_revision,
     to_release_payload,
 )
 
@@ -72,56 +75,36 @@ def get_config(
     request: Request,
     device_id: str,
     mode: str = "system_proxy",
-    node_id: int | None = None,
     user: User = Depends(get_current_user),
     db: DBSession = Depends(get_db),
 ):
-    """下发入口配置。
+    """启航：建一条会话。
 
-    客户端登录后自动调用一次；心跳发现 config_version 变化时会重新调用。
+    **不下发任何节点信息** —— 节点由客户端从自己的订阅里挑。
+    这里只记"这人上线了"，供管理端看在线的人和踢下线。
     """
     ip = client_ip(request)
     try:
-        node = pick_node(db, user, node_id)
-    except CanoeError as exc:
-        _raise(exc)
-        raise  # pragma: no cover
-
-    if node is None:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": ErrorCode.NO_NODE, "detail": "当前没有可用节点，请联系管理员"},
-        )
-
-    try:
-        row, ticket = start_session(db, user, node.id, device_id, mode, ip)
+        row = start_session(db, user, device_id, mode, ip)
     except CanoeError as exc:
         _raise(exc)
         raise  # pragma: no cover
 
     db.add(
-        AuditLog(
-            user_id=user.id,
-            action="config_issued",
-            detail=f"node={node.name} mode={mode}",
-            ip=ip,
-        )
+        AuditLog(user_id=user.id, action="session_started", detail=f"mode={mode}", ip=ip)
     )
     db.commit()
 
     resp = ConfigResponse(
         protocol=PROTOCOL_VERSION,
         session_id=row.id,
-        node_name=node.name,               # 客户端唯一能看到的节点信息
-        token=ticket,                      # 短期入口凭证
+        node_name=None,
         expires_at=epoch(row.expire_at) or 0,
         heartbeat_interval=settings.heartbeat_interval,
-        config_version=get_config_version(db),
-        entry=to_entry_payload(node),      # ← 白名单：只有 entry_* 字段
+        revision=subscription_revision(user, user.subscription or ""),
     )
     # 出网前的最后一道自检：万一将来有人改了模型，这里会直接 500 而不是静默泄漏
     resp.assert_no_real_fields()
-    resp.entry.assert_whitelisted()
     return resp
 
 
@@ -165,13 +148,14 @@ def heartbeat(
         _raise(exc)
         raise  # pragma: no cover
 
-    node = db.get(Node, row.node_id)
+    # 心跳顺便把订阅指纹带回去：管理员改了或清空了订阅，
+    # 在航的客户端最迟下一次心跳就会发现并重新拉（拉了是空就靠岸）。
     return HeartbeatResponse(
         ok=True,
         expires_at=epoch(row.expire_at) or 0,
-        config_version=get_config_version(db),
+        revision=subscription_revision(user, user.subscription or ""),
         revoked=row.revoked,
-        node_name=node.name if node else None,
+        node_name=None,
     )
 
 
@@ -215,16 +199,18 @@ def client_latest(request: Request, db: DBSession = Depends(get_db)):
 @router.get(Api.SUBSCRIPTION, response_model=SubscriptionResponse)
 def subscription(
     user: User = Depends(get_current_user),
+    sub_key: str = Depends(current_sub_key),
     db: DBSession = Depends(get_db),
 ):
-    """我这条订阅现在长什么样、变了没有。
+    """我的订阅 —— 内容是加密的。
 
-    和 /api/config 的区别：**不建会话、不发凭证**，只读。
-    客户端「更新」按钮拿 revision 和本地记住的比一比就知道要不要更新。
+    客户端用登录时拿到的 sub_key 在内存里解开。服务端不给的时候
+    （封禁 / 到期 / 订阅栏被清空）回空信封，客户端据此销毁本地订阅。
 
-    出于同样的白名单约束，这里也只回 EntryPayload，没有真实节点。
+    「更新」按钮走的就是这里：每次都要带令牌证明身份，没有令牌
+    什么也拿不到。
     """
-    return subscription_for(db, user)
+    return subscription_for(db, user, sub_key)
 
 
 # --------------------------------------------------------------------------
@@ -247,13 +233,10 @@ def _hello_payload(user_id: int) -> dict:
     """
     with SessionLocal() as db:
         user = db.get(User, user_id)
-        node = pick_node(db, user) if user is not None else None
-        entry = to_entry_payload(node) if node is not None else None
-        version = get_config_version(db)
+        # hello 里**不带**任何订阅内容 —— 只给个指纹，客户端自己去拉。
+        # 推送是广播的，塞内容就等于把别人的订阅发给所有人。
         return {
-            "config_version": version,
-            "revision": revision_of(version, node, entry),
-            "node_name": node.name if node is not None else "",
+            "revision": subscription_revision(user, user.subscription or "") if user else "",
             "server_time": int(time.time()),
         }
 

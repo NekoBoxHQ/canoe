@@ -9,9 +9,11 @@
 
 真正的客户端↔服务端联调在 tests/test_server.py（那个要对着真服务端跑）。
 
-**为什么把 build_entry_outbound 也换掉**：出的那个 vless 出站指向的是
-中转层入口，本机没有那个东西，会连不上网。这里换成 direct，好让
-"启航后真的能通过代理上网"这条断言还能测 —— 出站怎么拼由 test_server.py 覆盖。
+订阅走的是**真加密**（canoe_core.crypto），不是假的 —— 假 api 用真
+seal/unseal 包一遍，所以"解密"这段代码在 GUI 测试里也是真的被执行到的。
+唯一替换掉的是最后一步：把订阅里那条链接换成 direct 出站，
+好让"启航后真的能通过代理上网"这条断言还能测（链接本身怎么解析由
+test_links.py 覆盖，端到端由 test_server.py 覆盖）。
 
 用法：
     set QT_QPA_PLATFORM=offscreen
@@ -36,7 +38,7 @@ if hasattr(sys.stdout, "reconfigure"):
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QToolButton  # noqa: E402
 
-from canoe_core import Text  # noqa: E402
+from canoe_core import Text, new_sub_key, seal, unseal  # noqa: E402
 
 from canoe_client.api import CanoeApiError  # noqa: E402
 from canoe_client.kernel import kernel  # noqa: E402
@@ -99,11 +101,18 @@ class FakeSysProxy:
 class FakeApi:
     """假的服务端。界面只依赖这几个方法。"""
 
+    #: 假服务端下发的订阅内容。改它就能模拟"管理员改了订阅 / 清空了订阅"。
+    DEFAULT_SUB = "ss://2022-blake3-aes-128-gcm:AAAA:BBBB@node.example.com:33222#测试节点-甲"
+    SUB_KEY = new_sub_key()
+
     def __init__(self) -> None:
         self.token = ""
         self.calls: list[str] = []
         self.node_name = "测试节点-甲"
         self.revoked = False
+        #: 当前订阅正文。置空 = 服务端停止分发。
+        self.sub_text = self.DEFAULT_SUB
+        self.revision = "rev-1"
 
     # -- 认证 --
     def register(self, username: str, password: str) -> dict:
@@ -120,6 +129,7 @@ class FakeApi:
         return SimpleNamespace(
             token=self.token,
             expires_in=86400,
+            sub_key=self.SUB_KEY,
             user=SimpleNamespace(id=1, username=username, status="active",
                                  expire_at=None, node_name=self.node_name),
         )
@@ -136,34 +146,39 @@ class FakeApi:
         self.calls.append(f"config:{mode}")
         if not self.token:
             raise CanoeApiError("unauthorized", "令牌无效或已过期", 401)
+        # ★ 这里**没有**任何节点字段 —— 和真服务端一致。
+        #   节点从订阅里来，见下面的 subscription_text()。
         return SimpleNamespace(
-            protocol=1, session_id="sess-0001", node_name=self.node_name,
-            token="ticket-abc", expires_at=1790000000, heartbeat_interval=30,
-            config_version=7,
-            # 只用来占位 —— 出站怎么拼由 test_server.py 覆盖
-            entry=SimpleNamespace(host="entry.example.com", port=443, uuid="u-1",
-                                  path="/e/x", sni="entry.example.com", tls=True,
-                                  insecure=False, transport="ws"),
+            protocol=1, session_id="sess-0001", node_name=None,
+            expires_at=1790000000, heartbeat_interval=30,
+            revision=self._revision(),
         )
+
+    def _revision(self) -> str:
+        return "rev-empty" if not self.sub_text else self.revision
 
     def heartbeat(self, session_id: str) -> dict:
         self.calls.append("heartbeat")
-        return {"ok": True, "expires_at": 0, "config_version": 7,
-                "revoked": self.revoked, "node_name": self.node_name}
+        return {"ok": True, "expires_at": 0, "revision": self._revision(),
+                "revoked": self.revoked, "node_name": None}
 
     def stop_session(self, session_id: str) -> None:
         self.calls.append("stop_session")
 
     # -- 更新 / 订阅 --
     def subscription(self):
+        """和真服务端一样：内容是**密文**。"""
         self.calls.append("subscription")
         return SimpleNamespace(
-            config_version=7, node_name=self.node_name, revision="rev-1",
+            node_name=None, revision=self._revision(),
             expires_at=None, heartbeat_interval=30,
-            entry=SimpleNamespace(host="entry.example.com", port=443, uuid="u-1",
-                                  path="/e/x", sni="entry.example.com", tls=True,
-                                  insecure=False, transport="ws"),
+            envelope=seal(self.sub_text, self.SUB_KEY, revision=self._revision()),
         )
+
+    def subscription_text(self):
+        """真解密一遍 —— 走的是和生产同一份 canoe_core.crypto。"""
+        resp = self.subscription()
+        return resp, unseal(resp.envelope, self.SUB_KEY)
 
     def latest_release(self):
         self.calls.append("latest_release")
@@ -211,10 +226,12 @@ def main() -> int:
     mv.sysproxy = fake_proxy            # type: ignore[assignment]
     mv.api = fake_api                   # type: ignore[assignment]
     av.api = fake_api                   # type: ignore[assignment]
-    # 真出站指向中转层入口，本机连不上；这里换直连，
+    # 订阅里那条链接指向一台真实机器，本机连不上；这里换直连，
     # 好让"启航后真的能上网"那条断言还能测（内核会把 DNS 的 detour 去掉，
-    # 见 kernel._dns_config）。出站怎么拼由 tests/test_server.py 覆盖。
-    mv.build_entry_outbound = lambda entry, tag="proxy": {"type": "direct", "tag": tag}
+    # 见 kernel._dns_config）。链接怎么解析由 tests/test_links.py 覆盖。
+    mv.links.pick = lambda text: SimpleNamespace(
+        name="测试节点-甲", outbound={"type": "direct", "tag": "proxy"}
+    ) if text.strip() else None
 
     # 用独立的配置文件，别污染真实用户数据
     tmp = Path(tempfile.mkdtemp(prefix="canoe-test-"))
@@ -429,11 +446,24 @@ def main() -> int:
     # --- 8. 服务端推送 ---
     print("\n[8] 服务端推送")
     view._set_state(STATE_SAILED)
-    view.on_push_event({"type": "config_changed", "config_version": 9})
-    pump(app, 0.3)
-    check("★ 收到配置变更会提示重新启航", "重新启航" in view.result_view.text(),
-          view.result_view.text())
-    check("★ 把本地配置版本清掉了（下次启航会重新对齐）", view._config_version == 0)
+    view._revision = "old"
+    view.on_push_event({"type": "config_changed", "revision": fake_api.revision})
+    wait_for(app, lambda: view._revision == fake_api.revision, timeout=10)
+    check("★ 收到推送会重新拉订阅并更新指纹",
+          view._revision == fake_api.revision, view._revision)
+
+    # 管理员清空订阅 -> 在航的客户端必须当场销毁并靠岸
+    view._set_state(STATE_SAILED)
+    fake_api.sub_text = ""
+    view.on_push_event({"type": "config_changed", "revision": fake_api._revision()})
+    wait_for(app, lambda: session.state == STATE_DOCKED and not view._sub_text, timeout=40)
+    check("★ 订阅被清空后就地销毁", view._sub_text == "", repr(view._sub_text))
+    check("★ 订阅被清空后在航的客户端自动靠岸", session.state == STATE_DOCKED)
+    check("★ 节点名也跟着清掉了", view._node_name == "" and session.node_name == "")
+
+    # 恢复：下面还要测踢下线
+    fake_api.sub_text = fake_api.DEFAULT_SUB
+    view._set_state(STATE_SAILED)
 
     view.on_push_event({"type": "kick", "reason": "管理员把你踢下线了", "permanent": False})
     pump(app, 0.4)
@@ -448,6 +478,41 @@ def main() -> int:
     check("触发 logged_out", bool(out))
     check("会话已清空", not session.logged_in and session.username == "")
     check("★ 离舟时也吊销了服务端令牌", "logout" in fake_api.calls, str(fake_api.calls))
+
+    # --- 10. 托盘：关窗只收起来，退出要右键 ---
+    print("\n[10] 托盘")
+    docked: list[int] = []
+    view._dock = lambda: docked.append(1)
+
+    # 有托盘：关窗只是收起来，不许动内核/代理
+    view.close_to_tray = True
+    view.show()
+    view.close()
+    check("★ 关窗只是收起来（窗口不可见）", not view.isVisible())
+    check("★ 收进托盘时没有靠岸（代理继续跑）", not docked, str(docked))
+    check("★ 收进托盘时日志定时器仍在跑", view._log_timer.isActive())
+
+    # 真退出：force_close 走完整清理
+    view.show()
+    view.force_close()
+    check("★ 退出时真的关掉（日志定时器停了）", not view._log_timer.isActive())
+
+    # 没有托盘的环境：关窗就是关窗，行为不能变
+    view.close_to_tray = False
+    view.show()
+    view.close()
+    check("没有托盘时关窗照旧（不会卡在托盘里）", not view.isVisible())
+
+    # 托盘模块本身：能构造、菜单有「退出」
+    from canoe_client.ui.tray import Tray
+    t = Tray(None)
+    acts = [a.text() for a in t.icon.contextMenu().actions() if a.text()]
+    check("★ 托盘右键菜单里有「退出」", "退出" in acts, str(acts))
+    check("托盘菜单里也有「显示主界面」", "显示主界面" in acts, str(acts))
+    seen = []
+    t.quit_requested.connect(lambda: seen.append("quit"))
+    t._quit_action.trigger()
+    check("★ 点「退出」发出 quit_requested", seen == ["quit"], str(seen))
 
     print(f"\n{'=' * 48}")
     print(f"通过 {passed} 项，失败 {failed} 项，跳过 {skipped} 项")

@@ -37,15 +37,15 @@ cp .env.example .env          # 至少改掉 TICKET_SECRET
 | 方法 | 路径 | 说明 | 登录 |
 |---|---|---|---|
 | POST | `/api/register` | 注册 | 否 |
-| POST | `/api/login` | 登录，返回 token | 否 |
-| GET | `/api/config` | ★ 拉配置（入口 + token + 节点名） | 是 |
-| POST | `/api/heartbeat` | 心跳 / 续期 | 是 |
+| POST | `/api/login` | 登录，返回 token + 会话级订阅密钥 `sub_key` | 否 |
+| GET | `/api/config` | ★ 启航：建会话（不下发节点） | 是 |
+| POST | `/api/heartbeat` | 心跳 / 续期（带回订阅指纹） | 是 |
 | POST | `/api/session/stop` | 靠岸（保留登录令牌） | 是 |
 | POST | `/api/logout` | 登出（吊销令牌） | 是 |
 | GET | `/api/me` | 当前用户 | 是 |
 | GET | `/api/health` | 健康检查 | 否 |
 | **GET** | **`/api/client/latest`** | **客户端更新**：最新版本 + 安装包地址 | **否** |
-| **GET** | **`/api/subscription`** | **订阅更新**：当前订阅 + 变更指纹 | **是** |
+| **GET** | **`/api/subscription`** | **订阅**：**加密的**订阅载荷 + 变更指纹 | **是** |
 | **GET** | **`/api/events`** | **推送**：SSE 长连接 | **是** |
 | — | `/api/admin/*` | 管理端（用户 / 节点 / 会话 / 统计 / 中转层 / 发布） | admin |
 | — | `/downloads/*` | 安装包静态下载 | 否 |
@@ -85,14 +85,34 @@ bun run test_panel.mjs
 ```
 更新按钮
   ├─ GET /api/client/latest   客户端更新：有没有新版本的 Canoe.exe
-  └─ GET /api/subscription    订阅更新：我这条订阅（节点 + 入口）变了没有
+  └─ GET /api/subscription    订阅：我这条订阅变了没有（内容是密文）
 ```
 
-`/api/subscription` **不建会话、不发凭证**，只读，返回一个 `revision` 指纹。
-客户端把上一轮的指纹存下来，一比就知道要不要提示用户重新启航。
+`/api/subscription` **不建会话、不发凭证**，只读，返回：
 
-两条都走和 `/api/config` 同一条白名单出口 —— 响应里只有 `EntryPayload`，
-**没有任何真实节点字段**。
+- `revision` —— 明文指纹，客户端拿它判断要不要重新拉；
+- `envelope` —— **密文**，只有登录时下发的那把 `sub_key` 解得开。
+
+### 订阅分发（阶段 6 起的模型）
+
+管理员在面板的**用户 → 订阅**栏里逐账号贴节点链接
+（`ss:// vmess:// vless:// trojan://`，一行一个，也可以整体 base64）；
+你的节点服务器和 Canoe 服务端**互不关联**，这边只管"发不发"。
+
+服务端在三种情况下回**空信封**（客户端收到就地销毁本地订阅）：
+
+| 情况 | 怎么做 |
+|---|---|
+| 账号被封 | 面板点「封禁」，或 `POST /api/admin/users/{id}/ban` |
+| 账号到期 | 面板把到期日改到过去 |
+| 主动停发 | 把订阅栏清空并保存（会定向推送给该账号，在航的当场靠岸） |
+
+加密用的是 `canoe_core/crypto.py`：HKDF-SHA256 派生 + AES-256-GCM，
+每次响应随机 `salt`/`nonce`，`alg`/`revision` 作为 AAD 参与认证。
+
+> ⚠️ 这一层防的是传输链路上的中间环节（反向代理、日志），
+> **不防拿到客户端的用户** —— 客户端必须能解密。真正决定"能不能用"的
+> 是服务端随时可以不发。
 
 ---
 

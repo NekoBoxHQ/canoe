@@ -32,10 +32,9 @@ from PySide6.QtWidgets import (
 
 from canoe_core import BRAND_CN, VERSION, Palette as P, Text
 
-from .. import sysproxy, update
+from .. import links, sysproxy, update
 from ..api import CanoeApiError, api
 from ..config import config
-from ..entry import EntryError, build_entry_outbound
 from ..kernel import kernel
 from ..logbus import TAG_ERROR, TAG_RESULT, bus
 from ..nettest import tcping, url_test
@@ -71,6 +70,20 @@ TAG_COLORS = {TAG_RESULT: P.GREEN, TAG_ERROR: P.AMBER}
 _DOMAIN_RE = re.compile(
     r"(https?://|\b)((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})"
 )
+
+
+class SubscriptionError(Exception):
+    """订阅不可用：服务端没给，或者里面没有能解析出来的节点。
+
+    code 属性是给 Worker 用的 —— 它按 (code, message) 把异常转成信号。
+    """
+
+    code = "no_subscription"
+
+    def __init__(self, message: str, code: str = "no_subscription") -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
 
 
 def _escape(text: str) -> str:
@@ -112,13 +125,23 @@ class MainView(FramelessWindow):
         self._opts = RunOptions.from_dict(config["options"])
         self._result_seq = 0
 
+        #: 关窗时收进托盘而不是退出。由 app.py 在确认托盘可用后打开；
+        #: 没有托盘的环境保持 False，关窗就是关窗。
+        self.close_to_tray = False
+        self._force_close = False
+
         # --- 与服务端会话相关的状态 ---
         #: 本次会话 id。启航时服务端发下来的，靠岸时要用它结束会话。
         self._session_id = ""
-        #: 服务端下发的配置版本 / 订阅指纹，用来判断"配置变了没有"
-        self._config_version = 0
+        #: 服务端下发的订阅指纹，用来判断"订阅变了没有"
         self._revision = ""
         self._heartbeat_seconds = 30
+
+        #: 订阅明文（节点链接）。**只在内存里** —— 不落盘、不导出。
+        #: 进程一退就没了，下次登舟重新拉。这也正是"服务端随时能收回"的前提。
+        self._sub_text = ""
+        #: 当前选中的节点显示名。启航前为空，启航后是解析出来的第一个节点。
+        self._node_name = ""
 
         self._build()
         self._load_options_into_ui()
@@ -463,12 +486,11 @@ class MainView(FramelessWindow):
         kind = payload.get("type")
 
         if kind == "config_changed":
-            # 广播里**不带节点名**（免得把别人的节点泄露给所有人），
-            # 所以只说"变了"，具体是什么等用户重新启航时自然会拿到
-            version = payload.get("config_version")
-            if version:
-                self._config_version = 0   # 强制下次启航重新对齐
-            bus.result("配置已更新，请重新启航")
+            # 订阅被改了（可能是别的账号，也可能就是自己）。
+            # 广播里不带任何订阅内容，所以这里立刻重新拉一次自己的：
+            # 拉回来是空的话，就地销毁并靠岸 —— 管理员一清空订阅，
+            # 在航的客户端当场停。
+            self._reload_subscription()
 
         elif kind == "release":
             version = payload.get("version") or ""
@@ -506,9 +528,8 @@ class MainView(FramelessWindow):
                 return
 
         def on_ok(cfg) -> None:
-            # 服务端可能和登录时给的节点不一样（比如刚被管理员调过），以启航拿到的为准
-            if getattr(cfg, "node_name", ""):
-                session.node_name = cfg.node_name
+            # 节点名是刚从订阅里解出来的那个（见 _do_start_kernel）
+            session.node_name = self._node_name
             self.refresh()
             self._set_state(STATE_SAILED)
             bus.system("已启航")
@@ -527,29 +548,95 @@ class MainView(FramelessWindow):
         def on_err(code: str, message: str) -> None:
             self._set_state(STATE_STORM, message)
             bus.error(message)
-            if code in ("unauthorized", "banned", "expired", "bad_credentials"):
+            if code == "no_subscription":
+                # 服务端明确不给 —— 当场把本地订阅销毁，一点不留
+                self._wipe_subscription()
+            elif code in ("unauthorized", "banned", "expired", "bad_credentials"):
                 self.logged_out.emit()   # 令牌废了，回登录页
 
         Worker(self._do_start_kernel).run_with(on_ok, on_err)
 
-    def _do_start_kernel(self):
-        """启航：先问服务端要入口，再用它拉起内核。
+    def _wipe_subscription(self) -> None:
+        """销毁本地订阅。
 
-        ★ 客户端自始至终只拿到「中转层入口」——
-          真实节点的地址/端口/协议/密钥在服务端那一侧，客户端拿不到。
+        服务端说"没有"的时候必须真的把它抹掉，而不是留着下次再试 ——
+        不然"服务端关掉订阅"就只是下次启动失败，本地那份节点信息还在。
+        """
+        self._sub_text = ""
+        self._revision = ""
+        self._node_name = ""
+        session.node_name = ""
+
+    def _reload_subscription(self) -> None:
+        """重新拉订阅。收到推送或点「更新」时调用。
+
+        拉回来是空的就地销毁；在航的话自动靠岸 —— 这就是服务端
+        "关掉订阅"能立刻生效的那条路径。
+        """
+        Worker(self._refresh_after_login).run_with(self._on_reloaded, self._on_reload_failed)
+
+    def _on_reloaded(self, payload) -> None:
+        revision, text, link = payload
+        self._revision = revision
+        self._sub_text = text
+        if link is None:
+            self._wipe_subscription()
+            if session.sailing:
+                bus.error("订阅已停止分发，自动靠岸")
+                self._dock()
+            else:
+                bus.result("订阅：已停止分发")
+            return
+        self._node_name = link.name
+        session.node_name = link.name
+        self.refresh()
+        bus.result(f"订阅已更新：{link.name}")
+
+    def _on_reload_failed(self, code: str, message: str) -> None:
+        if code in ("unauthorized", "banned", "expired"):
+            bus.error(message)
+            if session.sailing:
+                self._dock()
+            self.logged_out.emit()
+
+    def _fetch_subscription(self) -> str:
+        """拉订阅并解密。结果只留在内存，返回明文（可能为空串）。
+
+        每次启航、每次点「更新」都会走这里 —— 这就是"每次交互都要
+        重新证明身份"的那个闭环。服务端想收回，下一次交互就拿不到了。
+        """
+        resp, text = api.subscription_text()
+        self._revision = resp.revision
+        self._sub_text = text
+        return text
+
+    def _do_start_kernel(self):
+        """启航：拉订阅 -> 挑一个节点 -> 拉起内核。
+
+        ★ 服务端不下发节点，也无从知道客户端连的是哪台 ——
+          节点全在客户端解密出来的订阅里。
         """
         mode = "tun" if self._opts.use_tun else "system_proxy"
-        cfg = api.fetch_config(mode)          # 服务端做完全套校验才发
+        # 先建会话：被封/到期在这里就会被挡下，不用等到启航一半
+        cfg = api.fetch_config(mode)
 
-        try:
-            outbound = build_entry_outbound(cfg.entry)
-        except EntryError as exc:
-            raise exc
+        # 每次都重新拉，不吃缓存 —— 管理员刚清空订阅的话，这次启航就得失败
+        text = self._fetch_subscription()
+        if not text.strip():
+            raise SubscriptionError(
+                "服务端没有下发订阅（账号可能已到期、被停用，或管理员清空了订阅栏）",
+                code="no_subscription",
+            )
+
+        link = links.pick(text)
+        if link is None:
+            skipped = len(links.parse(text).skipped)
+            raise SubscriptionError(f"订阅里没有能用的节点（{skipped} 行认不出来）")
 
         self._session_id = cfg.session_id
-        self._config_version = cfg.config_version
+        self._node_name = link.name
         self._heartbeat_seconds = max(10, int(cfg.heartbeat_interval or 30))
-        kernel.start(outbound, self._opts)
+        kernel.start(link.outbound, self._opts)
         return cfg
 
     # ------------------------------------------------------------------
@@ -569,13 +656,11 @@ class MainView(FramelessWindow):
                 bus.error("已被管理员下线，自动靠岸")
                 self._dock()
                 return
-            name = data.get("node_name")
-            if name and name != session.node_name:
-                session.node_name = name
-                self.refresh()
-            version = data.get("config_version")
-            if version and self._config_version and version != self._config_version:
-                bus.result("配置已更新，请重新启航")
+            # 心跳响应里带着服务端当前的订阅指纹。变了就说明订阅被改过，
+            # 立刻重新拉一次 —— 被清空的话这里就会当场销毁并靠岸。
+            revision = data.get("revision")
+            if revision and revision != self._revision:
+                self._reload_subscription()
 
         def on_err(code: str, message: str) -> None:
             # 令牌废了 / 被封 / 到期 —— 服务端已经把会话吊销了，本地跟着靠岸
@@ -597,7 +682,8 @@ class MainView(FramelessWindow):
         )
         if answer == QMessageBox.Yes:
             if relaunch_as_admin():
-                Qt.callLater(self.close)
+                # 提权重启是要**真的**关掉本进程，不能收进托盘
+                Qt.callLater(self.force_close)
             else:
                 self._set_state(STATE_STORM, "提权失败，请手动以管理员身份运行")
         else:
@@ -654,6 +740,7 @@ class MainView(FramelessWindow):
             parts: list[str] = []
             newer = None
             revision = ""
+            wiped = False
             try:
                 rel = api.latest_release()
                 if update.compare_versions(rel.version, VERSION) > 0:
@@ -666,22 +753,31 @@ class MainView(FramelessWindow):
 
             if api.token:
                 try:
-                    sub = api.subscription()
+                    # 和启航走的是同一条路：重新证明身份 -> 解密订阅
+                    sub, text = api.subscription_text()
                     revision = sub.revision
-                    if revision and revision == self._revision:
-                        parts.append("订阅：最新")
-                    elif sub.node_name:
-                        parts.append(f"订阅：{sub.node_name}")
+                    link = links.pick(text)
+                    if link is None:
+                        # 空的 / 认不出的 —— 服务端没给，本地那份必须销毁
+                        wiped = True
+                        parts.append("订阅：已停止分发")
+                    elif revision and revision == self._revision:
+                        parts.append(f"订阅：{link.name}（最新）")
                     else:
-                        parts.append("订阅：有更新")
+                        parts.append(f"订阅：{link.name}")
                 except CanoeApiError as exc:
                     parts.append(f"订阅：{exc.message}")
-            return " · ".join(parts), newer, revision
+            return " · ".join(parts), newer, revision, wiped
 
         def on_ok(payload) -> None:
             self.update_btn.setEnabled(True)
-            text, newer, revision = payload
-            if revision:
+            text, newer, revision, wiped = payload
+            if wiped:
+                self._wipe_subscription()
+                if session.sailing:
+                    bus.error("订阅已停止分发，自动靠岸")
+                    self._dock()
+            elif revision:
                 self._revision = revision
             bus.result(text)
             if newer is not None:
@@ -702,16 +798,17 @@ class MainView(FramelessWindow):
     def _do_tcping(self) -> None:
         """测本机到**中转层入口**的 TCP 握手延迟。
 
-        测的是入口，不是真实节点 —— 真实节点在服务端那一侧，
-        客户端拿不到（也不该拿到），所以只能测"我到入口这条路通不通"。
+        测的是它到节点服务器那台机器的握手延迟，也就是"这条路通不通"。
         """
         self.tcping_btn.setEnabled(False)
 
         def work():
-            sub = api.subscription()
-            if sub.entry is None:
-                raise EntryError("当前没有可用节点，请联系管理员")
-            return tcping(sub.entry.host, sub.entry.port, 4)
+            text = self._sub_text or self._fetch_subscription()
+            link = links.pick(text)
+            if link is None:
+                raise SubscriptionError("当前没有可用节点")
+            ob = link.outbound
+            return tcping(str(ob.get("server")), int(ob.get("server_port") or 0), 4)
 
         def on_ok(result) -> None:
             self.tcping_btn.setEnabled(True)
@@ -752,17 +849,38 @@ class MainView(FramelessWindow):
         sid = self._session_id
         if session.sailing or self._session_id:
             self._dock()
+        # 离舟就把内存里那份订阅抹掉。密钥也随令牌一起没了 ——
+        # 想再用就得重新登舟，重新过一遍服务端。
+        self._wipe_subscription()
         session.logout()
         self.logged_out.emit()
         # 吊销服务端令牌（幂等：没令牌 / 已失效都返回 ok）
         Worker(api.logout, sid or None).run_with()
 
-    def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
-        """关窗必须停内核并还原系统代理，否则用户会断网。
+    def force_close(self) -> None:
+        """真的关掉（退出流程用）。
 
-        注意也要看 `kernel.running`：刚点完启航、内核正在起的那一两秒里
+        默认关窗只是收进托盘，正在跑的事务一样不能被打断；
+        退出、提权重启这类场合才需要它直接关。
+        """
+        self._force_close = True
+        self.close()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        """关窗。
+
+        有托盘时**只是收起来** —— 代理继续跑，要退出得走托盘右键菜单。
+        没托盘（或正在真退出）才走下面这套清理。
+
+        清理时必须看 `kernel.running`：刚点完启航、内核正在起的那一两秒里
         `session.sailing` 还是 False，只看它会漏掉这时候关窗的情况。
         """
+        if self.close_to_tray and not self._force_close:
+            event.ignore()
+            self.hide()
+            bus.system("已收进托盘，右键托盘图标可以退出")
+            return
+
         self._log_timer.stop()
         self._hb_timer.stop()
         if session.sailing or kernel.running or sysproxy.has_backup():
@@ -772,11 +890,38 @@ class MainView(FramelessWindow):
     def start_with_node(self, username: str, node_name: str = "") -> None:
         """登录成功后进入主界面。
 
-        节点名是**登录时服务端一起给的** —— 主界面的「节点名称」要在点启航
-        之前就能显示，不能等启航才知道连哪个。
+        节点名现在得从订阅里解出来，登录响应里没有 —— 所以先空着，
+        后台拉一次订阅补上。拉不到也不拦着进主界面：用户至少能看到
+        "为什么没有节点"，而不是卡在登录页。
         """
         session.login(username, node_name)
         self._session_id = ""
-        self._config_version = 0
         self._revision = ""
+        self._sub_text = ""
+        self._node_name = ""
         self.refresh()
+        Worker(self._refresh_after_login).run_with(
+            self._on_subscription_ready, self._on_subscription_failed
+        )
+
+    def _refresh_after_login(self):
+        """登录后立刻拉一次订阅，把节点名显示出来。"""
+        resp, text = api.subscription_text()
+        return resp.revision, text, links.pick(text)
+
+    def _on_subscription_ready(self, payload) -> None:
+        revision, text, link = payload
+        self._revision = revision
+        self._sub_text = text
+        if link is None:
+            self._wipe_subscription()
+            bus.error("服务端没有下发订阅，请联系管理员")
+            return
+        self._node_name = link.name
+        session.node_name = link.name
+        self.refresh()
+
+    def _on_subscription_failed(self, code: str, message: str) -> None:
+        bus.error(f"订阅：{message}")
+        if code in ("unauthorized", "banned", "expired", "bad_credentials"):
+            self.logged_out.emit()

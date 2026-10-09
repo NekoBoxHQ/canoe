@@ -154,7 +154,12 @@ function openModal({ title, fields = [], values = {}, submitText = '确定', wid
       input = h('select', { id });
       for (const o of f.options) input.append(h('option', { value: o.value, text: o.label }));
     } else if (f.type === 'textarea') {
-      input = h('textarea', { id, placeholder: f.placeholder || '' });
+      input = h('textarea', {
+        id,
+        placeholder: f.placeholder || '',
+        rows: String(f.rows || 8),
+        spellcheck: 'false',
+      });
     } else if (f.type === 'file') {
       input = h('input', { id, type: 'file', accept: f.accept || '' });
     } else {
@@ -276,6 +281,10 @@ const userFields = [
   { key: 'expire_days', label: '有效天数', type: 'number', default: 30, help: '留空或 0 表示永不过期' },
   { key: 'max_devices', label: '设备数上限', type: 'number', default: 3 },
   { key: 'remark', label: '备注' },
+  {
+    key: 'subscription', label: '节点订阅（可稍后再填）', type: 'textarea', rows: 8,
+    placeholder: 'ss://... 一行一个；留空表示先不分发',
+  },
 ];
 
 async function pageUsers(root) {
@@ -293,6 +302,7 @@ async function pageUsers(root) {
             expire_days: v.expire_days === '' || v.expire_days === null ? null : Number(v.expire_days),
             max_devices: v.max_devices ? Number(v.max_devices) : null,
             remark: v.remark || '',
+            subscription: v.subscription || '',
           }});
           toast('用户已创建', 'ok'); closeModal(); render();
         },
@@ -307,11 +317,18 @@ async function pageUsers(root) {
     { title: '状态', render: (r) => r.status === 'active' ? tag('正常', 'ok') : tag('已封禁', 'bad') },
     { title: '在线', render: (r) => r.online ? tag('在线', 'ok') : tag('离线') },
     { title: '到期', render: (r) => fmtExpire(r.expire_at) },
+    {
+      title: '分发',
+      render: (r) => (r.subscription_lines
+        ? tag(`${r.subscription_lines} 个节点`, 'ok')
+        : tag('未配置', 'warn')),
+    },
     { title: '设备上限', key: 'max_devices' },
     { title: '备注', key: 'remark', wrap: true },
     { title: '最近登录', render: (r) => fmtTime(r.last_login_at) },
     {
       title: '操作', render: (r) => actionCell(
+        h('button', { class: 'btn btn-primary btn-sm', text: '订阅', onclick: () => editSubscription(r) }),
         h('button', { class: 'btn btn-ghost btn-sm', text: '编辑', onclick: () => editUser(r) }),
         h('button', { class: 'btn btn-ghost btn-sm', text: '绑定节点', onclick: () => bindNodes(r) }),
         r.status === 'active'
@@ -342,6 +359,31 @@ function editUser(r) {
       body.expire_at = v.expire_date ? Math.floor(new Date(v.expire_date + 'T23:59:59').getTime() / 1000) : 0;
       await api('/api/admin/users/' + r.id, { method: 'PATCH', body });
       toast('已保存', 'ok'); closeModal(); render();
+    },
+  });
+}
+
+/* 订阅栏：一行一个节点链接（ss:// vmess:// vless:// trojan://），也可以整体 base64。
+ * 清空 = 停止对这个账号分发；客户端下次交互就会发现并销毁本地订阅。 */
+function editSubscription(r) {
+  openModal({
+    title: '订阅 · ' + r.username,
+    wide: true,
+    fields: [
+      {
+        key: 'subscription', label: '节点订阅', type: 'textarea', rows: 12,
+        placeholder: 'ss://2022-blake3-aes-128-gcm:服务端密钥:用户密钥@主机:端口#名称\n一行一个，也可以直接粘贴整体 base64 的订阅',
+        help: '客户端登舟后拿到的是加密后的内容 —— 传输链路上看不到明文。清空这一栏即停止分发。',
+      },
+    ],
+    values: { subscription: r.subscription || '' },
+    submitText: '保存订阅',
+    onSubmit: async (v) => {
+      const res = await api('/api/admin/users/' + r.id, {
+        method: 'PATCH', body: { subscription: v.subscription || '' },
+      });
+      toast(res.subscription_changed ? '订阅已更新，在线客户端会立刻重新拉取' : '订阅未变化', 'ok');
+      closeModal(); render();
     },
   });
 }

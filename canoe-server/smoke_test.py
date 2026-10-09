@@ -28,7 +28,14 @@ import httpx
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from canoe_core import ENTRY_FIELDS, Api, ConfigResponse, EntryPayload  # noqa: E402
+from canoe_core import ENTRY_FIELDS, Api, ConfigResponse, EntryPayload, Envelope  # noqa: E402
+
+#: 冒烟用的样例订阅（一行 SS2022 链接）
+SAMPLE_SUB = (
+    "ss://2022-blake3-aes-128-gcm:AAAA:BBBB@one.leycc.com:33222#%E6%97%A5%E6%9C%AC\n"
+    "vless://11111111-2222-3333-4444-555555555555@node.example.com:443"
+    "?security=tls&type=ws&path=%2Fx#%E5%A4%87%E7%94%A8"
+)
 
 _ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
 _FLAGS = {a for a in sys.argv[1:] if a.startswith("--")}
@@ -206,12 +213,10 @@ def main() -> int:
     check("★ 响应不含真实 UUID", REAL_UUID not in raw)
     check("★ 响应不含真实 SNI", REAL_SNI not in raw)
     check("★ 响应不含 'real_' 字样", "real_" not in raw)
-    check("返回节点显示名", bool(data.get("node_name")))
-    check("返回入口地址（中转层）", data["entry"]["host"] == "canoe.example.com")
-    check("返回短期凭证 token", bool(data.get("token")))
-    check("entry 恰好是白名单 8 个字段", set(data["entry"]) == {
-        "transport", "host", "port", "uuid", "path", "sni", "tls", "insecure"
-    }, str(sorted(data["entry"])))
+    check("返回会话 id", bool(data.get("session_id")))
+    check("★ 不再下发任何入口/节点（订阅模式下节点从订阅来）",
+          "entry" not in data and "token" not in data, str(sorted(data)))
+    check("带上了订阅指纹（客户端靠它发现订阅被改）", bool(data.get("revision")))
 
     # 7. canoe-core 的类型级校验真的会拦
     print("\n[7] canoe-core 类型级防护")
@@ -219,9 +224,17 @@ def main() -> int:
     resp.assert_no_real_fields()
     check("ConfigResponse 可校验且自检通过", True)
 
+    # EntryPayload 现在只服务于中转层（已不在客户端链路上），
+    # 但白名单这道防线本身还得是好的 —— 用字面量造一个来验。
+    sample_entry = {
+        "transport": "ws", "host": "entry.example.com", "port": 443,
+        "uuid": "11111111-2222-3333-4444-555555555555",
+        "path": "/e/x", "sni": "entry.example.com", "tls": True, "insecure": False,
+    }
+
     # 7.1 extra=forbid：多传一个 real_host 直接构造失败
     try:
-        EntryPayload(**{**data["entry"], "real_host": REAL_IP})
+        EntryPayload(**{**sample_entry, "real_host": REAL_IP})
         check("EntryPayload 应当拒绝 real_host", False)
     except Exception:
         check("★ EntryPayload 拒绝 real_host（extra=forbid）", True)
@@ -232,7 +245,7 @@ def main() -> int:
         sneaky_extra: str = ""
 
     try:
-        SneakyEntry(**data["entry"]).assert_whitelisted()
+        SneakyEntry(**sample_entry).assert_whitelisted()
         check("assert_whitelisted 应当抓出越界字段", False)
     except AssertionError:
         check("★ assert_whitelisted 抓出子类新增字段", True)
@@ -243,21 +256,15 @@ def main() -> int:
           str(sorted(EntryPayload.model_fields.keys())))
 
     session_id = data["session_id"]
-    entry_ticket = data["token"]
 
-    # 8. ticket 校验
-    print("\n[8] 入口凭证校验")
-    sys.path.insert(0, ".")
-    from canoe_server.security import verify_ticket  # noqa: E402
-
-    payload = verify_ticket(entry_ticket, device_id)
-    check("ticket 验签通过", payload.get("u") is not None)
-    check("ticket 记录了目标节点", payload.get("n") == node_id)
-    try:
-        verify_ticket(entry_ticket, "some-other-device-id")
-        check("ticket 换设备应当失败", False)
-    except ValueError:
-        check("★ ticket 绑定设备", True)
+    # 8. 订阅的传输是密文
+    print("\n[8] 订阅加密")
+    sub_raw = client.get(Api.SUBSCRIPTION, headers=H)
+    check(f"GET {Api.SUBSCRIPTION} 200", sub_raw.status_code == 200, sub_raw.text[:200])
+    sub_body = sub_raw.text
+    check("★ 订阅响应里没有明文链接", "ss://" not in sub_body and "vless://" not in sub_body)
+    check("★ 订阅响应里没有节点域名", "leycc" not in sub_body and "example.com" not in sub_body)
+    check("响应里是信封", "envelope" in sub_body and "data" in sub_body)
 
     # 9. 心跳
     print("\n[9] 心跳")
@@ -390,43 +397,55 @@ def main() -> int:
         },
     )
     sub_h = {"Authorization": f"Bearer {r.json()['token']}"} if r.status_code == 200 else {}
+    # ★ 这里不能再登一次：同一 device_id 重复登录会吊销上一个令牌，
+    #   sub_h 会当场失效（踩过一次）。密钥就从这次登录的响应里取。
+    sub_key_b64 = r.json().get("sub_key", "") if r.status_code == 200 else ""
     sub_uid = client.get(Api.ME, headers=sub_h).json().get("id") if sub_h else None
+    check("★ 登录下发会话级订阅密钥", bool(sub_key_b64), str(r.text)[:160])
 
+    # 还没配订阅时：给空信封，不报错
     r = client.get(Api.SUBSCRIPTION, headers=sub_h)
     check(f"GET {Api.SUBSCRIPTION} 200", r.status_code == 200, r.text[:250])
     sub = r.json() if r.status_code == 200 else {}
     first_revision = sub.get("revision", "")
     check("返回订阅指纹 revision", bool(first_revision), str(sub)[:200])
-    check("返回 config_version", "config_version" in sub)
-    check("★ 订阅里没有 real_* 字段", not scan_real_keys(sub), str(scan_real_keys(sub)))
-    check("★ 订阅里没有 real_ 字样", "real_" not in json.dumps(sub))
-    check("订阅的 entry 也恰好是白名单 8 个字段",
-          sub.get("entry") is None or set(sub["entry"]) == set(ENTRY_FIELDS),
-          str(sorted(sub.get("entry") or {})))
+    check("★ 没配订阅时回空信封（而不是报错）",
+          not (sub.get("envelope") or {}).get("data"), str(sub)[:200])
 
-    # 改入口域名 -> 指纹必须变
-    r = client.get(f"{Api.ADMIN_NODES}", headers=admin_h)
-    nodes_now = r.json()["items"]
-    target = next((n for n in nodes_now if n["id"] == node_id), nodes_now[0])
-    patched = {
-        "name": target["name"], "remark": target["remark"], "enabled": True,
-        "sort_order": target["sort_order"],
-        "entry_host": "changed.example.com", "entry_port": target["entry"]["port"],
-        "entry_uuid": target["entry"]["uuid"], "entry_path": target["entry"]["path"],
-        "entry_sni": "changed.example.com",
-        "entry_transport": target["entry"]["transport"],
-        "entry_tls": target["entry"]["tls"],
-        "entry_insecure": target["entry"]["insecure"],
-        **{f"real_{k}": v for k, v in target["real"].items()},
-    }
-    r = client.patch(f"{Api.ADMIN_NODES}/{target['id']}", json=patched, headers=admin_h)
-    check("改节点入口 200", r.status_code == 200, r.text[:200])
+    # 管理员贴上订阅 -> 指纹必须变、内容必须是密文
+    r = client.patch(f"{Api.ADMIN_USERS}/{sub_uid}", headers=admin_h,
+                     json={"subscription": SAMPLE_SUB})
+    check("给账号配置订阅 200", r.status_code == 200, r.text[:200])
+    check("★ 服务端报告订阅变了", r.json().get("subscription_changed") is True)
 
     r = client.get(Api.SUBSCRIPTION, headers=sub_h)
-    sub2 = r.json() if r.status_code == 200 else {}
-    check("★ 入口变了 -> 订阅指纹也变",
-          sub2.get("revision") != first_revision,
-          f"{first_revision} -> {sub2.get('revision')}")
+    check(f"配了订阅后 GET {Api.SUBSCRIPTION} 200", r.status_code == 200, r.text[:200])
+    sub = r.json() if r.status_code == 200 else {}
+    second_revision = sub.get("revision", "")
+    check("★ 配了订阅后指纹变了", second_revision != first_revision,
+          f"{first_revision} -> {second_revision}")
+    check("★ 订阅里没有明文链接", "ss://" not in r.text and "vless://" not in r.text)
+    check("★ 订阅里没有节点域名", "leycc" not in r.text and "example.com" not in r.text)
+    check("★ 订阅里没有 real_* 字段", not scan_real_keys(sub), str(scan_real_keys(sub)))
+
+    # 用登录拿到的那把密钥真解一次
+    from canoe_core import SubCryptoError, unseal  # noqa: E402
+
+    plain = unseal(Envelope.model_validate(sub["envelope"]), sub_key_b64)
+    check("★ 用会话密钥能解出原文", plain == SAMPLE_SUB, repr(plain)[:120])
+    try:
+        unseal(Envelope.model_validate(sub["envelope"]), "A" * 44)
+        check("换密钥应当解不开", False)
+    except SubCryptoError:
+        check("★ 换密钥解不开", True)
+
+    # 管理员清空订阅 -> 空信封，客户端据此销毁
+    client.patch(f"{Api.ADMIN_USERS}/{sub_uid}", headers=admin_h, json={"subscription": ""})
+    r = client.get(Api.SUBSCRIPTION, headers=sub_h)
+    sub3 = r.json() if r.status_code == 200 else {}
+    check("★ 清空订阅后回空信封（客户端据此销毁本地订阅）",
+          not (sub3.get("envelope") or {}).get("data"), str(sub3)[:200])
+    check("★ 清空后指纹也跟着变", sub3.get("revision") != second_revision)
 
     # ======================================================================
     # 15. 推送（SSE /api/events）
@@ -458,20 +477,21 @@ def main() -> int:
     check("★ 连上就收到 hello", any(e.get("type") == "hello" for e in events),
           str([e.get("type") for e in events]))
     hello = next((e for e in events if e.get("type") == "hello"), {})
-    check("hello 带 config_version", "config_version" in hello, str(hello))
+    check("hello 带订阅指纹", "revision" in hello, str(hello))
+    check("★ hello 里没有订阅内容（推送是广播的，不能带内容）",
+          "ss://" not in json.dumps(hello) and "envelope" not in hello, str(hello))
     check("hello 里也没有真实节点字段", not scan_real_keys(hello), str(hello))
 
-    # 再改一次节点 -> config_changed
-    patched["entry_host"] = "changed2.example.com"
-    patched["entry_sni"] = "changed2.example.com"
-    client.patch(f"{Api.ADMIN_NODES}/{target['id']}", json=patched, headers=admin_h)
+    # 管理员改订阅 -> config_changed，且只推给这个人
+    client.patch(f"{Api.ADMIN_USERS}/{sub_uid}", headers=admin_h,
+                 json={"subscription": SAMPLE_SUB + "\n# 又加了一条"})
     time.sleep(2.5)
-    check("★ 节点变更推来 config_changed",
+    check("★ 订阅变更推来 config_changed",
           any(e.get("type") == "config_changed" for e in events),
           str([e.get("type") for e in events]))
     changed = next((e for e in events if e.get("type") == "config_changed"), {})
-    check("★ 广播里不带节点名（免得把别人的节点泄露给所有人）",
-          "node_name" not in changed or not changed["node_name"], str(changed))
+    check("★ 广播里不带订阅内容",
+          "ss://" not in json.dumps(changed) and "envelope" not in changed, str(changed))
 
     # 封禁 -> kick
     if sub_uid:
