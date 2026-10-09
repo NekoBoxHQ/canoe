@@ -7,6 +7,7 @@
 # —— 一个跟换行毫无字面关系的错误，够查半天。
 
 # 要在 Linux 上直接执行的，必须 LF
+/.gitattributes text eol=lf
 *.sh   text eol=lf
 *.py   text eol=lf
 *.mjs  text eol=lf
