@@ -196,7 +196,12 @@ html.booting #login-screen { display: none; }
 .card > h3 { margin: 0 0 12px; font-size: 14px; color: var(--dim); font-weight: 600; }
 .card-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 
-.stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+/* 统计卡。底下留一段距离 —— 它现在贴在用户页顶上，紧挨着「新建用户」
+   那一行会糊在一起，看着很挤（用户反馈的）。 */
+.stat-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px; margin-bottom: 20px;
+}
 .stat {
   background: var(--card); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 14px 16px;

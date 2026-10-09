@@ -187,6 +187,14 @@ check('用户页列出 admin / demo', usersTxt.includes('admin') && usersTxt.inc
   const btnIdx = els.findIndex((e) => e.querySelector && e.querySelector('button'));
   check('★ 统计卡在用户页顶上（「新建用户」按钮之前）',
         statIdx >= 0 && btnIdx > statIdx, `stat=${statIdx} btn=${btnIdx}`);
+  // 两块之间要留出空隙，贴着会糊在一起（用户反馈"太丑"）。
+  // linkedom 不算布局，那就查样式表里 .stat-grid 有没有 margin-bottom。
+  {
+    const css = readFileSync(`${PANEL}/style.css`, 'utf8');
+    const m = css.match(/\.stat-grid\s*\{([^}]*)\}/);
+    check('★ 统计卡底下留了空隙（不然紧贴「新建用户」很难看）',
+          !!m && /margin-bottom\s*:\s*\d+px/.test(m[1]), m ? m[1].replace(/\s+/g, ' ') : '没找到 .stat-grid');
+  }
 }
 check('封禁状态有标签', usersTxt.includes('已封禁'));
 
