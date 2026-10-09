@@ -487,6 +487,55 @@ def main() -> int:
         except update.UpdateError as exc:
             check(f"★ {name} 明确拒绝并说清原因", exc.code == "not_frozen", exc.code)
 
+    # --- 8. 清掉强杀留下的 _MEI 残留 ---
+    #
+    # 单文件 exe 的临时目录名是**确定性的**：`_MEI` + hex(pid*16+2)，里面编码着
+    # 引导器的 pid（实测 5/5 对得上，不是随机数）。被强杀留下的残留目录会在
+    # pid 被重用的那天**正好撞名** —— 这是"更新后第一次启动偶发起不来、手动
+    # 再开一次又好了"最像的成因。所以启动时按 pid 清残留，但只清确定死掉的那批。
+    print("\n[8] 清理 _MEI 残留")
+    m = update._MEI_RE.fullmatch("_MEI00003ae42")     # 用户截图里那个名字
+    check("★ 目录名里确实能解出 pid（拿报错截图里的名字验）",
+          m is not None and (int(m.group(1), 16) >> 4) == 15076,
+          "解码规则对不上")
+
+    import shutil as _shutil  # noqa: PLC0415
+
+    fake_tmp = tmp / "fake-temp"
+    fake_tmp.mkdir(exist_ok=True)
+    aged = time.time() - update._STALE_AFTER - 600        # 够老
+
+    def mk_mei(pid: int, *, ours: bool = True, age: float = aged) -> Path:
+        d = fake_tmp / ("_MEI%08x" % ((pid << 4) | 2))
+        (d / "assets").mkdir(parents=True, exist_ok=True)
+        if ours:
+            (d / "assets" / "canoe.ico").write_bytes(b"ico")
+        (d / "python313.dll").write_bytes(b"x")
+        os.utime(d, (age, age))
+        return d
+
+    # ⚠ 不能拿"刚退出的进程"当死 pid —— 只要还有谁攥着它的句柄，
+    #   OpenProcess 照样回答"活着"（实测过）。用一个确定不存在的。
+    dead_pid = 999_999
+    check("前提：这个 pid 确实不存在（不然下面几条测的不是同一件事）",
+          not update._pid_alive(dead_pid))
+
+    ours_dead = mk_mei(dead_pid)                       # 我们的 + pid 没了 + 够老 -> 该删
+    # ⚠ 这几个必须用**不同的 pid** —— 目录名是 pid 决定的，重了就是同一个目录
+    others_dead = mk_mei(dead_pid + 12, ours=False)    # 别的 PyInstaller 程序 -> 该留
+    ours_live = mk_mei(os.getpid())                    # 我们的 + pid 活着 -> 该留
+    ours_fresh = mk_mei(dead_pid + 4, age=time.time())  # 刚建出来的 -> 该留
+    current = mk_mei(dead_pid + 8)                     # 当前进程自己用的 -> 该留
+
+    gone = update.clean_stale_temp_dirs(root=fake_tmp, mine=current)
+    check("★ 强杀留下的、pid 已经没了的 -> 清掉", not ours_dead.exists(), str(gone))
+    check("★ 别的程序的 _MEI 一律不碰（误删等于砸人家饭碗）", others_dead.is_dir())
+    check("★ pid 还活着的不碰（可能是正在启动的另一个实例）", ours_live.is_dir())
+    check("★ 刚建出来的不碰（提权那个实例可能正在启动）", ours_fresh.is_dir())
+    check("★ 当前进程自己用的那个不碰", current.is_dir())
+    check("清掉的个数对得上", gone == 1, str(gone))
+    _shutil.rmtree(fake_tmp, ignore_errors=True)
+
     print(f"\n{'=' * 48}")
     print(f"通过 {passed} 项，失败 {failed} 项")
     print(f"{'=' * 48}\n")

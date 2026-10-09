@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -329,6 +330,105 @@ def mark_started() -> None:
         start_marker().write_text(str(int(time.time())), encoding="ascii")
     except OSError:
         pass
+
+
+#: 单文件 exe 解压出来的临时目录名：`_MEI` + hex(pid*16+2)，补到 8 位。
+#: **是确定性的，不是随机数** —— 实测 5/5：名字里那个值 >> 4 就是引导器的 pid。
+_MEI_RE = re.compile(r"_MEI([0-9a-fA-F]+)")
+
+#: 目录要多老才敢动（秒）。
+#:
+#: pid 那一道不够稳：**刚退出的进程，只要还有谁攥着它的句柄，OpenProcess
+#: 照样成功**（实测：`cmd /c exit` 之后问那个 pid，回答是"还活着"，而
+#: tasklist 里已经没有了）。所以再加一道时间护栏 —— 几分钟前刚建出来的目录
+#: 一律不碰，那多半是另一个正在启动的实例（比如提权后那个）。误删它正好就是
+#: 我们要修的那个故障，宁可少清一个。
+_STALE_AFTER = 3600
+
+
+def _pid_alive(pid: int) -> bool:
+    """pid 还在不在。
+
+    ⚠ Windows 上**不能**用 `os.kill(pid, 0)` —— CPython 在 Windows 上的
+      os.kill 遇到非控制台信号会直接 TerminateProcess，那等于把人家杀掉。
+      这里用 OpenProcess 问一下，问不到就当它没了。
+    """
+    if os.name != "nt":
+        # 非 Windows 没有这种打包形态，保守当它活着（不删）
+        return True
+    import ctypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    handle = ctypes.windll.kernel32.OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+    )
+    if not handle:
+        return False
+    ctypes.windll.kernel32.CloseHandle(handle)
+    return True
+
+
+def clean_stale_temp_dirs(root: Path | None = None, mine: Path | None = None) -> int:
+    """清掉自己被强杀后留在 %TEMP% 的 _MEI 目录，返回清掉几个。
+
+    单文件 exe 每次启动解压约 80MB 到 `%TEMP%\\_MEIxxxx`，正常退出时引导器
+    自己会删。但**被强杀**（任务管理器结束进程、崩溃、被安全软件掐掉）就删不掉，
+    目录原地留下 —— 实测这台机器上攒了 13 个、约 1.9GB。
+
+    光占地方还不是最要命的：**这个名字是确定性的**，里面编码着引导器的 pid
+    （见 _MEI_RE）。Windows 会重用 pid，一旦重用到同一个 pid，新进程算出来的
+    名字和那个残留目录**一模一样**。这就是"更新后第一次启动偶发起不来、手动
+    再开一次又好了"最像的成因 —— 也是为什么我按这种规律反复启动复现不出来：
+    每次拿到的都是新 pid，而残留早被我清过一次。
+
+    所以按 pid 清，而且只清**确定是死的**那一批：
+
+      · 目录是我们的          —— 里面有 assets/canoe.ico。别的 PyInstaller
+                                 程序一律不碰，误删等于砸人家饭碗。
+      · 名字里那个 pid 不在了 —— 还活着的一律不碰，那可能是另一个正在启动
+                                 的实例，删了正好复现我们要修的那个故障。
+      · 够老（超过 _STALE_AFTER）—— pid 这道不够稳，见 _STALE_AFTER 的注释。
+      · 不是当前进程自己用的那个（sys._MEIPASS）。
+
+    几种判不准的情况（pid 被重用、句柄还攥在别人手里）都会**少清一个**，
+    方向都是安全的 —— 宁可留着占地方，也不能误删一个活着的实例。
+    """
+    root = Path(root) if root is not None else Path(tempfile.gettempdir())
+    if mine is None:
+        base = getattr(sys, "_MEIPASS", None)
+        mine = Path(base).resolve() if base else None
+    else:
+        mine = Path(mine).resolve()
+
+    cleared = 0
+    try:
+        candidates = list(root.glob("_MEI*"))
+    except OSError:
+        return 0
+
+    for path in candidates:
+        try:
+            m = _MEI_RE.fullmatch(path.name)
+            if m is None or not path.is_dir():
+                continue
+            if mine is not None and path.resolve() == mine:
+                continue
+            if not (path / "assets" / "canoe.ico").is_file():
+                continue        # 不是我们的包，别动
+            try:
+                if time.time() - path.stat().st_mtime < _STALE_AFTER:
+                    continue    # 刚建出来的，多半是另一个正在启动的实例
+            except OSError:
+                continue
+            owner = int(m.group(1), 16) >> 4
+            if owner and _pid_alive(owner):
+                continue        # 人家还活着（或者 pid 被别的活进程占了）
+            shutil.rmtree(path, ignore_errors=True)
+            if not path.exists():
+                cleared += 1
+        except (OSError, ValueError):
+            continue
+    return cleared
 
 
 def _write_bat(path: Path, script: str) -> None:

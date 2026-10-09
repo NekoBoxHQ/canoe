@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -296,6 +297,15 @@ def main() -> int:
                 print(f"[canoe] 已清理 {cleared} 个上次没退干净的内核进程")
     except Exception:  # noqa: BLE001 - 自愈失败不能拦住启动
         pass
+
+    # 清掉自己被强杀后留在 %TEMP% 的 _MEI 目录。理由见 update.clean_stale_temp_dirs：
+    # 那个目录名是**确定性**的（`_MEI` + hex(pid*16+2)，里面编码着 pid），被强杀
+    # 留下的残留会在 pid 被重用的那天正好撞名 —— 这正是"更新后第一次启动偶发
+    # 起不来、手动再开一次又好了"最像的成因。
+    # 放后台线程：攒得多的时候要删几百 MB，别卡着窗口不出现。
+    threading.Thread(
+        target=update.clean_stale_temp_dirs, daemon=True, name="canoe-temp-clean"
+    ).start()
 
     # 上次自更新如果没替换成功，.bat 会留一份说明。捡起来报给用户 ——
     # 不然他看到的只是"点了更新，程序关了，再打开还是旧版本"。
