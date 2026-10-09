@@ -593,6 +593,20 @@ function sessionCols() {
  * 页面：发布
  * ========================================================================= */
 
+// 算出文件的 sha256（十六进制）。
+// 算不了（非安全上下文、浏览器太老）就返回空串 —— 服务端那边 sha256 是可选的，
+// 但**字节数**一定要带上，上传被截断时就靠它对不出来。
+async function sha256Hex(file) {
+  try {
+    if (!crypto || !crypto.subtle) return '';
+    const buf = await file.arrayBuffer();
+    const d = await crypto.subtle.digest('SHA-256', buf);
+    return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch (e) {
+    return '';
+  }
+}
+
 async function pageReleases(root) {
   const data = await api('/api/admin/releases');
   const rows = data.items || [];
@@ -611,10 +625,19 @@ async function pageReleases(root) {
         submitText: '上传',
         onSubmit: async (v) => {
           if (!v.file) { toast('还没选文件', 'warn'); return; }
+          // ★ 把本地这份的字节数和摘要一起报上去，服务端拿它核对收到的东西。
+          //   光靠 HTTP 的 Content-Length 证明不了传完的是**一份完整的包** ——
+          //   真出过事：传的是一个还在写的文件，47MB 当成 87MB 发了出去，
+          //   服务端照单全收、照这份残包算 sha256 写进发布记录，客户端下载
+          //   校验也"通过"（它核对的就是这份残包的摘要），装上才发现 exe 是
+          //   残的 —— 单文件 exe 截断了照样能启动，只是解不出 python313.dll。
+          const digest = await sha256Hex(v.file);
           const fd = new FormData();
           fd.append('version', v.version);
           fd.append('notes', v.notes || '');
           fd.append('min_version', v.min_version || '');
+          fd.append('size', String(v.file.size));
+          if (digest) fd.append('sha256', digest);
           fd.append('file', v.file);
           await api('/api/admin/releases/upload', { method: 'POST', form: fd });
           toast('已发布，在线客户端会收到推送', 'ok'); closeModal(); render();

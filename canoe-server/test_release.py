@@ -15,10 +15,12 @@
   4. 文件名里的 ../ 被收拾掉（不然能往上级目录写东西）
   5. 同一个版本号重发是覆盖，不是插两条
   6. --list 的输出里能看到刚发的版本
+  7. 发布方报的字节数/摘要和收到的对不上就**整个丢掉**（上传被截断过一次）
 """
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import shutil
 import subprocess
@@ -82,6 +84,11 @@ def main() -> int:
         "PUBLIC_BASE_URL": "https://canoe.example.com",
         "ADMIN_USERNAME": "admin",
     }
+    # 下面有几段是**在本进程里**直接调 store_release_file 的，不是走子进程。
+    # canoe_server.config 在 import 的时候就把这些读进去了，所以必须先
+    # 灌进去再 import —— 不然 release_dir() 会指向真的 releases/，
+    # 测试往线上目录写包。
+    os.environ.update(env)
 
     print("\n== 轻舟 · 客户端发布（命令行）测试 ==\n")
 
@@ -172,6 +179,62 @@ def main() -> int:
         r = run_cli([str(tmp / "没有这个文件.zip")], env)
         check("报错而不是崩栈", r.returncode != 0 and "Traceback" not in r.stderr, r.stderr[:300])
         check("错误里指出了路径", "找不到文件" in (r.stdout + r.stderr), (r.stdout + r.stderr)[:200])
+
+        # --- 8. 传上来的到底是不是一个完整的包 ---
+        #
+        # 真出过事：发布的时候读的是一个**还在写**的文件，87MB 的安装包装成
+        # 47MB 送了上去。服务端照单全收、照这份残包算 sha256 写进发布记录；
+        # 客户端下载时一校验"通过"（它核对的就是这份残包的摘要），装上才发现
+        # exe 是残的 —— 单文件 exe 截断了**照样能启动**，只是解不出
+        # python313.dll，弹一句 "Failed to load Python DLL" 就完事。
+        # 所以发布方必须自报字节数/摘要，服务端拿它对。
+        print("\n[8] 发布包完整性")
+        from canoe_server.services.updates import (  # noqa: PLC0415
+            ReleaseMismatch,
+            store_release_file,
+        )
+
+        whole = b"W" * 50_000
+        whole_digest = hashlib.sha256(whole).hexdigest()
+
+        # 声明 5 万字节，实际只给 3 万 —— 就是"上传被截断"的样子
+        try:
+            store_release_file(
+                io.BytesIO(whole[:30_000]), "Canoe-2.0.0-win64.zip",
+                expected_size=len(whole),
+            )
+            check("★ 字节数对不上时必须拒绝（上传被截断）", False, "居然收下了")
+        except ReleaseMismatch:
+            check("★ 字节数对不上时必须拒绝（上传被截断）", True)
+        check("★ 拒绝后磁盘上不留半个包",
+              not (releases / "Canoe-2.0.0-win64.zip").exists(),
+              str(list(releases.iterdir())))
+
+        # 摘要对不上也一样
+        try:
+            store_release_file(
+                io.BytesIO(whole), "Canoe-2.0.1-win64.zip", expected_sha256="0" * 64
+            )
+            check("★ 摘要对不上时必须拒绝", False, "居然收下了")
+        except ReleaseMismatch:
+            check("★ 摘要对不上时必须拒绝", True)
+        check("★ 摘要对不上也不留文件",
+              not (releases / "Canoe-2.0.1-win64.zip").exists(),
+              str(list(releases.iterdir())))
+
+        # 对得上就正常收下 —— 别把好包也拦了
+        _d, got_size, got_digest = store_release_file(
+            io.BytesIO(whole), "Canoe-2.0.2-win64.zip",
+            expected_size=len(whole), expected_sha256=whole_digest,
+        )
+        check("★ 对得上就正常收下（没把好包一起拦了）",
+              got_size == len(whole) and got_digest == whole_digest)
+        check("★ 收下的包在磁盘上完整",
+              (releases / "Canoe-2.0.2-win64.zip").stat().st_size == len(whole))
+
+        # 不给这两个参数（老调用方）行为不变
+        _d, got_size, _ = store_release_file(io.BytesIO(whole), "Canoe-2.0.3-win64.zip")
+        check("老调用方（不报 size/sha256）照旧能用", got_size == len(whole))
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -30,7 +31,7 @@ from pathlib import Path
 
 import requests
 
-from .config import config
+from .config import CONFIG_DIR, config
 
 TIMEOUT = 15
 #: 下载用的超时是 (连接, 读取) 两段 —— 60MB 的包读一段就要一会儿，
@@ -311,13 +312,49 @@ def prepare_update(archive: Path) -> Path:
     return dest
 
 
-#: 替换脚本。**全 ASCII** —— 批处理按控制台代码页读文件，掺中文会变乱码。
+def start_marker() -> Path:
+    """启动脚印：新版本界面真的起来之后写这个文件。
+
+    更新后的重启是 .bat 收尾的，而它没别的好办法知道"新版本到底起来没有"。
+    光看进程在不在不行 —— 引导器解压失败时也会留一个挂着的进程（还常常挂
+    着一个原生错误框），那不算起来。所以让程序自己在界面起来之后留个脚印。
+    """
+    return CONFIG_DIR / "started.txt"
+
+
+def mark_started() -> None:
+    """记一笔"我起来了"。由 app.main() 在界面真的起来之后调。"""
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        start_marker().write_text(str(int(time.time())), encoding="ascii")
+    except OSError:
+        pass
+
+
+def _write_bat(path: Path, script: str) -> None:
+    """把替换脚本写下来。
+
+    ★ 编码按**系统 ANSI 代码页**（Windows 上是 `mbcs`），不是 UTF-8。
+      cmd 读 .bat 用的是控制台代码页 —— 中文机器上就是 GBK。安装目录带中文
+      （用户名是中文时 `%USERPROFILE%\\Desktop` 就是）的时候，用 ascii 写会
+      直接 UnicodeEncodeError（连更新都发不出去），用 utf-8 写则是 cmd 拿到
+      一串乱码路径，move 和 start 全落空。纯 ASCII 路径下 mbcs 与 ascii 写
+      出来完全一样。
+    """
+    try:
+        path.write_text(script, encoding="mbcs")
+    except (LookupError, UnicodeEncodeError):
+        # 极端兜底：ANSI 也装不下这个字符。至少别让整个更新失败。
+        path.write_text(script, encoding="utf-8", errors="replace")
+
+
+#: 替换脚本。**通篇 ASCII** —— 批处理按控制台代码页读文件，掺中文会变乱码。
 #:
 #: 为什么非得绕这一圈：Windows 上正在运行的 exe 既删不掉也覆盖不了。
 #: 任何"我先退出、退出前自己替换"的写法都死在"退出之后没人干活"。
 #: 交给系统来做 —— cmd 等本进程真的没了（文件锁释放）再动手。
 #:
-#: 两件事，顺序都有原因：
+#: 三件事，顺序都有原因：
 #:
 #:   1. **换文件，换不动就重试**。这个重试循环**本身就是"等旧进程退出"**：
 #:      旧进程在跑的时候那个 exe 是锁着的，move 一定失败；move 成功就说明
@@ -329,13 +366,23 @@ def prepare_update(archive: Path) -> Path:
 #:        来的输入结束。用户那边的表现就是"点了更新，程序关了，然后
 #:        什么都没发生，桌面上留着 Canoe.exe.new 和这个 .bat"。
 #:
-#:   2. **换完再等四五秒才拉起来**。单文件 exe 启动时会解压到
-#:      %TEMP%\_MEIxxxx，并且会顺手清理上一次留下的同名临时目录；新进程
-#:      起太早，自己的目录会被对方清掉，然后弹
-#:          Failed to load Python DLL '...python313.dll'
-#:      这段等待同时也盖住了杀毒软件对刚落盘的 exe 做实时扫描。
+#:   2. **换完等四五秒再拉起来**。单文件 exe 启动时要解压约 80MB 到
+#:      %TEMP%\\_MEIxxxx，太快拉起来容易撞上杀毒软件对刚落盘的 exe 做实时扫描。
+#:
+#:   3. **拉起来之后确认它真的起来了，没起来就重开**。
+#:
+#:      ★ 这一条是真出过事才加的。用户报"更新后重启报错，找不到模块"，
+#:        截图是引导器的原生框：
+#:            Failed to load Python DLL '...\\_MEI00003ae42\\python313.dll'.
+#:            LoadLibrary: 找不到指定的模块。
+#:        但**手动再开一次就好了** —— 说明 exe 本身没坏，是这一次解压/加载
+#:        偶发失败（杀软正在翻一个刚写出来的二进制）。既然重开一次能好，
+#:        就让脚本自己重开。依据是程序起来后会写的那个 started.txt
+#:        （见 mark_started）；连试三次都不行才写日志认输，日志会在下次
+#:        启动时弹给用户看。
 _BAT = r"""@echo off
-rem Canoe self-update: swap the exe once the old process lets go, then restart.
+rem Canoe self-update: swap the exe once the old process lets go, start the new
+rem one, and restart it until it really comes up.
 setlocal
 cd /d "%~dp0"
 
@@ -353,11 +400,28 @@ echo [%date% %time%] could not replace "{cur}" > "{log}"
 exit /b 1
 
 :ok
-rem Settle before launching: covers the %TEMP%\_MEI cleanup race and the
-rem antivirus scan of the freshly written exe. See _BAT's comment.
+rem Start it, then confirm it really came up. The new exe touches {marker}
+rem once its window is up - nothing else proves it, because a failed unpack
+rem still leaves a process behind (sitting on a native error box).
+rem Three shots, then give up loudly; the log is shown on the next start.
+set /a boots=0
+:launch
+del "{marker}" >nul 2>&1
+rem Settle first, so we do not race the antivirus scan of the fresh exe.
 ping -n 5 127.0.0.1 >nul
 start "" "{cur}"
+set /a waited=0
+:wait
+ping -n 3 127.0.0.1 >nul
+if exist "{marker}" goto done
+set /a waited+=1
+if %waited% lss 12 goto wait
+set /a boots+=1
+if %boots% lss 3 goto launch
+echo [%date% %time%] started "{cur}" but it never came up > "{log}"
+exit /b 0
 
+:done
 rem Deliberately NOT "del %~f0". Deleting the running batch file makes cmd
 rem fail to read its next line and exit 1 with "The batch file cannot be
 rem found" - noise in the logs for no gain. The leftover .bat is removed by
@@ -373,8 +437,9 @@ def install_and_restart(new_exe: Path | None = None) -> Path:
       `move /y` + `start`，这是这件事的标准解法。
 
     ⚠ 这个 .bat 是**本程序唯一会生成、而且之后会被执行的东西**，所以内容
-      写死在上面，只有两个路径是变量，且都来自 sys.executable 和自己算出来
-      的文件名 —— 不掺任何外部输入（URL、版本号、服务端给的字符串都不进）。
+      写死在上面，只有三个路径是变量，且都来自 sys.executable / 配置目录 /
+      自己算出来的文件名 —— 不掺任何外部输入（URL、版本号、服务端给的
+      字符串都不进）。
     """
     if not can_self_update():
         raise UpdateError("当前不是以安装包方式运行的，没法自动更新", code="not_frozen")
@@ -392,9 +457,10 @@ def install_and_restart(new_exe: Path | None = None) -> Path:
         _BAT.replace("{new}", str(new))
         .replace("{cur}", str(cur))
         .replace("{log}", str(log))
+        .replace("{marker}", str(start_marker()))
     )
     try:
-        bat.write_text(script, encoding="ascii")
+        _write_bat(bat, script)
     except OSError as exc:
         raise UpdateError(f"写替换脚本失败：{exc}", code="io_error") from exc
 

@@ -52,6 +52,7 @@ from ..services.nodes import (
 )
 from ..services.sessions import revoke_user_sessions, revoke_user_tokens
 from ..services.updates import (
+    ReleaseMismatch,
     ReleaseTooLarge,
     latest_release,
     list_releases,
@@ -617,6 +618,10 @@ def admin_upload_release(
     version: str = Form(..., min_length=1, max_length=32),
     notes: str = Form(""),
     min_version: str = Form(""),
+    # 发布方本地那个文件的字节数 / sha256。可选，但面板和 CLI 都会带上 ——
+    # 上传被截断（比如传的是一个还在写的文件）时，只有靠它对得出来。
+    size: int = Form(0),
+    sha256: str = Form(""),
     file: UploadFile = File(...),
     admin: User = Depends(get_current_admin),
     db: DBSession = Depends(get_db),
@@ -628,12 +633,20 @@ def admin_upload_release(
 
     真正的落盘逻辑在 services/updates.store_release_file() —— `canoe release`
     那条命令行走的是同一个函数，免得两处实现慢慢跑偏。
+
+    传上来的字节数和摘要必须和发布方声明的一致，否则**整个包丢掉、不发布**：
+    客户端下载是会核对摘要的，但核对的是服务端自己算的那份 —— 服务端把一份
+    没传完的包当成好包发布出去，客户端的校验根本救不了它。
     """
     filename = safe_filename(file.filename or "Canoe.zip")
     try:
-        _dest, size, digest = store_release_file(file.file, filename)
+        _dest, size, digest = store_release_file(
+            file.file, filename, expected_size=size, expected_sha256=sha256
+        )
     except ReleaseTooLarge as exc:
         raise HTTPException(413, {"code": "too_large", "detail": str(exc)}) from exc
+    except ReleaseMismatch as exc:
+        raise HTTPException(400, {"code": "incomplete", "detail": str(exc)}) from exc
     except OSError as exc:
         raise HTTPException(500, {"code": "io_error", "detail": f"写文件失败：{exc}"}) from exc
     finally:

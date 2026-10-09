@@ -36,6 +36,7 @@ from canoe_server.config import settings
 from canoe_server.database import SessionLocal, init_db
 from canoe_server.models import AuditLog, User
 from canoe_server.services.updates import (
+    ReleaseMismatch,
     ReleaseTooLarge,
     guess_version,
     list_releases,
@@ -139,10 +140,29 @@ def main() -> int:
         cleanup_temp(temp_root)
         die(f"从 {filename} 里抠不出版本号，请用 --version 指定")
 
+    # ★ 这个包在读取期间不许变大。
+    #
+    #   命令行这条路上真出过事：PyInstaller 还在往 dist/ 里写 exe 的时候就被
+    #   `canoe release` 抓去发了，读端读到那时的 EOF 就以为读完了 —— 87MB 的
+    #   包装成 47MB 送上去。服务端照单全收、照这份残包算 sha256 写进发布记录；
+    #   客户端下载时一校验"通过"（它核对的就是这份残包的摘要），装上才发现
+    #   exe 是残的 —— 单文件 exe 截断了**照样能启动**，只是解不出 python313.dll，
+    #   弹一句 "Failed to load Python DLL" 就完事。
+    #
+    #   所以两头都卡：传上去的字节数必须等于读之前的大小（store_release_file
+    #   那边核对），传完之后它也不许再变大。
+    before = local.stat().st_size
+    after = before
     try:
         with local.open("rb") as fh:
-            dest, size, digest = store_release_file(fh, filename)
+            dest, size, digest = store_release_file(
+                fh, filename, expected_size=before
+            )
+        after = local.stat().st_size
     except ReleaseTooLarge as exc:
+        cleanup_temp(temp_root)
+        die(str(exc))
+    except ReleaseMismatch as exc:
         cleanup_temp(temp_root)
         die(str(exc))
     except OSError as exc:
@@ -150,6 +170,13 @@ def main() -> int:
         die(f"写文件失败：{exc}")
     finally:
         cleanup_temp(temp_root)
+
+    if after != size:
+        (release_dir() / filename).unlink(missing_ok=True)
+        die(
+            f"这个包在传的过程中还在变大（{size} → {after} 字节）—— "
+            "它八成还没写完，或者还在复制。等它稳定了再发一次。"
+        )
 
     with SessionLocal() as db:
         row = publish_release(

@@ -66,6 +66,10 @@ class ReleaseTooLarge(Exception):
     """安装包超过 settings.max_release_mb。"""
 
 
+class ReleaseMismatch(Exception):
+    """收到的安装包和发布方声明的对不上（多半是这一次上传没传完）。"""
+
+
 def guess_version(filename: str) -> str:
     """从文件名里抠版本号：Canoe-1.0.1-win64.zip -> 1.0.1。
 
@@ -75,13 +79,31 @@ def guess_version(filename: str) -> str:
     return m.group(0) if m else ""
 
 
-def store_release_file(src, filename: str) -> tuple[Path, int, str]:
+def store_release_file(
+    src,
+    filename: str,
+    *,
+    expected_size: int = 0,
+    expected_sha256: str = "",
+) -> tuple[Path, int, str]:
     """把一个安装包流式落到 releases/ 下，返回 (路径, 字节数, sha256)。
 
     传进来的 `src` 只要有 `.read(n)` 就行（UploadFile.file 或普通文件对象）。
 
     超限或者写盘失败都**不会**把半个包留下 —— 留了的话，下载页面上会
     挂着一个永远下不完的文件，而发布记录看起来是成功的。
+
+    ★ 发布方可以把本地那个文件的字节数和 sha256 一起报上来
+      （expected_size / expected_sha256），这里核对。**这个必须要有**：
+
+      只靠 HTTP 的 Content-Length 证明不了什么 —— 它只能说明"这一段 body
+      收全了"，说明不了"这个 body 是一份完整的安装包"。真出过事：上传脚本
+      读的是**还在写**的文件，把 47MB（实际 87MB）当成完整包传了上来。
+      服务端照单全收、照这份残缺内容算 sha256、写进发布记录；客户端下载下来
+      一校验"通过"（因为它核对的就是这个残缺文件的摘要），装上才发现是个
+      残废的 exe —— 而单文件 exe 截断了**照样能启动**，只是解不出
+      python313.dll，弹一句 "Failed to load Python DLL" 就没了。
+      让发布方自己报数，是唯一能戳穿这种情况的办法。
     """
     dest = release_dir() / safe_filename(filename)
     limit = settings.max_release_mb * 1024 * 1024
@@ -101,7 +123,19 @@ def store_release_file(src, filename: str) -> tuple[Path, int, str]:
     except BaseException:
         dest.unlink(missing_ok=True)
         raise
-    return dest, size, sha256_file(dest)
+
+    stored = sha256_file(dest)
+    if expected_size and size != expected_size:
+        dest.unlink(missing_ok=True)
+        raise ReleaseMismatch(
+            f"安装包不完整：发布方声明 {expected_size} 字节，实际收到 {size} 字节"
+        )
+    if expected_sha256 and stored.lower() != expected_sha256.strip().lower():
+        dest.unlink(missing_ok=True)
+        raise ReleaseMismatch(
+            f"安装包摘要对不上（服务端算出 {stored[:16]}…），上传可能被截断了"
+        )
+    return dest, size, stored
 
 
 # --------------------------------------------------------------------------

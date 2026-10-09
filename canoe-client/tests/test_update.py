@@ -264,8 +264,20 @@ def main() -> int:
         # 单文件 exe 启动时会解压到 %TEMP%\_MEIxxxx 并清理上一次的同名目录，
         # 新的太早起来就会被对方清掉。所以必须先等旧进程真没了。
         check("★ 重试有上限（换不动也要退出）", "lss 60 goto retry" in script)
-        check("★ 换完先等一会儿再启动（_MEI 清理竞争 + 杀毒扫描）",
+        check("★ 换完先等一会儿再启动（杀毒扫描刚落盘的 exe）",
               "ping -n 5 127.0.0.1" in script, "没找到启动前的等待")
+        # 用户在真机上撞到过：更新后重启弹引导器的原生框
+        #   Failed to load Python DLL '...\_MEI00003ae42\python313.dll'.
+        # 但手工再开一次就好了 —— 也就是说那一次解压/加载是偶发失败，exe 没坏。
+        # 既然重开能好，脚本就得自己重开，并且要有依据知道"到底起来没有"：
+        # 光看进程在不在不行，引导器失败时也会留个挂在错误框上的进程。
+        check("★ 启动后要确认它真的起来了（光看进程不算数）",
+              "if exist" in script and "goto launch" in script,
+              "重启之后没有确认步骤")
+        check("★ 判断依据是程序自己写的启动脚印", "started.txt" in script
+              and "{marker}" not in script, "脚本没去看 started.txt / 占位符没替换")
+        check("★ 重开有上限（连试 3 次就不试了，别死循环）",
+              "lss 3 goto launch" in script)
         # 真机事故：那段 `tasklist | findstr` 轮询会**永久卡住** ——
         # cmd 等 findstr，findstr 等一个永远不来的 EOF，更新挂死 18 分钟。
         # 重试 move 本身就是"等旧进程退出"（进程在跑时文件锁着、move 必失败），
@@ -326,16 +338,38 @@ def main() -> int:
         old.write_bytes(where_exe.read_bytes())      # 冒充"当前程序"
         new.write_bytes(host_exe.read_bytes())       # 冒充"新程序"
         log = sand / "canoe-update.log"
+        marker = sand / "started.txt"
         bat = sand / "canoe-update.bat"
         bat.write_text(
             update._BAT.replace("{new}", str(new))
             .replace("{cur}", str(old))
-            .replace("{log}", str(log)),
+            .replace("{log}", str(log))
+            .replace("{marker}", str(marker)),
             encoding="ascii",
         )
 
-        proc = subprocess.run(["cmd", "/c", str(bat)], cwd=str(sand),
-                              capture_output=True, text=True, timeout=120)
+        # 替身程序（hostname.exe）当然不会写启动脚印，所以这里由测试扮演
+        # "程序起来了"：后台不停把脚印戳出来。**反复戳是必须的** —— 脚本
+        # 每一轮开跑前都会先 del 掉它，只在最后戳一次很可能正好撞在脚本的
+        # 两次检查之间，白白被判成"没起来"。
+        stop_touch = threading.Event()
+
+        def touch_loop() -> None:
+            while not stop_touch.is_set():
+                try:
+                    marker.write_text("1", encoding="ascii")
+                except OSError:
+                    pass
+                stop_touch.wait(0.5)
+
+        toucher = threading.Thread(target=touch_loop, daemon=True)
+        toucher.start()
+        try:
+            proc = subprocess.run(["cmd", "/c", str(bat)], cwd=str(sand),
+                                  capture_output=True, text=True, timeout=120)
+        finally:
+            stop_touch.set()
+            toucher.join(timeout=5)
         check("脚本跑完退出码 0", proc.returncode == 0, f"{proc.returncode} {proc.stderr[:200]}")
         check("★ 文件真的被换掉了", old.read_bytes() == host_exe.read_bytes(),
               f"{old.stat().st_size} 字节")
@@ -357,6 +391,7 @@ def main() -> int:
             update._BAT.replace("{new}", str(sand / "does-not-exist.exe"))
             .replace("{cur}", str(old))
             .replace("{log}", str(log))
+            .replace("{marker}", str(marker))
             # 上限改成 3 次，等价逻辑但测试只要等几秒
             .replace("lss 60 goto retry", "lss 3 goto retry"),
             encoding="ascii",

@@ -311,6 +311,11 @@ def main() -> int:
     app.aboutToQuit.connect(controller.shutdown)
     controller.start()
 
+    # 留个脚印。更新后的重启由那个 .bat 收尾，它靠这个文件判断新版本到底
+    # 起来没有（见 update.start_marker）。光看"进程在不在"不算数 —— 引导器
+    # 解压失败时也会留一个挂着的进程坐在错误框上，那种不算起来。
+    update.mark_started()
+
     _ = BIN_DIR  # 保持 import 可见，便于排查内核目录
     return app.exec()
 
