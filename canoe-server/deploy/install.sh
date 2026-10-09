@@ -39,6 +39,25 @@ log()  { printf '\033[1;36m[*]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# 以 $APP_USER 的身份跑一条命令（会交给 bash -c）。
+#
+# ⚠ Debian 最小安装**不带 sudo** —— 那是个独立软件包。本脚本要求以 root
+#   运行，所以根本不需要提权工具，但也绝不能假设 sudo 在：
+#   一开始写死 `sudo -u canoe`，在刚装好的 Debian 12 上直接
+#   `sudo: command not found` 把安装打断（真踩过）。
+#   优先 sudo（保留环境最省心），退而 runuser（util-linux 自带，debian 必有），
+#   最后 su 兜底。
+as_user() {
+    local cmd="$*"
+    if command -v sudo >/dev/null 2>&1; then
+        sudo -u "$APP_USER" bash -c "$cmd"
+    elif command -v runuser >/dev/null 2>&1; then
+        runuser -u "$APP_USER" -- bash -c "$cmd"
+    else
+        su -s /bin/bash -c "$cmd" "$APP_USER"
+    fi
+}
+
 # set -e 有个很不友好的地方：某条命令失败时它**一声不吭就退出**。
 # 用户看到的是"向导问完了，命令结束，什么都没发生"，完全无从下手
 # （真踩过：openssl 校验在 EC 密钥上失败，整个安装在最后一步静默中止）。
@@ -53,7 +72,9 @@ usage() {
   sudo bash deploy/install.sh --domain canoe.s-ui.com --port 58588 --cert-mode le
   sudo bash deploy/install.sh --domain x.com --port 58588 --panel-port 58589
 
-不带参数会一项一项问你：域名 / 客户端口 / 面板端口 / 证书。
+不带参数会一项一项问你：域名 / 管理面板端口 / 证书。
+
+客户端口**不问**，固定 58588 —— 客户端把它写死在代码里了，改了就失联。
 
 默认是**直连模式**：uvicorn 自己监听在指定端口上做 HTTPS，不需要 Nginx。
 
@@ -61,7 +82,8 @@ usage() {
 
 选项：
   --domain NAME         域名（用于证书和客户端下载地址；没有就留空）
-  --port N              **客户端口**，客户端固定拿它取更新和订阅（默认 58588）
+  --port N              客户端口，默认 58588。**一般不要动** ——
+                        客户端把地址写死在代码里，改了已发出的客户端全失联。
   --panel-port N        **管理面板口**。留空 = 和客户端同口；
                         填别的则另开一个口，客户端口不再响应 /panel。
                         两个口由同一个进程监听，推送照常互通。
@@ -140,32 +162,28 @@ fi
 [[ $EUID -eq 0 ]] || die "请用 root 跑：sudo bash deploy/install.sh（-h 看用法）"
 
 # ---------------------------------------------------------------------------
-# 0.1 交互向导：域名 / Web 端口 / 证书
+# 0.1 交互向导：域名 / 管理面板端口 / 证书
+#
+# ⚠ 这里**不问客户端口**。客户端把服务端地址（含 58588）写死在代码里了，
+#   改了这个口，所有已经发出去的客户端当场全部失联 —— 那不是"选项"，
+#   是个改了就得重发客户端的陷阱。所以它固定 58588，只在最后确认页
+#   作为信息展示一次，要用 --port 显式指定才改得动。
 # ---------------------------------------------------------------------------
 if [[ -t 0 ]]; then
     printf '\n  轻舟 / Canoe Server 安装向导\n  ─────────────────────────────\n  直接回车 = 用方括号里的默认值\n\n'
 
     if [[ -z "$DOMAIN" ]]; then
         cat <<'TXT'
-[1/4] 域名
+[1/3] 域名
       用来申请证书、拼客户端下载地址（PUBLIC_BASE_URL）。
       没有域名就留空 —— 那样证书只能自签，客户端也得走 IP。
 TXT
         read -rp "      域名: " DOMAIN || true
     fi
 
-    if [[ -z "$PORT" ]]; then
-        cat <<'TXT'
-[2/4] 客户端口
-      客户端固定拿这个口取更新和订阅，**必须对所有用户开放**。
-TXT
-        read -rp "      客户端口 [58588]: " PORT || true
-        PORT="${PORT:-58588}"
-    fi
-
     if [[ -z "$PANEL_PORT" ]]; then
         cat <<'TXT'
-[3/4] 管理面板端口
+[2/3] 管理面板端口
       想只对自己开放的话，给面板另开一个口 —— 然后在防火墙/安全组里
       只放行你自己的 IP。那样客户端那个口就**不再响应 /panel**。
       两个口是同一个进程在听，推送照常互通。
@@ -175,7 +193,7 @@ TXT
 
     if [[ -z "$CERT_MODE" ]]; then
         cat <<'TXT'
-[4/4] 证书
+[3/3] 证书
       1) Let's Encrypt 自动申请   推荐。要域名已解析到本机，且 80 端口空闲
       2) 自签证书                 自己用够了；浏览器会警告
       3) 我已有证书               你把证书和私钥文件给我
@@ -202,8 +220,14 @@ TXT
     echo
 fi
 
+# 客户端口固定 58588：客户端把这个地址写死在代码里了。
+# 只有显式给 --port 才允许改（那是知道自己在干什么的人）。
 PORT="${PORT:-58588}"
 [[ "$PORT" =~ ^[0-9]+$ ]] || die "端口必须是数字：$PORT"
+if [[ "$PORT" != "58588" ]]; then
+    warn "客户端口不是默认的 58588 —— 已发出的客户端会连不上。"
+    warn "确认你要这么干（换端口 = 重发一版客户端）。"
+fi
 
 # ---- 默认值兜底 ----
 if [[ -z "$CERT_MODE" ]]; then
@@ -277,7 +301,7 @@ cat <<EOF
   轻舟 / Canoe Server 安装
   ────────────────────────────────
   域名         ${DOMAIN:-<无，用 IP 访问>}
-  客户端口     $PORT          ← 更新 / 订阅 / API，对所有人开放
+  客户端口     $PORT          ← 更新 / 订阅 / API，对所有人开放（固定，客户端写死的）
   管理面板     $PANEL_DESC
   证书         $CERT_DESC
 
@@ -379,13 +403,13 @@ chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 # 3. venv 与依赖
 # ---------------------------------------------------------------------------
 log "建立虚拟环境并安装依赖…"
-[[ -d "$SERVER_DIR/.venv" ]] || sudo -u "$APP_USER" python3 -m venv "$SERVER_DIR/.venv"
+[[ -d "$SERVER_DIR/.venv" ]] || as_user "python3 -m venv '$SERVER_DIR/.venv'"
 PIP="$SERVER_DIR/.venv/bin/pip"
 # setuptools/wheel 要显式装：Debian 的 python3-venv 不保证带 setuptools，
 # 而 canoe-core 是 pyproject + setuptools 后端的可编辑安装，缺了会失败。
-sudo -u "$APP_USER" "$PIP" install -q -U pip setuptools wheel
-sudo -u "$APP_USER" "$PIP" install -q -e "$APP_DIR/canoe-core"
-sudo -u "$APP_USER" "$PIP" install -q -r "$SERVER_DIR/requirements.txt"
+as_user "$PIP install -q -U pip setuptools wheel"
+as_user "$PIP install -q -e '$APP_DIR/canoe-core'"
+as_user "$PIP install -q -r '$SERVER_DIR/requirements.txt'"
 
 # ---------------------------------------------------------------------------
 # 4. 证书
@@ -496,7 +520,7 @@ import secrets
 print(secrets.token_urlsafe(48))
 print(secrets.token_urlsafe(18))
 PY
-    mapfile -t SECRETS < <(sudo -u "$APP_USER" "$SERVER_DIR/.venv/bin/python" -c "$PY_CMD")
+    mapfile -t SECRETS < <(as_user "'$SERVER_DIR/.venv/bin/python' -c '$PY_CMD'")
     TICKET_SECRET="${SECRETS[0]}"
     ADMIN_PASSWORD="${SECRETS[1]}"
     BASE="${SCHEME}://${DOMAIN:-127.0.0.1}"
@@ -566,7 +590,7 @@ chown -R "$APP_USER:$APP_USER" "$SERVER_DIR/data" "$SERVER_DIR/releases"
 # ---------------------------------------------------------------------------
 if [[ "$DO_SEED" == "1" ]]; then
     log "初始化数据库…"
-    sudo -u "$APP_USER" bash -c "cd '$SERVER_DIR' && .venv/bin/python seed.py"
+    as_user "cd '$SERVER_DIR' && .venv/bin/python seed.py"
 fi
 
 # ---------------------------------------------------------------------------

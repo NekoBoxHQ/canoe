@@ -95,16 +95,18 @@ sudo bash canoe-server/deploy/install.sh
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/install.sh)"
 ```
 
-向导会**一项一项问你四件事**：
+向导会**一项一项问你三件事**：
 
 ```
 [1/3] 域名
-      用来申请证书、拼客户端下载地址。没有域名就留空（证书只能自签）。
+      用来申请证书、拼客户端下载地址（PUBLIC_BASE_URL）。
+      没有域名就留空 —— 那样证书只能自签，客户端也得走 IP。
       域名: canoe.s-ui.com
 
-[2/3] Web 端口
-      管理面板和 API 共用这一个端口，客户端也用它取更新和订阅。
-      Web 端口 [58588]:
+[2/3] 管理面板端口
+      想只对自己开放的话，给面板另开一个口 —— 然后在防火墙/安全组里
+      只放行你自己的 IP。那样客户端那个口就**不再响应 /panel**。
+      面板端口（回车 = 和客户端同口）: 8899
 
 [3/3] 证书
       1) Let's Encrypt 自动申请   推荐。要域名已解析到本机，且 80 端口空闲
@@ -113,6 +115,11 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/mai
       4) 不加密                   前面已经有 HTTPS 反代了
       请选择 [1]:
 ```
+
+> **客户端口（58588）不问**：客户端把服务端地址写死在代码里了，
+> 改了这个口，已经发出去的客户端当场全部失联 —— 那不是选项，是个陷阱。
+> 所以它固定 58588，只在最后的确认页作为信息展示一次。
+> 真要改得用 `--port` 显式指定（那是知道自己在干什么的人）。
 
 也可以全用参数跳过问答（适合脚本化）：
 
@@ -125,7 +132,7 @@ sudo bash deploy/install.sh --domain x.com --cert-mode existing \
 | 选项 | 说明 |
 |---|---|
 | `--domain NAME` | 域名。留空则用 IP 访问，证书只能自签 |
-| `--port N` | **客户端口**。客户端固定拿它取更新和订阅，对所有人开放。默认 **58588** |
+| `--port N` | 客户端口，默认 **58588**。**一般不要动** —— 客户端把地址写死在代码里，改了已发出的客户端全失联 |
 | `--panel-port N` | **管理面板口**。留空 = 和客户端同口；填别的则另开口（见下） |
 | `--cert-mode le` | Let's Encrypt 自动申请（需域名已解析、80 端口空闲）。**推荐** |
 | `--cert-mode self` | 自签证书。浏览器会警告 |

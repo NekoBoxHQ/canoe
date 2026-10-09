@@ -57,6 +57,23 @@ need_root() {
     [[ ${EUID:-$(id -u)} -eq 0 ]] || die "需要 root：请用 sudo canoe"
 }
 
+# 以 $APP_USER 的身份跑一条命令（交给 bash -c）。
+#
+# ⚠ Debian 最小安装**不带 sudo**（独立软件包）。本脚本要求 root 运行，
+#   所以不需要提权工具，但也不能假设 sudo 在 —— 一开始写死 `sudo -u canoe`，
+#   在刚装好的 Debian 12 上直接 `sudo: command not found`（install.sh 上
+#   踩过，这里是同一处代码）。优先 sudo，退而 runuser，最后 su。
+as_user() {
+    local cmd="$*"
+    if command -v sudo >/dev/null 2>&1; then
+        sudo -u "$APP_USER" bash -c "$cmd"
+    elif command -v runuser >/dev/null 2>&1; then
+        runuser -u "$APP_USER" -- bash -c "$cmd"
+    else
+        su -s /bin/bash -c "$cmd" "$APP_USER"
+    fi
+}
+
 # 已经装过没？（判据是 venv，不是目录存在 —— 目录可能在、但还没装）
 installed() { [[ -x "$SERVER_DIR/.venv/bin/python" ]]; }
 
@@ -496,7 +513,7 @@ cmd_upgrade() {
 
     # 2) 重装依赖（canoe-core 可能有新依赖，比如 cryptography）
     log "更新依赖…"
-    sudo -u "$APP_USER" bash -c "
+    as_user "
         cd '$SERVER_DIR' &&
         .venv/bin/pip install -q --upgrade pip >/dev/null 2>&1
         .venv/bin/pip install -q -e ../canoe-core &&
@@ -505,7 +522,7 @@ cmd_upgrade() {
 
     # 3) 数据表补列（新版本可能加了字段）
     log "对齐数据库结构…"
-    sudo -u "$APP_USER" bash -c "cd '$SERVER_DIR' && .venv/bin/python -c '
+    as_user "cd '$SERVER_DIR' && .venv/bin/python -c '
 from canoe_server.database import init_db
 init_db()
 print(\"    表结构已对齐\")
@@ -607,7 +624,7 @@ cmd_passwd() {
     local admin_env user
     user="$(env_get ADMIN_USERNAME)"; user="${user:-admin}"
 
-    sudo -u "$APP_USER" bash -c "
+    as_user "
         cd '$SERVER_DIR' && CO_CHANGE_PW='$p1' CO_CHANGE_USER='$user' .venv/bin/python - <<'PY'
 import os
 from canoe_server.database import SessionLocal

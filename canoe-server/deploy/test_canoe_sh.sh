@@ -165,6 +165,49 @@ check "卸载要二次确认" "$(grep -q "最后确认一次" "$TARGET" && echo 
 check "改客户端口会警告写死的事" \
       "$(grep -q "写死在 58588" "$TARGET" && echo 0 || echo 1)"
 
+# ---------------------------------------------------------------------------
+# 提权助手：Debian 最小安装不带 sudo。写死 `sudo -u canoe` 会在
+# 刚装好的机器上以 "sudo: command not found" 把安装打断（真踩过）。
+# ---------------------------------------------------------------------------
+printf '\n[9] 切用户不依赖 sudo\n'
+for f in "$TARGET" "$HERE/install.sh"; do
+    name="$(basename "$f")"
+    # 只允许 as_user 内部那一处真正调用 sudo（它自己会先判断 sudo 在不在）。
+    # 注释里提到 sudo -u 的不算 —— 那是在解释为什么要这么做。
+    naked="$(grep -n 'sudo -u' "$f" \
+             | grep -v '^[0-9]*:[[:space:]]*#' \
+             | grep -v 'command -v sudo' | wc -l | tr -d ' ')"
+    check "$name 里没有裸的 sudo -u" "$([[ "$naked" -le 1 ]] && echo 0 || echo 1)" "找到 $naked 处"
+    check "$name 有 as_user 助手" "$(grep -q '^as_user()' "$f" && echo 0 || echo 1)"
+    check "$name 的 as_user 会退到 runuser" \
+          "$(grep -q 'runuser -u' "$f" && echo 0 || echo 1)"
+done
+
+# 真的在"没有 sudo"的环境里跑一遍 as_user —— 只做静态检查会漏掉
+# 分支写错、变量名写错这类问题。假的 runuser 要真的把命令执行了，
+# 不然只能验到"没报错"，验不到"确实跑起来了"。
+FAKEBIN="$TMP/fakebin"; mkdir -p "$FAKEBIN"
+cat > "$FAKEBIN/runuser" <<'FAKE'
+#!/bin/sh
+# 假 runuser：吃掉 -u USER [--]，剩下的当成要执行的命令
+shift 2
+[ "${1:-}" = "--" ] && shift
+exec "$@"
+FAKE
+chmod +x "$FAKEBIN/runuser"
+
+AS_USER_BODY="$(sed -n '/^as_user()/,/^}/p' "$TARGET")"
+check "抠得出 as_user 函数体" "$([[ -n "$AS_USER_BODY" ]] && echo 0 || echo 1)"
+
+# PATH 前置而不是替换 —— 替换会把 bash 自己弄丢，报 "bash: command not found"
+OUT="$(PATH="$FAKEBIN:$PATH" bash -c "
+    APP_USER=canoe
+    $AS_USER_BODY
+    as_user 'echo 切过去了'
+" 2>&1)"
+check "★ 没有 sudo 时 as_user 仍能工作（走 runuser）" \
+      "$([[ "$OUT" == "切过去了" ]] && echo 0 || echo 1)" "$OUT"
+
 printf '\n[7] 语法\n'
 check "bash -n 通过" "$(bash -n "$TARGET" 2>/dev/null && echo 0 || echo 1)"
 
