@@ -252,6 +252,13 @@ def main() -> int:
     check("★ 没有「直接体验」按钮了（账号一律走服务端注册）",
           not hasattr(auth, "guest_btn"))
 
+    # 记住账号密码。密码在本地是 DPAPI 密文（细测见 test_remember.py），
+    # 这里只管界面接线：勾选框在不在、回填对不对、勾/取消有没有落盘。
+    check("★ 登舟页有「记住账号密码」勾选框", hasattr(auth, "remember_box"))
+    check(f"勾选框文案 = 「{Text.LABEL_REMEMBER}」",
+          auth.remember_box.text() == Text.LABEL_REMEMBER, auth.remember_box.text())
+    check("默认不勾", not auth.remember_box.isChecked())
+
     view = MainView()
     check("主界面构造成功", view is not None)
     check("★ 有节点名称", hasattr(view, "node_label"))
@@ -314,6 +321,38 @@ def main() -> int:
     auth.login_btn.click()
     ok = wait_for(app, lambda: bool(logged), timeout=10)
     check("★ 登舟成功并触发 logged_in", ok, auth.login_err.text())
+    check("★ 没勾「记住账号密码」时，本地一个字都不留",
+          cfg_mod.config.remembered_credentials() == ("", ""),
+          str(cfg_mod.config.remembered_credentials()))
+
+    # --- 3.5 勾上之后 ---
+    print("\n[3.5] 记住账号密码")
+    auth.remember_box.setChecked(True)
+    auth.login_user.setText(username)
+    auth.login_pass.setText("canoe-pass-123")
+    logged.clear()
+    auth.login_btn.click()
+    ok = wait_for(app, lambda: bool(logged), timeout=10)
+    check("第二次登舟成功", ok, auth.login_err.text())
+
+    remembered = cfg_mod.config.remembered_credentials()
+    check("★ 勾上之后本地记下了账号密码",
+          remembered == (username, "canoe-pass-123"), str(remembered))
+    check("★ 密码不是明文躺在配置里",
+          "canoe-pass-123" not in cfg_mod.CONFIG_FILE.read_text(encoding="utf-8"))
+
+    # 下次开客户端：应当自动回填 + 保持勾选
+    again = AuthView()
+    check("★ 重新打开时账号密码自动填好",
+          again.login_user.text() == username and again.login_pass.text() == "canoe-pass-123",
+          f"{again.login_user.text()!r}/{len(again.login_pass.text())}")
+    check("★ 重新打开时勾选框还是勾着的", again.remember_box.isChecked())
+
+    # 取消勾选：本地那份要**当场**清掉，不能等下次登录成功
+    again.remember_box.setChecked(False)
+    check("★ 取消勾选立刻清掉本地的账号密码",
+          cfg_mod.config.remembered_credentials() == ("", ""),
+          str(cfg_mod.config.remembered_credentials()))
 
     view.start_with_node(username, auth.last_node_name)
     check("★ 显示了服务端给的节点名称", view.node_label.text() == fake_api.node_name,

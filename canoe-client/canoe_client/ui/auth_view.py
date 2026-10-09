@@ -30,8 +30,10 @@ from PySide6.QtWidgets import (
 from canoe_core import BRAND_CN, SLOGAN_CN, SLOGAN_EN, Palette as P, Text
 
 from ..api import api
+from ..config import config
 from ..worker import Worker
 from . import artwork as A
+from .controls import CheckBox
 from .window_base import FramelessWindow
 
 #: 与服务端 RegisterRequest 保持一致
@@ -71,6 +73,9 @@ class AuthView(FramelessWindow):
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_login())
         self.stack.addWidget(self._build_register())
+
+        # 上次勾了「记住账号密码」的话，这里把用户名密码填回去
+        self.restore_remembered()
 
         lay = self.body_layout
         lay.setContentsMargins(PAD, 8, PAD, 0)
@@ -198,6 +203,13 @@ class AuthView(FramelessWindow):
         self.login_pass.returnPressed.connect(self._do_login)
         lay.addWidget(self.login_pass)
 
+        self.remember_box = CheckBox(Text.LABEL_REMEMBER)
+        self.remember_box.setObjectName("Remember")
+        self.remember_box.setToolTip(Text.HINT_REMEMBER)
+        self.remember_box.toggled.connect(self._sync_remembered)
+        lay.addSpacing(10)
+        lay.addWidget(self.remember_box)
+
         self.login_err = QLabel("")
         self.login_err.setObjectName("Error")
         self.login_err.setWordWrap(True)
@@ -280,6 +292,34 @@ class AuthView(FramelessWindow):
         return page
 
     # ------------------------------------------------------------------
+    def restore_remembered(self) -> None:
+        """按本地记着的凭据回填登录框。没有记过就什么都不做。
+
+        退出登录（离舟）之后也会调它 —— 记着的话，回到登录页时账号密码
+        还在，不用再敲一遍。
+        """
+        username, password = config.remembered_credentials()
+        if not username:
+            # 只在状态真的不一样时才动它 —— setChecked 会触发 toggled，
+            # 而 toggled 又回去写一次配置文件。没记过的人每次开客户端
+            # 都白写一遍盘，没必要。
+            if self.remember_box.isChecked():
+                self.remember_box.setChecked(False)
+            return
+        self.login_user.setText(username)
+        self.login_pass.setText(password)
+        self.remember_box.setChecked(True)
+
+    def _sync_remembered(self) -> None:
+        """勾选框被点掉的那一刻就把本地那份清掉。
+
+        只在登录成功时才处理的话，"取消勾选"要等到下次登录成功才生效 ——
+        用户点了取消、关掉程序、密码还在盘上，跟他的预期不符。
+        """
+        if not self.remember_box.isChecked():
+            config.forget_credentials()
+
+    # ------------------------------------------------------------------
     def _switch(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
         self.login_err.setText("")
@@ -304,6 +344,12 @@ class AuthView(FramelessWindow):
 
         def on_ok(result) -> None:
             self._set_busy(self.login_btn, Text.BTN_LOGIN, False)
+            # 勾了就记住，没勾就把上次记的清掉 —— 取消勾选也算一种明确的
+            # "别记了"，不能只在新勾上时写、不勾时不管。
+            if self.remember_box.isChecked():
+                config.remember_credentials(username, password)
+            else:
+                config.forget_credentials()
             self.login_pass.clear()
             # node_name 在登录时就回来了 —— 主界面的「节点名称」要在
             # 点启航之前就能显示，不能等启航才知道连哪个。

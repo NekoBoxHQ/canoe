@@ -108,6 +108,9 @@ document.dispatchEvent(new window.Event('DOMContentLoaded'));
 await tick(); await tick();
 
 check('登录页可见', !document.querySelector('#login-screen').hidden);
+check('★ 登录页不写「只有 role=admin 能进」那句（用户说没必要）',
+      !/role\s*=\s*admin/.test(document.querySelector('#login-screen').textContent),
+      document.querySelector('#login-screen').textContent.slice(0, 120));
 check('主界面初始隐藏', document.querySelector('#app-screen').hidden);
 
 console.log('\n[2] 登录');

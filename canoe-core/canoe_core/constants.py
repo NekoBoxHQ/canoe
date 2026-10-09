@@ -84,6 +84,11 @@ class Text:
     PLACEHOLDER_USERNAME = "用户名"
     PLACEHOLDER_PASSWORD = "密码"
     PLACEHOLDER_PASSWORD2 = "确认密码"
+    #: 登录页那个勾选框。勾上就把账号密码记在本地（密码走 DPAPI 加密）
+    LABEL_REMEMBER = "记住账号密码"
+    #: 鼠标停在勾选框上时的说明 —— 把"记在哪儿、怎么保护"讲明白，
+    #: 免得用户以为是把密码明文扔在某个文件里
+    HINT_REMEMBER = "账号密码存在本机，密码用 Windows 凭据加密；换台电脑要重新输"
 
     @staticmethod
     def progress(action: str) -> str:

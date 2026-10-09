@@ -180,9 +180,10 @@ outbound/shadowsocks[proxy]: outbound connection to one.leycc.com:443
 |---|---|
 | `app.py` | 入口、页面切换、托盘接线、退出兜底清理、`--selftest` 自检 |
 | `api.py` | 与服务端通话（注册 / 登录 / 会话 / 订阅解密 / 更新） |
-| `links.py` | 订阅里的链接（ss/vmess/vless/trojan）-> sing-box 出站 |
+| `links.py` | 订阅链接解析（实现在 `canoe-core`，这里只做 re-export） |
 | `events.py` | SSE 长连接，接收服务端推送 |
-| `config.py` | 本地非敏感配置 + 写死的服务端地址 + `CANOE_CA_BUNDLE` |
+| `config.py` | 本地配置 + 写死的服务端地址 + `CANOE_CA_BUNDLE` |
+| `credstore.py` | ★ 「记住账号密码」：密码走 Windows DPAPI 加密，不存明文 |
 | `kernel.py` | sing-box 配置生成与进程管理 |
 | `options.py` | 运行选项 |
 | `sysproxy.py` | Windows 系统代理（备份 / 还原 / 自愈） |
@@ -218,15 +219,29 @@ Canoe.exe --selftest
 ## 测试
 
 ```bash
-# 配置生成 —— 不需要联网（32 项）
+# 配置生成 —— 不需要联网（46 项）
 python tests/test_config.py
 
-# 真实联网验收 —— 用内核日志证明分流生效（9 项）
-python tests/test_live.py
+# 订阅链接解析（37 项）
+python tests/test_links.py
 
-# GUI 端到端 —— 离屏，会真的启航一次（46 项）
+# 工具按钮：TCPing / URL 测试（31 项）
+python tests/test_tools.py
+
+# Windows 系统代理的备份 / 还原 / 自愈（33 项）
+python tests/test_sysproxy.py
+
+# ★ 「记住账号密码」：DPAPI 加解密、失效降级（26 项）
+#   自己开临时 APPDATA 跑，不动你本机那份 client.json
+python tests/test_remember.py
+
+# GUI 端到端 —— 离屏，会真的登舟一次（93 项）
 set QT_QPA_PLATFORM=offscreen
 python tests/test_gui.py
+
+# 与服务端联调 —— 要先起 canoe-server（51 项）
+set CANOE_SERVER_URL=https://127.0.0.1:8443
+python tests/test_server.py
 ```
 
 ## 规则集

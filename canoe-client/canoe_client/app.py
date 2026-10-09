@@ -82,6 +82,8 @@ class CanoeApp:
         self.auth.login_pass.clear()
         self.auth.login_err.setText("")
         self.auth.last_node_name = ""
+        # 记着账号密码的话，回登录页时填回去（没记就是空的，等于上面白清）
+        self.auth.restore_remembered()
         self.main.hide()
         # 可能是被"踢下线"而从托盘里叫回来的，所以这里要 raise 一下
         self.auth.show()

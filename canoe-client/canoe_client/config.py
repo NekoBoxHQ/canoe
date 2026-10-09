@@ -1,7 +1,12 @@
 """轻舟客户端本地配置。
 
-只存**非敏感**信息：界面偏好、内核路径、本地端口、设备号。
-账号密码不落盘（阶段3 起账号在服务端，本地只留一个登录令牌在内存里）。
+存界面偏好、内核路径、本地端口、设备号，以及**登录页勾了「记住账号密码」
+时的凭据**。
+
+关于凭据：登录令牌依然只在内存里（进程一退就没了，下一次必须重新
+登舟 —— 这是"服务端随时能收回"的落点，不能松）。只有用户**显式勾选**
+了记住密码，才把用户名 + 密码留在本地，而且密码是 DPAPI 密文
+（见 credstore.py），拷到别的机器/别的 Windows 账户都解不开。
 """
 from __future__ import annotations
 
@@ -31,6 +36,8 @@ SERVER_BASE = "https://canoe.s-ui.com:58588"
 DEFAULTS: dict[str, Any] = {
     "singbox_path": "",            # 留空则自动在 bin/ 与 PATH 里找
     "device_id": "",               # 首次运行自动生成（见 device_id 属性）
+    # 登录页那个「记住账号密码」。secret 是 DPAPI 密文，不是明文。
+    "remember": {"enabled": False, "username": "", "secret": ""},
     # 界面选项（见 options.py 的 RunOptions）
     "options": {
         "profile": "split",         # 分流：绕过局域网和大陆
@@ -76,10 +83,11 @@ class ClientConfig:
         for key, value in saved.items():
             if key not in DEFAULTS:
                 continue
-            if key == "options" and isinstance(value, dict):
-                self._data["options"].update(
-                    {k: v for k, v in value.items() if k in DEFAULTS["options"]}
-                )
+            default = DEFAULTS[key]
+            if isinstance(default, dict) and isinstance(value, dict):
+                # 字典型配置按子键合并 —— 老版本存的文件里少一两个子键
+                # 也不至于把整块重置掉（remember 就是后加的那一项）。
+                self._data[key].update({k: v for k, v in value.items() if k in default})
             else:
                 self._data[key] = value
 
@@ -102,6 +110,59 @@ class ClientConfig:
         for key, value in kwargs.items():
             if key in DEFAULTS:
                 self._data[key] = value
+        self.save()
+
+    # ------------------------------------------------------------------
+    # 「记住账号密码」
+    # ------------------------------------------------------------------
+    @property
+    def remember_enabled(self) -> bool:
+        return bool(self._data.get("remember", {}).get("enabled"))
+
+    def remembered_credentials(self) -> tuple[str, str]:
+        """读回记着的账号密码。返回 (用户名, 密码)。
+
+        没记 / 解不开（换了 Windows 账户、换了机器、文件被改过）都返回
+        ('', '')，并且顺手把失效的那份清掉 —— 留着也没用，只会每次
+        启动都白试一遍。
+
+        **不抛异常**：记住密码是个便利功能，读不出来最多让用户重新输
+        一次，不该让客户端起不来。
+        """
+        from . import credstore
+
+        box = self._data.get("remember") or {}
+        if not box.get("enabled"):
+            return "", ""
+        username = str(box.get("username") or "")
+        secret = str(box.get("secret") or "")
+        if not username or not secret:
+            return "", ""
+        try:
+            return username, credstore.unprotect(secret)
+        except credstore.CredStoreError:
+            self.forget_credentials()
+            return "", ""
+
+    def remember_credentials(self, username: str, password: str) -> None:
+        """记下账号密码。加密不了就只记用户名（总比什么都没有好）。"""
+        from . import credstore
+
+        secret = ""
+        try:
+            secret = credstore.protect(password)
+        except credstore.CredStoreError:
+            secret = ""
+        self._data["remember"] = {
+            "enabled": True,
+            "username": username,
+            "secret": secret,       # 加不了密就是空串，下次只回填用户名
+        }
+        self.save()
+
+    def forget_credentials(self) -> None:
+        """不记了 —— 用户取消勾选、或者那份密文已经解不开。"""
+        self._data["remember"] = {"enabled": False, "username": "", "secret": ""}
         self.save()
 
     # ------------------------------------------------------------------
