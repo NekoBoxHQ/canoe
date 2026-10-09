@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     public_base_url: str = ""
     release_dir: str = str(BASE_DIR / "releases")
     max_release_mb: int = 300        # 单个安装包上限，防止把磁盘写满
+    #: 客户端安装包挂在哪个 GitHub 仓库的 Release 上。
+    #: 面板上「拉取最新轻舟」就是去这儿拉 —— 开发机不用再把 83MB 传上来。
+    #: ⚠ 这条只在仓库**公开**时成立：未登录的 api.github.com 读不到私有仓库。
+    github_repo: str = "NekoBoxHQ/canoe"
 
     # --- 推送（SSE）---
     sse_keepalive: int = 20          # 保活注释间隔（秒）

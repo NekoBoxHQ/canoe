@@ -42,6 +42,7 @@ from ..models import (
 )
 from ..security import hash_password
 from ..services.broadcast import hub, notify_config_changed, notify_kick, notify_release
+from ..services import github
 from ..services.nodes import (
     bound_node_ids,
     count_nodes,
@@ -54,6 +55,7 @@ from ..services.sessions import revoke_user_sessions, revoke_user_tokens
 from ..services.updates import (
     ReleaseMismatch,
     ReleaseTooLarge,
+    guess_version,
     latest_release,
     list_releases,
     publish_release,
@@ -570,6 +572,15 @@ class ReleasePublish(BaseModel):
     min_version: str = ""
 
 
+class ReleasePull(BaseModel):
+    """「拉取最新轻舟」的入参。整条都是空的也能跑 —— 拉最新那个 Release，
+    版本号从资产文件名里抠。"""
+    tag: str = ""            # 留空 = 最新；要发回旧版就写 v1.0.29
+    version: str = ""        # 留空 = 从文件名抠
+    notes: str = ""          # 留空 = 拿 Release 正文第一行
+    min_version: str = ""
+
+
 def _release_view(row: ClientRelease) -> dict:
     return {
         "id": row.id,
@@ -667,6 +678,92 @@ def admin_upload_release(
     db.commit()
     pushed = notify_release(row.version, notes=row.notes)
     return {**_release_view(row), "pushed": pushed}
+
+
+@router.post(Api.ADMIN_RELEASES + "/pull", status_code=status.HTTP_201_CREATED)
+def admin_pull_release(
+    body: ReleasePull,
+    admin: User = Depends(get_current_admin),
+    db: DBSession = Depends(get_db),
+):
+    """从 GitHub Release 拉安装包并发布 —— 面板上那个「拉取最新轻舟」。
+
+    开发机把 zip 挂到 Release 上，服务端自己去拉。**不再从开发机往服务器
+    上传那 83MB**：上传那条路断过两次，/tmp 里留下 46MB 的半截包，而
+    store_release_file 是按**落盘的字节**算 sha256 的 —— 残包自洽，于是被
+    当成合法版本发了出去。
+
+    摘要是开发机算好、当作 `.sha256` 资产一起挂上去的，这里从 Release 上
+    读回来核对，跟下载链路无关。没挂 .sha256 也照样能发，但那就只剩"大小"
+    一道闸，审计记录里会写明白。
+    """
+    try:
+        release = github.find_release(settings.github_repo, body.tag)
+        asset, digest = github.pick_assets(release)
+    except github.GithubError as exc:
+        raise HTTPException(400, {"code": "github", "detail": str(exc)}) from exc
+
+    filename = safe_filename(str(asset.get("name") or "Canoe.zip"))
+    version = (
+        body.version.strip()
+        or guess_version(filename)
+        or str(release.get("tag_name") or "").lstrip("vV")
+    )
+    if not version:
+        raise HTTPException(400, {
+            "code": "no_version",
+            "detail": "从文件名和 tag 里都抠不出版本号，请在「版本号」里手填一个。",
+        })
+
+    before = latest_release(db)
+    try:
+        with github.open_asset(asset) as src:
+            _dest, size, sha = store_release_file(
+                src, filename,
+                expected_size=int(asset.get("size") or 0),
+                expected_sha256=digest,
+            )
+    except github.GithubError as exc:
+        raise HTTPException(400, {"code": "github", "detail": str(exc)}) from exc
+    except ReleaseTooLarge as exc:
+        raise HTTPException(413, {"code": "too_large", "detail": str(exc)}) from exc
+    except ReleaseMismatch as exc:
+        raise HTTPException(400, {"code": "incomplete", "detail": str(exc)}) from exc
+    except OSError as exc:
+        raise HTTPException(500, {"code": "io_error", "detail": f"下载或写盘失败：{exc}"}) from exc
+
+    notes = body.notes.strip()
+    if not notes:
+        # 没填更新说明就拿 Release 正文第一行 —— 客户端那个更新弹窗只显示一段话
+        notes = next(
+            (ln.strip().strip("#*` ") for ln in str(release.get("body") or "").splitlines()
+             if ln.strip()),
+            "",
+        )[:200]
+
+    row = publish_release(
+        db,
+        version=version,
+        filename=filename,
+        size=size,
+        sha256=sha,
+        notes=notes,
+        min_version=body.min_version,
+    )
+    db.add(AuditLog(
+        user_id=admin.id,
+        action="release_pull",
+        detail=f"{version} {filename} {size}B（GitHub {settings.github_repo}）"
+               + ("" if digest else " ⚠ 没挂 .sha256，只核对了大小"),
+    ))
+    db.commit()
+    pushed = notify_release(row.version, notes=row.notes)
+    return {
+        **_release_view(row),
+        "pushed": pushed,
+        "verified": bool(digest),          # 摘要核对过没有
+        "previous": before.version if before else "",
+    }
 
 
 @router.delete(Api.ADMIN_RELEASES + "/{release_id}")

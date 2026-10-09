@@ -596,15 +596,60 @@ function sessionCols() {
 // 算出文件的 sha256（十六进制）。
 // 算不了（非安全上下文、浏览器太老）就返回空串 —— 服务端那边 sha256 是可选的，
 // 但**字节数**一定要带上，上传被截断时就靠它对不出来。
-async function sha256Hex(file) {
-  try {
-    if (!crypto || !crypto.subtle) return '';
-    const buf = await file.arrayBuffer();
-    const d = await crypto.subtle.digest('SHA-256', buf);
-    return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
-  } catch (e) {
-    return '';
+// 「预览」说人话。
+//
+// 以前这里直接甩一段 /api/client/latest 的 JSON —— 发完版本想确认客户端到底
+// 会看到什么，还得自己在脑子里把 JSON 翻一遍。用户原话："这里面说人话"。
+// 现在按人看的顺序摆：版本、大小、下载地址、说明、摘要，最后一句讲清楚
+// 客户端点下去会发生什么。
+async function previewClientView() {
+  const p = await api('/api/admin/releases/latest-preview');
+  openModal({
+    title: '客户端点「更新」会看到什么',
+    fields: [], submitText: '知道了',
+    onSubmit: () => closeModal(),
+  });
+  const body = clear($('#modal-body'));
+
+  // ⚠ 判空看 version，别看 latest —— 有版本时后端返回的是
+  //   to_release_payload 那份（version/url/size/...），**根本没有 latest 这个键**；
+  //   只有"一个版本都没有"时才回 {"latest": null, "hint": ...}。
+  //   （第一版就写错了，面板测试逮住了。）
+  if (!p.version) {
+    body.append(h('p', { class: 'tip' },
+      '还没有发布过任何版本。客户端点「更新」会收到 404，界面上显示「检查更新失败」。',
+      h('br'), '先点左边的「拉取最新轻舟」。'));
+    return;
   }
+
+  const file = (p.url || '').split('/').pop();
+  const line = (k, v, mono) => h('p', { class: 'kv-line' },
+    h('b', { text: k }),
+    mono ? h('span', { class: 'mono', text: String(v) }) : String(v));
+
+  body.append(h('div', { class: 'stat-grid' },
+    h('div', { class: 'stat info' },
+      h('div', { class: 'k', text: '客户端会看到的版本' }),
+      h('div', { class: 'v', text: p.version })),
+    h('div', { class: 'stat' },
+      h('div', { class: 'k', text: '安装包大小' }),
+      h('div', { class: 'v', text: fmtSize(p.size) })),
+    h('div', { class: 'stat' },
+      h('div', { class: 'k', text: '最低要求版本' }),
+      h('div', { class: 'v', text: p.min_version || '不限' })),
+  ));
+
+  body.append(line('文件名', file || '（这条发布记录没绑安装包）', true));
+  body.append(line('下载地址', p.url || '—', true));
+  body.append(line('更新说明', p.notes || '（没写）'));
+  body.append(line('发布时间', fmtTime(p.published_at)));
+  body.append(line('文件摘要', p.sha256 ? p.sha256.slice(0, 20) + '…' : '（没有摘要）', true));
+
+  body.append(h('p', { class: 'tip' }, p.sha256
+    ? '客户端点「更新」会看到有新版本，从上面的地址下载，装完自动重启 —— 全程不弹窗。'
+      + '下载完先核对上面那个摘要，对不上直接丢掉，不会装。'
+    : '客户端会看到有新版本，从上面的地址下载，装完自动重启。'
+      + '⚠ 这条发布记录里没有摘要，客户端只能核对大小 —— 说明这个包没挂 .sha256。'));
 }
 
 async function pageReleases(root) {
@@ -613,45 +658,41 @@ async function pageReleases(root) {
 
   root.append(h('div', { class: 'card-actions' },
     h('button', {
-      class: 'btn btn-primary btn-sm', text: '上传安装包并发布',
+      class: 'btn btn-primary btn-sm', text: '拉取最新轻舟',
       onclick: () => openModal({
-        title: '发布客户端新版本',
+        title: '从 GitHub 拉最新版并发布',
         fields: [
-          { key: 'version', label: '版本号', required: true, placeholder: '1.1.0' },
-          { key: 'min_version', label: '最低要求版本', help: '低于它的客户端会被提示强制升级；留空不强制' },
-          { key: 'notes', label: '更新说明', type: 'textarea', placeholder: '修复 TUN 快速重连卡顿' },
-          { key: 'file', label: '安装包（zip）', type: 'file', accept: '.zip', required: true },
+          { key: 'tag', label: '标签', placeholder: 'v1.0.29',
+            help: '留空 = 拉最新的那个 Release；要发回旧版就填它的 tag' },
+          { key: 'version', label: '版本号',
+            help: '留空就自动从安装包文件名里认（Canoe-1.0.29-win64.zip → 1.0.29）' },
+          { key: 'min_version', label: '最低要求版本',
+            help: '低于它的客户端会被提示强制升级；留空不强制' },
+          { key: 'notes', label: '更新说明', type: 'textarea', rows: 4,
+            placeholder: '留空就用 Release 正文的第一行' },
         ],
-        submitText: '上传',
+        submitText: '拉取并发布',
         onSubmit: async (v) => {
-          if (!v.file) { toast('还没选文件', 'warn'); return; }
-          // ★ 把本地这份的字节数和摘要一起报上去，服务端拿它核对收到的东西。
-          //   光靠 HTTP 的 Content-Length 证明不了传完的是**一份完整的包** ——
-          //   真出过事：传的是一个还在写的文件，47MB 当成 87MB 发了出去，
-          //   服务端照单全收、照这份残包算 sha256 写进发布记录，客户端下载
-          //   校验也"通过"（它核对的就是这份残包的摘要），装上才发现 exe 是
-          //   残的 —— 单文件 exe 截断了照样能启动，只是解不出 python313.dll。
-          const digest = await sha256Hex(v.file);
-          const fd = new FormData();
-          fd.append('version', v.version);
-          fd.append('notes', v.notes || '');
-          fd.append('min_version', v.min_version || '');
-          fd.append('size', String(v.file.size));
-          if (digest) fd.append('sha256', digest);
-          fd.append('file', v.file);
-          await api('/api/admin/releases/upload', { method: 'POST', form: fd });
-          toast('已发布，在线客户端会收到推送', 'ok'); closeModal(); render();
+          // 包不经过这台机器上传 —— 服务端自己去 GitHub 把 Release 资产拉回来，
+          // 顺手核对开发机挂上去的那份 .sha256。所以这里没有任何文件框。
+          const r = await api('/api/admin/releases/pull', {
+            method: 'POST',
+            body: {
+              tag: v.tag || '', version: v.version || '',
+              min_version: v.min_version || '', notes: v.notes || '',
+            },
+          });
+          toast(r.verified
+            ? `已发布 ${r.version}，摘要核对通过`
+            : `已发布 ${r.version} —— 这个 Release 没挂 .sha256，只核对了大小`,
+            r.verified ? 'ok' : 'warn');
+          closeModal(); render();
         },
       }),
     }),
     h('button', {
       class: 'btn btn-ghost btn-sm', text: '预览客户端会拿到什么',
-      onclick: async () => {
-        const p = await api('/api/admin/releases/latest-preview');
-        openModal({ title: '客户端看到的最新版本', fields: [], submitText: '关闭',
-          onSubmit: () => closeModal() });
-        clear($('#modal-body')).append(h('pre', { class: 'code', text: JSON.stringify(p, null, 2) }));
-      },
+      onclick: previewClientView,
     }),
   ));
 

@@ -239,6 +239,89 @@ def main() -> int:
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+    # --- 9. 从 GitHub Release 拉包 ---
+    #
+    # 面板上那个「拉取最新轻舟」走的就是这里。它替代了"开发机往服务器上传
+    # 83MB"那条路 —— 那条断过两次，/tmp 里留下 46MB 半截包，而
+    # store_release_file 是按落盘字节算摘要的，残包自洽，被当合法版本发了出去。
+    # 这段不联网：只验挑资产、读 .sha256、拼 URL 这几步的判断。
+    print("\n[9] 从 GitHub Release 拉包（不联网，验判断逻辑）")
+    from canoe_server.services import github  # noqa: PLC0415
+
+    digest = "a" * 64
+    REL = {
+        "tag_name": "v1.0.29",
+        "body": "修掉更新后 Failed to load Python DLL\n\n其余说明……",
+        "assets": [
+            {"name": "Canoe-1.0.29-win64.zip.sha256", "size": 90,
+             "browser_download_url": "https://example.invalid/sha"},
+            {"name": "Canoe-1.0.29-win64.zip", "size": 87_176_078,
+             "browser_download_url": "https://example.invalid/zip"},
+            {"name": "Canoe-1.0.29-win64-debug.zip", "size": 100,
+             "browser_download_url": "https://example.invalid/dbg"},
+        ],
+    }
+
+    real_side = github.read_sidecar
+    github.read_sidecar = lambda url: digest if url.endswith("/sha") else ""
+    try:
+        asset, got = github.pick_assets(REL)
+        check("★ 挑的是安装包本体，不是旁边那份 .sha256",
+              asset["name"] == "Canoe-1.0.29-win64.zip", str(asset.get("name")))
+        check("★ 挂了多个 zip 时取最大的那个", asset["size"] == 87_176_078)
+        check("★ 顺带把 .sha256 里的摘要读了回来", got == digest, got[:16])
+    finally:
+        github.read_sidecar = real_side
+
+    try:
+        github.pick_assets({"assets": []})
+        check("Release 里没有 zip 时应当报错", False)
+    except github.GithubError as exc:
+        check("★ 没有 zip 时给的是人话（提示去跑 package_release.py）",
+              "package_release.py" in str(exc), str(exc))
+
+    # .sha256 是 sha256sum 那种标准格式，别写成只认纯 64 个字符
+    import urllib.request as _urlreq  # noqa: PLC0415
+
+    real_urlopen = _urlreq.urlopen
+
+    class _Resp:
+        def __init__(self, data): self._data = data
+        def read(self): return self._data
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    try:
+        _urlreq.urlopen = lambda url, timeout=0: _Resp(
+            (digest + "  Canoe-1.0.29-win64.zip\n").encode())
+        check("★ 标准的 `摘要  文件名` 格式能读出摘要",
+              github.read_sidecar("https://example.invalid/x") == digest)
+
+        _urlreq.urlopen = lambda url, timeout=0: _Resp(b"<!doctype html>404")
+        check("★ 旁边挂的不是摘要文件时返回空串（不炸）",
+              github.read_sidecar("https://example.invalid/x") == "")
+
+        def _boom(url, timeout=0):
+            raise OSError("断网")
+        _urlreq.urlopen = _boom
+        check("★ 读不到 .sha256 时返回空串（不能把整次发布弄挂）",
+              github.read_sidecar("https://example.invalid/x") == "")
+    finally:
+        _urlreq.urlopen = real_urlopen
+
+    seen: list[str] = []
+    real_json = github._get_json
+    github._get_json = lambda url: (seen.append(url), REL)[1]
+    try:
+        github.find_release("NekoBoxHQ/canoe", "v1.0.29")
+        check("★ 指定了 tag 就查 releases/tags/<tag>",
+              seen[-1].endswith("/repos/NekoBoxHQ/canoe/releases/tags/v1.0.29"), seen[-1])
+        github.find_release("NekoBoxHQ/canoe", "")
+        check("★ 不指定 tag 就查 releases/latest",
+              seen[-1].endswith("/repos/NekoBoxHQ/canoe/releases/latest"), seen[-1])
+    finally:
+        github._get_json = real_json
+
     print(f"\n{'=' * 48}")
     print(f"通过 {passed} 项，失败 {failed} 项")
     print(f"{'=' * 48}\n")

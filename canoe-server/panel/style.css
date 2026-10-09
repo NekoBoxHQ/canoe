@@ -268,6 +268,11 @@ td.wrap, th.wrap { white-space: normal; max-width: 260px; }
 
 .secret { color: var(--amber); font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; }
 .muted { color: var(--faint); }
+/* 「预览客户端会拿到什么」那一屏 —— 说人话用的：一行一个 key/value，
+   底下一段大白话说明。以前那儿是 <pre> 里一段 JSON。 */
+.kv-line { margin: 6px 0; font-size: 13px; word-break: break-all; }
+.kv-line b { color: var(--dim); font-weight: 600; margin-right: 10px; }
+.tip { margin: 14px 0 0; font-size: 12px; line-height: 1.8; color: var(--dim); }
 .empty { padding: 26px; text-align: center; color: var(--faint); }
 
 pre.code {

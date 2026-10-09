@@ -85,6 +85,12 @@ const FIXTURES = [
   [/\/api\/admin\/releases$/, { items: [
     { id: 1, version: '1.1.0', filename: 'Canoe-1.1.0.zip', size: 83276159, sha256: 'a'.repeat(64), notes: 'x', min_version: '1.0.0', enabled: true, published_at: 1790000000 },
   ], latest: '1.1.0' }],
+  // 「预览客户端会拿到什么」—— 后端返回的就是 to_release_payload 那份
+  [/\/api\/admin\/releases\/latest-preview/, {
+    version: '1.1.0', url: 'https://canoe.example.com/downloads/Canoe-1.1.0.zip',
+    notes: '修掉更新后 Failed to load Python DLL', size: 83276159,
+    sha256: 'a'.repeat(64), min_version: '1.0.0', published_at: 1790000000,
+  }],
 ];
 
 globalThis.fetch = async (path, opts = {}) => {
@@ -241,17 +247,33 @@ check('节点页没有"入口 / 真实节点"那两列了',
 console.log('\n[6] 弹窗能构造出来');
 navItems[3].dispatchEvent(new window.Event("click", { bubbles: true }));   // 发布页
 await settle();
-const newBtn = [...document.querySelectorAll('#page button')].find((b) => b.textContent.includes('上传安装包'));
-check('发布页有「上传安装包」按钮', !!newBtn);
+const newBtn = [...document.querySelectorAll('#page button')].find((b) => b.textContent.includes('拉取最新轻舟'));
+check('发布页有「拉取最新轻舟」按钮', !!newBtn);
 newBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
 await tick();
 check('弹窗打开了', !document.querySelector('#modal-root').hidden);
 const modalTxt = document.querySelector('#modal-body').textContent;
-check('弹窗里有版本号/说明/文件字段',
-      modalTxt.includes('版本号') && modalTxt.includes('更新说明') && modalTxt.includes('安装包'),
+check('弹窗里有标签/版本号/说明字段',
+      modalTxt.includes('标签') && modalTxt.includes('版本号') && modalTxt.includes('更新说明'),
       modalTxt.slice(0, 160));
+// 包不再从这台机器上传 —— 服务端自己去 GitHub 拉。所以弹窗里不该有文件框。
+check('没有文件选择框了（不再本地上传）',
+      !document.querySelector('#modal-body input[type=file]'), '还有 file 输入');
 document.querySelector('#modal-close').dispatchEvent(new window.Event('click', { bubbles: true }));
 check('弹窗关掉了', document.querySelector('#modal-root').hidden);
+
+// 「预览」必须说人话 —— 以前是一段 JSON，用户原话："这里面说人话"
+const pvBtn = [...document.querySelectorAll('#page button')].find((b) => b.textContent.includes('预览'));
+check('发布页有「预览客户端会拿到什么」按钮', !!pvBtn);
+pvBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
+await settle();
+const pvTxt = document.querySelector('#modal-body').textContent;
+check('预览里没有 JSON 大括号/字段名', !pvTxt.includes('{') && !pvTxt.includes('"version"'),
+      pvTxt.slice(0, 120));
+check('预览把版本/下载地址/大小都讲清楚了',
+      pvTxt.includes('1.1.0') && pvTxt.includes('下载地址') && pvTxt.includes('79.4 MB'),
+      pvTxt.slice(0, 220));
+document.querySelector('#modal-close').dispatchEvent(new window.Event('click', { bubbles: true }));
 
 console.log('\n[6.5] hidden 属性真的能藏住');
 // 上面那条只验了 .hidden **属性**。属性为真不等于屏幕上看不见 ——
