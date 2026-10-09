@@ -450,15 +450,21 @@ def _write_bat(path: Path, script: str) -> None:
 
 #: 替换脚本。**通篇 ASCII** —— 批处理按控制台代码页读文件，掺中文会变乱码。
 #:
-#: 为什么非得绕这一圈：Windows 上正在运行的 exe 既删不掉也覆盖不了。
+#: 为什么非得绕这一圈：Windows 上正在运行的 exe 删不掉，也覆盖不了。
 #: 任何"我先退出、退出前自己替换"的写法都死在"退出之后没人干活"。
-#: 交给系统来做 —— cmd 等本进程真的没了（文件锁释放）再动手。
+#: 交给系统来做 —— 写个 .bat，让 cmd 去换。
 #:
 #: 三件事，顺序都有原因：
 #:
-#:   1. **换文件，换不动就重试**。这个重试循环**本身就是"等旧进程退出"**：
-#:      旧进程在跑的时候那个 exe 是锁着的，move 一定失败；move 成功就说明
-#:      锁已经松了、进程已经没了。所以不需要再去问系统"那个 pid 还在不在"。
+#:   1. **换文件：先把旧的改名挪开，再把新的放进去**。
+#:
+#:      ★ 2026-10-10 改的，旧写法真出事了。原来是 `move /y new cur` 加重试
+#:        循环 —— 而 move 要覆盖就得先删掉 cur，偏偏**正在运行的 exe 删不掉**
+#:        （改名可以：实测改名成功、删除 WinError 5 拒绝访问）。于是旧进程
+#:        多活一会儿，move 就一次都成功不了，那个循环得 ping 满一分钟才认输。
+#:        用户的原话是"更新一直 ping 个没停"，而且更新**压根没装上**
+#:        （桌面上还是旧版本）。`ren cur cur.old` 之后再 move 就没有这个坎，
+#:        新版本立刻到位。
 #:
 #:      ⚠ 别再加那段 `tasklist ... | findstr ...` 的轮询。加过，出事了：
 #:        那个管道会**永久卡住**，实测把一个真实更新挂死了 18 分钟 ——
@@ -466,8 +472,10 @@ def _write_bat(path: Path, script: str) -> None:
 #:        来的输入结束。用户那边的表现就是"点了更新，程序关了，然后
 #:        什么都没发生，桌面上留着 Canoe.exe.new 和这个 .bat"。
 #:
-#:   2. **换完等四五秒再拉起来**。单文件 exe 启动时要解压约 80MB 到
-#:      %TEMP%\\_MEIxxxx，太快拉起来容易撞上杀毒软件对刚落盘的 exe 做实时扫描。
+#:   2. **等旧进程真的退干净，再拉新的**。旧 exe 改名成了 .old，但仍然被旧
+#:      进程占着、删不掉 —— **删得掉就说明它退了**，拿这个当判据，不用去问
+#:      系统"那个 pid 还在不在"。不等到就拉起新的，新实例会撞上单实例锁、
+#:      白起一次。等不到就写日志收摊：文件已经换好了，下次打开就是新版本。
 #:
 #:   3. **拉起来之后确认它真的起来了，没起来就重开**。
 #:
@@ -486,38 +494,70 @@ rem one, and restart it until it really comes up.
 setlocal
 cd /d "%~dp0"
 
-rem The retry loop IS the wait for the old process: its exe stays locked while
-rem it runs, so a successful move already means it is gone.
+rem --- 1) swap -------------------------------------------------------------
+rem Rename the old exe aside FIRST. Renaming a running exe works; deleting one
+rem does not. So a plain "move /y" onto it can NEVER succeed while the old
+rem process is alive - the retry loop just pings for a minute, which is exactly
+rem what a user saw ("the update keeps pinging and never stops", with the new
+rem version not installed at all).
+rem NOTE: ren's second argument is a NAME, not a path - passing a full path
+rem silently fails. We cd'd to the exe's folder above, so bare names are what
+rem we use here. Getting this wrong is invisible: ren fails, move then fails
+rem too, and you only notice it because nothing ever updates.
 set /a tries=0
-:retry
+:swap
+if exist "{cur}" del "{old_name}" >nul 2>&1
+if exist "{cur}" ren "{cur_name}" "{old_name}" >nul 2>&1
+move /y "{new}" "{cur}" >nul 2>&1
+if not exist "{cur}" goto unswap
+if exist "{new}" goto unswap
+goto swapped
+:unswap
+rem Did not land. Put the old one back - a failed update must never leave the
+rem user with no exe at all (the old one is sitting there as .old).
+if not exist "{cur}" ren "{old_name}" "{cur_name}" >nul 2>&1
 rem ping is used as a sleep - "timeout" fails when stdin is redirected.
 ping -n 2 127.0.0.1 >nul
-move /y "{new}" "{cur}" >nul 2>&1
-if not errorlevel 1 goto ok
 set /a tries+=1
-if %tries% lss 60 goto retry
+if %tries% lss 30 goto swap
 echo [%date% %time%] could not replace "{cur}" > "{log}"
 exit /b 1
+:swapped
 
-:ok
-rem Start it, then confirm it really came up. The new exe touches {marker}
-rem once its window is up - nothing else proves it, because a failed unpack
-rem still leaves a process behind (sitting on a native error box).
-rem Three shots, then give up loudly; the log is shown on the next start.
-set /a boots=0
+rem --- 2) wait for the old process ------------------------------------------
+rem The old exe is .old now, but still locked by the old process. Once it can
+rem be deleted that process is gone - use that instead of asking the OS about
+rem a pid. Launching before then only trips the single-instance guard.
+set /a waited=0
+:waitold
+del "{old_name}" >nul 2>&1
+if not exist "{old_name}" goto launch
+ping -n 3 127.0.0.1 >nul
+set /a waited+=1
+if %waited% lss 20 goto waitold
+echo [%date% %time%] the old version is still running; the new one is already in place - just open it again > "{log}"
+exit /b 0
+
+rem --- 3) start, then confirm -----------------------------------------------
 :launch
+rem The new exe touches {marker} once its window is up - nothing else proves
+rem it, because a failed unpack still leaves a process behind (sitting on a
+rem native error box). Three shots, then give up loudly; the log is shown on
+rem the next start.
+set /a boots=0
+:relaunch
 del "{marker}" >nul 2>&1
 rem Settle first, so we do not race the antivirus scan of the fresh exe.
 ping -n 5 127.0.0.1 >nul
 start "" "{cur}"
 set /a waited=0
-:wait
+:waitup
 ping -n 3 127.0.0.1 >nul
 if exist "{marker}" goto done
 set /a waited+=1
-if %waited% lss 12 goto wait
+if %waited% lss 12 goto waitup
 set /a boots+=1
-if %boots% lss 3 goto launch
+if %boots% lss 3 goto relaunch
 echo [%date% %time%] started "{cur}" but it never came up > "{log}"
 exit /b 0
 
@@ -553,8 +593,13 @@ def install_and_restart(new_exe: Path | None = None) -> Path:
 
     bat = cur.with_name("canoe-update.bat")
     log = cur.with_name("canoe-update.log")
+    # ⚠ 顺序：`{cur_name}` / `{old_name}` 必须排在 `{cur}` **前面** ——
+    #   `{cur}` 是它们的前缀，先替换 `{cur}` 会把 `{cur_name}` 拆成
+    #   `<路径>_name`。ren 只认名字不认路径，错了会静默失败（见 _BAT 里的注释）。
     script = (
-        _BAT.replace("{new}", str(new))
+        _BAT.replace("{old_name}", cur.name + ".old")
+        .replace("{cur_name}", cur.name)
+        .replace("{new}", str(new))
         .replace("{cur}", str(cur))
         .replace("{log}", str(log))
         .replace("{marker}", str(start_marker()))
@@ -593,7 +638,9 @@ def cleanup_leftovers() -> None:
         base = _current_exe().parent
     except OSError:
         return
-    for name in ("canoe-update.bat", "Canoe.exe.new"):
+    # Canoe.exe.old 是交班时被改名挪开的旧程序（见 _BAT：改名是唯一能对
+    # 运行中的 exe 做的事）。旧进程退出前它删不掉，所以留到这次启动来收。
+    for name in ("canoe-update.bat", "Canoe.exe.new", "Canoe.exe.old"):
         try:
             (base / name).unlink(missing_ok=True)
         except OSError:

@@ -257,13 +257,25 @@ def main() -> int:
         script = bat.read_text(encoding="ascii")   # 不是纯 ASCII 这里就抛
         check("★ 脚本是纯 ASCII（批处理按控制台代码页读，中文会乱码）", True)
         check("★ 等文件锁释放后再替换（ping 当 sleep）", "ping -n 2 127.0.0.1" in script)
-        check("★ 替换失败会重试，不是试一次就算了", "goto retry" in script)
+        check("★ 替换失败会重试，不是试一次就算了", "goto swap" in script)
+        # ★ 换文件必须**先改名挪开旧的**。正在运行的 exe 删不掉（WinError 5），
+        #   所以 `move /y new cur` 在旧进程还活着时永远失败 —— 用户那边就是
+        #   "更新一直 ping 个没停"、而且压根没装上。改名对运行中的 exe 是允许的。
+        # ren 的第二个参数必须是**名字**不是路径，所以脚本里用的是裸文件名。
+        # 这里正好也钉死这一点 —— 写成完整路径会静默失败（第一版就是）。
+        check("★ 先改名挪开旧的（运行中的 exe 删不掉、但能改名）",
+              f'ren "{fake_exe2.name}" "{fake_exe2.name}.old"' in script,
+              "没看到 ren ...old；这样旧进程一活着 move 就永远失败")
+        check("★ ren 用的是裸名字（第二个参数给路径会静默失败）",
+              f'"{fake_exe2}.old"' not in script)
         check("★ 替换成功后把新程序拉起来", f'start "" "{fake_exe2}"' in script)
         # 用户在真机上撞到过：更新完第一次启动弹
         #   Failed to load Python DLL '...python313.dll'
         # 单文件 exe 启动时会解压到 %TEMP%\_MEIxxxx 并清理上一次的同名目录，
         # 新的太早起来就会被对方清掉。所以必须先等旧进程真没了。
-        check("★ 重试有上限（换不动也要退出）", "lss 60 goto retry" in script)
+        check("★ 重试有上限（换不动也要退出）", "lss 30 goto swap" in script)
+        check("★ 拉新的之前先等旧进程退干净（删得掉 .old 才算退了）",
+              'del "{old_name}"' in update._BAT and ":waitold" in update._BAT)
         check("★ 换完先等一会儿再启动（杀毒扫描刚落盘的 exe）",
               "ping -n 5 127.0.0.1" in script, "没找到启动前的等待")
         # 用户在真机上撞到过：更新后重启弹引导器的原生框
@@ -277,7 +289,7 @@ def main() -> int:
         check("★ 判断依据是程序自己写的启动脚印", "started.txt" in script
               and "{marker}" not in script, "脚本没去看 started.txt / 占位符没替换")
         check("★ 重开有上限（连试 3 次就不试了，别死循环）",
-              "lss 3 goto launch" in script)
+              "lss 3 goto relaunch" in script)
         # 真机事故：那段 `tasklist | findstr` 轮询会**永久卡住** ——
         # cmd 等 findstr，findstr 等一个永远不来的 EOF，更新挂死 18 分钟。
         # 重试 move 本身就是"等旧进程退出"（进程在跑时文件锁着、move 必失败），
@@ -341,7 +353,9 @@ def main() -> int:
         marker = sand / "started.txt"
         bat = sand / "canoe-update.bat"
         bat.write_text(
-            update._BAT.replace("{new}", str(new))
+            update._BAT.replace("{old_name}", old.name + ".old")
+            .replace("{cur_name}", old.name)
+            .replace("{new}", str(new))
             .replace("{cur}", str(old))
             .replace("{log}", str(log))
             .replace("{marker}", str(marker)),
@@ -374,6 +388,8 @@ def main() -> int:
         check("★ 文件真的被换掉了", old.read_bytes() == host_exe.read_bytes(),
               f"{old.stat().st_size} 字节")
         check("换完之后 .new 没了（是 move 不是 copy）", not new.exists())
+        check("换完之后 .old 也被收掉了（旧进程早退了，del 删得掉）",
+              not (sand / "Canoe.exe.old").exists())
         check("没有失败日志（说明没走到失败分支）", not log.exists())
         # .bat 特意**不**自删：删掉正在执行的批处理，cmd 读不到下一行，
         # 会退回 1 并喷一句"找不到批处理文件"。留着不影响什么 ——
@@ -388,12 +404,15 @@ def main() -> int:
         # 所以这里钉死两件事：上限还在，而且脚本里**不许**再有那种轮询。
         fail_bat = sand / "fail.bat"
         fail_bat.write_text(
-            update._BAT.replace("{new}", str(sand / "does-not-exist.exe"))
+            update._BAT.replace("{old_name}", old.name + ".old")
+            .replace("{cur_name}", old.name)
+            .replace("{new}", str(sand / "does-not-exist.exe"))
             .replace("{cur}", str(old))
             .replace("{log}", str(log))
             .replace("{marker}", str(marker))
-            # 上限改成 3 次，等价逻辑但测试只要等几秒
-            .replace("lss 60 goto retry", "lss 3 goto retry"),
+            # 上限改成 2 次，等价逻辑但测试只要等几秒
+            # （换文件那一步会失败：new 指向一个不存在的文件）
+            .replace("lss 30 goto swap", "lss 2 goto swap"),
             encoding="ascii",
         )
         t0 = time.time()
