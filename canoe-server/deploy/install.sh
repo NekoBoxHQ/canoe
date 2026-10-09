@@ -313,11 +313,26 @@ if [[ -t 0 ]]; then read -rp "确认开始？[Y/n] " ok; [[ "${ok:-y}" =~ ^[Yy]?
 # ---------------------------------------------------------------------------
 log "安装系统依赖…"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
 # git：--repo 拉代码要用；用户自己 clone 的话也总得有
 PKGS=(python3 python3-venv python3-pip openssl rsync curl git ca-certificates)
 [[ "$CERT_MODE" == "le" ]] && PKGS+=(certbot)
-apt-get install -y -qq "${PKGS[@]}"
+
+# 输出先收进日志，只有**失败**时才打出来。
+# 直接放出去的话，装个 rsync 也会刷一屏 "Selecting previously
+# unselected package..." —— 用户要的是看得清的步骤，不是 dpkg 的流水账；
+# 但真出错了又不能把原因藏起来，所以是"平时安静、出事全说"。
+_APT_LOG="$(mktemp)"
+_apt_fail() {
+    printf '\n'
+    die "系统依赖安装失败。下面是原始输出：
+
+$(cat "$_APT_LOG")
+"
+}
+apt-get update -qq >"$_APT_LOG" 2>&1 || _apt_fail
+apt-get install -y -qq "${PKGS[@]}" >>"$_APT_LOG" 2>&1 || _apt_fail
+rm -f "$_APT_LOG"
+ok "系统依赖就绪"
 
 # ---------------------------------------------------------------------------
 # 2. 用户与代码
@@ -388,6 +403,11 @@ if [[ -n "$REPO_URL" ]]; then
         fi
         [[ -n "$REPO_TOKEN" ]] && git -C "$APP_DIR" remote set-url origin "$REPO_URL"
     fi
+elif [[ "$REPO_ROOT" == "$APP_DIR" ]]; then
+    # 已经装过、这次是从 /opt/canoe 里那份 install.sh 跑起来的 ——
+    # 源和目标撞在一起。rsync 自己到自己虽然是个空操作，但打出来
+    # "从 /opt/canoe 同步代码到 /opt/canoe" 纯属让人犯嘀咕。
+    log "代码已在 $APP_DIR，跳过同步"
 else
     log "从 $REPO_ROOT 同步代码到 $APP_DIR"
     rsync -a --delete \
@@ -496,7 +516,7 @@ HOOK
     TLS_CERT="$LIVE_DIR/fullchain.pem"
     TLS_KEY="$LIVE_DIR/privkey.pem"
     log "证书已就位：$(openssl x509 -noout -subject -in "$LIVE_DIR/fullchain.pem" 2>/dev/null | sed 's/^subject=//')"
-    warn "已有证书不会自动续期 —— 到期前记得换掉 $CERT_FILE 再重跑本脚本（或在 $LIVE_DIR 里直接替换后 systemctl restart canoe-api）"
+    warn "已有证书不会自动续期：到期前换掉 $LIVE_DIR/ 里的文件，再 sudo canoe restart"
     ;;
 
   none)

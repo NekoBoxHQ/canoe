@@ -131,8 +131,13 @@ def main() -> None:
             db.commit()
             print("[+] 测试用户: demo / canoe-demo-123（7 天）")
 
-        print("\n完成。启动服务端: python run.py")
-        print("接口文档: http://127.0.0.1:8000/docs")
+        # 这两行以前写的是"启动服务端: python run.py / 接口文档: http://127.0.0.1:8000/docs"，
+        # 在 systemd 安装里是彻头彻尾的误导：服务由 canoe-api 托管，
+        # 端口也不是 8000。分开写，各自说各自的。
+        print()
+        print("数据库已就绪。")
+        print("  本地开发： python run.py        （http://127.0.0.1:8000 ）")
+        print("  生产环境： 由 systemd 托管，用 sudo canoe 启停")
     finally:
         db.close()
 

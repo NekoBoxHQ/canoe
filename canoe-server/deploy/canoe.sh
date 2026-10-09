@@ -219,7 +219,7 @@ cmd_install() {
     script="$(find_installer)" || return 1
     [[ -n "$script" ]] || return 1
 
-    log "交给安装向导（端口 / 域名 / 证书都在那里选）"
+    log "进入安装向导（域名 / 管理端口 / 证书）"
     printf '\n'
 
     # 不用 exec：装完要回到菜单，不能把用户丢回 shell 提示符 ——
@@ -659,33 +659,15 @@ cmd_version() {
 # ---------------------------------------------------------------------------
 # 菜单
 # ---------------------------------------------------------------------------
-show_menu() {
-    local state ver
-    ver="$(app_version)"
-    if systemctl is-active --quiet "$UNIT" 2>/dev/null; then
-        state="${C_OK}运行中${C_OFF}"
-    elif installed; then
-        state="${C_WARN}已停止${C_OFF}"
-    else
-        state="${C_DIM}未安装${C_OFF}"
-    fi
+#: 菜单宽度（按用户给的样式，31 个横线）
+MENU_RULE="-------------------------------"
 
+show_menu() {
     clear 2>/dev/null || true
-    hr
-    printf '          %s轻舟 / Canoe  服务端管理%s\n' "$C_INFO" "$C_OFF"
-    dim "轻舟已过万重山        $state   版本 $ver"
-    hr
+    printf '%s\n' "$MENU_RULE"
+    printf '         %s服务端管理脚本%s\n' "$C_INFO" "$C_OFF"
+    printf '%s\n' "$MENU_RULE"
     printf '   1  安装 Canoe\n'
-    if ! installed; then
-        # 还没装的时候，2-8 点了也是白点 —— 直接说清楚，
-        # 别让用户一个个试过去
-        dim "      还没安装。先选 1，其余几项装好之后才有意义。"
-        hr
-        printf '   0  退出\n'
-        hr
-        printf '  请选择: '
-        return
-    fi
     printf '   2  启动 Canoe\n'
     printf '   3  停止 Canoe\n'
     printf '   4  重启 Canoe\n'
@@ -693,11 +675,8 @@ show_menu() {
     printf '   6  Canoe 配置\n'
     printf '   7  升级 Canoe\n'
     printf '   8  卸载 Canoe\n'
-    hr
-    printf '   l  看日志        p  改管理员密码\n'
-    hr
     printf '   0  退出\n'
-    hr
+    printf '%s\n' "$MENU_RULE"
     printf '  请选择: '
 }
 
@@ -748,7 +727,7 @@ usage() {
     sudo canoe <命令>         直接用子命令
 
 命令：
-    install     安装（交给安装向导，选端口 / 域名 / 证书）
+    install     安装（交给安装向导，选域名 / 管理端口 / 证书）
     start       启动服务
     stop        停止服务
     restart     重启服务

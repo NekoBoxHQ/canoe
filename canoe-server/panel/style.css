@@ -199,6 +199,13 @@ pre.code {
 }
 
 /* ---------------- 弹窗 ---------------- */
+/* hidden 属性得真的管用。
+   浏览器默认样式里那条 [hidden]{display:none} 是 **UA 规则**，作者样式里
+   只要给同一个元素写了 display，就会把它整条盖掉 —— 弹窗层因此会在
+   登录页上露出一块空对话框（真出现过，用户截图报过来的）。
+   !important 是必需的：.modal-root 的优先级和 [hidden] 一样，靠顺序不可靠。 */
+[hidden] { display: none !important; }
+
 .modal-root { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; }
 .modal-mask { position: absolute; inset: 0; background: rgba(2,6,14,.72); }
 .modal {

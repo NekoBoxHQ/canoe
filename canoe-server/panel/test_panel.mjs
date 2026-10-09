@@ -165,6 +165,20 @@ check('弹窗里有版本号/说明/文件字段',
 document.querySelector('#modal-close').dispatchEvent(new window.Event('click', { bubbles: true }));
 check('弹窗关掉了', document.querySelector('#modal-root').hidden);
 
+console.log('\n[6.5] hidden 属性真的能藏住');
+// 上面那条只验了 .hidden **属性**。属性为真不等于屏幕上看不见 ——
+// 浏览器默认样式里那条 [hidden]{display:none} 是 UA 规则，作者样式里
+// 只要给同一个元素写了 display 就会整条盖掉。踩过：
+//   .modal-root{display:flex}  -> 登录页上永久挂着一块空对话框
+//   #app-screen{display:grid}  -> ID 选择器优先级更高，后台界面一直
+//                                 压在登录页后面渲染，画面发虚重叠
+// linkedom 不做样式计算，所以这里只能查样式表本身写了没写那条兜底规则。
+const css = readFileSync(`${PANEL}/style.css`, 'utf8');
+check('★ 样式表里有 [hidden]{display:none} 兜底（否则弹窗/后台界面藏不住）',
+      /\[hidden\][^{]*\{[^}]*display\s*:\s*none/.test(css), '没找到 [hidden] 规则');
+check('★ 该规则带 !important（否则压不过 #id 那种选择器）',
+      /\[hidden\][^{]*\{[^}]*display\s*:\s*none\s*!important/.test(css));
+
 console.log('\n[7] 订阅编辑栏');
 navItems[1].dispatchEvent(new window.Event('click', { bubbles: true }));   // 用户页
 await tick(); await tick(); await tick();

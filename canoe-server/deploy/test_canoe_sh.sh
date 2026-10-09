@@ -121,12 +121,6 @@ mkdir -p "$FAKE_APP/canoe-server/.venv/bin"
 printf '#!/bin/sh\nexit 0\n' > "$FAKE_APP/canoe-server/.venv/bin/python"
 chmod +x "$FAKE_APP/canoe-server/.venv/bin/python"
 
-MENU_FRESH="$(printf '0\n' | bash "$TARGET" 2>&1)"
-check "★ 未安装时只提示先安装（不给一堆点了会报错的选项）" \
-      "$(grep -q "还没安装" <<< "$MENU_FRESH" && echo 0 || echo 1)" "$MENU_FRESH"
-check "未安装时不列出启动/停止这些" \
-      "$(grep -q "启动 Canoe" <<< "$MENU_FRESH" && echo 1 || echo 0)" "$MENU_FRESH"
-
 MENU="$(printf '0\n' | CANOE_APP_DIR="$FAKE_APP" bash "$TARGET" 2>&1)"
 for item in "安装 Canoe" "启动 Canoe" "停止 Canoe" "重启 Canoe" \
             "Canoe 状态" "Canoe 配置" "升级 Canoe" "卸载 Canoe"; do
@@ -134,6 +128,16 @@ for item in "安装 Canoe" "启动 Canoe" "停止 Canoe" "重启 Canoe" \
 done
 check "菜单编号 0-8 齐全" \
       "$(for i in 1 2 3 4 5 6 7 8 0; do grep -qE "^[[:space:]]*$i[[:space:]]" <<< "$MENU" || exit 1; done; echo 0)"
+
+# 菜单格式是用户点名要的 —— 标题、上下两条横线、只有 1-8 + 0。
+# 之前我往里塞了状态行、版本号、l/p 快捷键、未安装提示，被要求改回来。
+check "标题是「服务端管理脚本」" \
+      "$(grep -q "服务端管理脚本" <<< "$MENU" && echo 0 || echo 1)" "$MENU"
+check "★ 菜单里不掺状态/版本/快捷键这些杂项" \
+      "$(grep -qE "运行中|已停止|版本|l  看日志|p  改管理员密" <<< "$MENU" && echo 1 || echo 0)" "$MENU"
+check "菜单只有 9 行选项（1-8 加 0）" \
+      "$([[ "$(grep -cE '^[[:space:]]+[0-9]  ' <<< "$MENU")" == "9" ]] && echo 0 || echo 1)" \
+      "实际 $(grep -cE '^[[:space:]]+[0-9]  ' <<< "$MENU") 行"
 
 # 三种调用方式都必须能出菜单。曾经只认 BASH_SOURCE 惯用法，
 # 结果 bash -c "$(curl …)"（推荐的一行安装方式）下菜单一个字都不显示。
