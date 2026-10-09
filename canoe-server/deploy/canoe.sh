@@ -20,7 +20,9 @@ set -uo pipefail
 
 # ---- 固定路径（和 install.sh 保持一致，改一处要一起改）----
 APP_USER="canoe"
-APP_DIR="/opt/canoe"
+#: 装在哪个目录。可以用 CANOE_APP_DIR 改（装在别处、或测试造一个假环境）。
+#: install.sh 用的是写死的 /opt/canoe，改这里要一起改，否则两边对不上。
+APP_DIR="${CANOE_APP_DIR:-/opt/canoe}"
 SERVER_DIR="$APP_DIR/canoe-server"
 ENV_FILE="$SERVER_DIR/.env"
 CERT_DIR="/etc/canoe"
@@ -28,6 +30,11 @@ LIVE_DIR="$CERT_DIR/live"
 UNIT="canoe-api"
 UNIT_FILE="/etc/systemd/system/$UNIT.service"
 SELF_DEST="/usr/local/bin/canoe"
+
+#: 仓库里 deploy/ 目录的 raw 地址。
+#: 机器上还没有任何代码时，「安装」要先去这里把安装向导取回来 ——
+#: 这样整台机器只需要有这一个脚本就能起步。
+RAW_BASE="${CANOE_RAW_BASE:-https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy}"
 
 # ---- 输出 ----
 if [[ -t 1 ]]; then
@@ -136,6 +143,49 @@ domain_display() {
 # ---------------------------------------------------------------------------
 # 1. 安装
 # ---------------------------------------------------------------------------
+# 找安装向导：本地检出优先，都没有就从仓库取一份回来（会打印路径）。
+# 取回来的临时文件由调用方负责删。
+INSTALLER_TMP=""
+
+find_installer() {
+    local cand self
+
+    for cand in "$SERVER_DIR/deploy/install.sh" "./deploy/install.sh" "./install.sh"; do
+        [[ -f "$cand" ]] && { printf '%s' "$cand"; return 0; }
+    done
+
+    # 脚本自己旁边有没有（本地检出里跑的情况）
+    self="${BASH_SOURCE[0]:-}"
+    if [[ -n "$self" ]]; then
+        cand="$(dirname "$self")/install.sh"
+        [[ -f "$cand" ]] && { printf '%s' "$cand"; return 0; }
+    fi
+
+    # 机器上还什么都没有 —— 去仓库取。
+    # 这就是「一条命令起步」的实现：整台机器只需要这一个脚本。
+    INSTALLER_TMP="$(mktemp)"
+    log "本地没有安装向导，从仓库取一份…"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$RAW_BASE/install.sh" -o "$INSTALLER_TMP" || {
+            rm -f "$INSTALLER_TMP"; INSTALLER_TMP=""
+            die "下载安装向导失败（$RAW_BASE/install.sh）。
+     检查一下这台机器能不能上 GitHub；或者手动把仓库 clone 下来，
+     再在仓库里跑 ./canoe-server/deploy/install.sh。"
+        }
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$INSTALLER_TMP" "$RAW_BASE/install.sh" || {
+            rm -f "$INSTALLER_TMP"; INSTALLER_TMP=""
+            die "下载安装向导失败（$RAW_BASE/install.sh）"
+        }
+    else
+        die "这台机器上既没有 curl 也没有 wget，取不了安装向导。
+     先装一个：apt-get update && apt-get install -y curl"
+    fi
+
+    [[ -s "$INSTALLER_TMP" ]] || { rm -f "$INSTALLER_TMP"; INSTALLER_TMP=""; die "下载到的安装向导是空的"; }
+    printf '%s' "$INSTALLER_TMP"
+}
+
 cmd_install() {
     need_root
 
@@ -148,20 +198,27 @@ cmd_install() {
         [[ "$a" =~ ^[Yy]$ ]] || { log "已取消"; return 0; }
     fi
 
-    local script="$SERVER_DIR/deploy/install.sh"
-
-    # 还没把代码放到 /opt/canoe 的情况：从当前目录找一个
-    if [[ ! -f "$script" ]]; then
-        for cand in "./deploy/install.sh" "./install.sh" "$(dirname "$0")/install.sh"; do
-            [[ -f "$cand" ]] && { script="$cand"; break; }
-        done
-    fi
-    [[ -f "$script" ]] || die "找不到 install.sh。
-     请先在源码目录里跑：sudo ./deploy/install.sh
-     装好之后这个管理菜单里的「安装」才有意义。"
+    local script rc=0
+    script="$(find_installer)" || return 1
+    [[ -n "$script" ]] || return 1
 
     log "交给安装向导（端口 / 域名 / 证书都在那里选）"
-    exec bash "$script"
+    printf '\n'
+
+    # 不用 exec：装完要回到菜单，不能把用户丢回 shell 提示符 ——
+    # 他可能还想顺手启动 / 看状态。
+    bash "$script" || rc=$?
+
+    [[ -n "$INSTALLER_TMP" ]] && { rm -f "$INSTALLER_TMP"; INSTALLER_TMP=""; }
+
+    printf '\n'
+    if [[ $rc -eq 0 && -x "$SERVER_DIR/.venv/bin/python" ]]; then
+        ok "安装完成"
+        dim "以后直接敲：sudo canoe    （这个菜单现在装在 $SELF_DEST 了）"
+    elif [[ $rc -ne 0 ]]; then
+        err "安装向导以退出码 $rc 结束 —— 它上面的输出就是原因"
+    fi
+    return $rc
 }
 
 # ---------------------------------------------------------------------------
@@ -602,6 +659,16 @@ show_menu() {
     dim "轻舟已过万重山        $state   版本 $ver"
     hr
     printf '   1  安装 Canoe\n'
+    if ! installed; then
+        # 还没装的时候，2-8 点了也是白点 —— 直接说清楚，
+        # 别让用户一个个试过去
+        dim "      还没安装。先选 1，其余几项装好之后才有意义。"
+        hr
+        printf '   0  退出\n'
+        hr
+        printf '  请选择: '
+        return
+    fi
     printf '   2  启动 Canoe\n'
     printf '   3  停止 Canoe\n'
     printf '   4  重启 Canoe\n'
@@ -622,6 +689,14 @@ menu() {
         show_menu
         local choice
         read -r choice || { printf '\n'; return 0; }
+
+        # 还没装的时候除了「安装」和「退出」，其余都不该往下走 ——
+        # 否则会打一堆 require_installed 的报错，白折腾
+        if ! installed && [[ "$choice" != "1" && "$choice" != "0" && -n "$choice" ]]; then
+            warn "还没安装，先选 1"
+            printf '\n  回车继续…'; read -r _ || true
+            continue
+        fi
 
         case "$choice" in
             1) cmd_install ;;
@@ -706,8 +781,15 @@ main() {
     esac
 }
 
-# 被 source（测试里就是这么用的）时不执行 —— 只当库用。
-# 直接跑才进 main。
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+# 直接执行时才进 main；被 source 时只当库用（测试就是那么用的）。
+#
+# 判据要同时认三种调用方式，缺一个就会"静默什么都不做"：
+#   bash canoe.sh             BASH_SOURCE[0]=脚本、$0=脚本      -> 相等，跑
+#   bash -c "$(curl …)"       BASH_SOURCE 为空、$0="bash"       -> 空，跑
+#   source canoe.sh（测试）    BASH_SOURCE[0]=脚本、$0=调用方   -> 不等，不跑
+#
+# 只写业内那句惯用法 `[[ ${BASH_SOURCE[0]} == $0 ]]` 会漏掉中间那种 ——
+# 而中间那种正是我们推荐的一行安装方式，结果是菜单一个字都不显示。
+if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi

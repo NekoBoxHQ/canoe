@@ -41,35 +41,61 @@ uvicorn canoe_server.app:app --workers 1     # ← 必须
 
 ---
 
-## 2. 安装向导（推荐）
+## 2. 安装（推荐）
 
-**在服务器上一条命令搞定**（脚本会自己把代码从项目拉下来）：
+**在服务器上一条命令，进管理菜单：**
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/install.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/canoe.sh)"
+```
+
+出来的就是管理菜单：
+
+```
+------------------------------------------------------------
+          轻舟 / Canoe  服务端管理
+------------------------------------------------------------
+   1  安装 Canoe
+      还没安装。先选 1，其余几项装好之后才有意义。
+------------------------------------------------------------
+   0  退出
+------------------------------------------------------------
+  请选择:
+```
+
+选 `1` 进安装向导 —— **整台机器只需要这一个脚本**，代码和后续文件都是它自己去项目拉的。
+装完这个菜单就落到 `/usr/local/bin/canoe`，以后直接：
+
+```bash
+sudo canoe
 ```
 
 > ⚠️ 一定要用 `bash -c "$(curl …)"` 这个写法，**不要**用 `curl … | sudo bash`。
-> 管道会把 stdin 占掉，向导的问答就再也读不到你敲的字了 ——
-> 表现是它卡在那里等输入，或者直接读到你上一条命令的残留。
-> `bash -c "$(...)"` 把脚本当参数传进去，stdin 留给你。
+> 管道会把 stdin 占掉，菜单和向导的 `read` 就再也读不到你敲的字了 ——
+> 表现是它卡在那里不动，或者读到你上一条命令的残留。
 
-如果你想自己先看一眼脚本再跑（推荐第一次这么做）：
+想先看一眼脚本再跑（第一次建议这么做）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/install.sh -o install.sh
-less install.sh          # 看一眼
-sudo bash install.sh
+curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/canoe.sh -o canoe.sh
+less canoe.sh
+sudo bash canoe.sh
 ```
 
-本文档就在仓库里，clone 下来跑也行：
+### 只想装、不想进菜单
+
+也可以直接跑安装向导，或者用参数跳过问答（适合脚本化）：
 
 ```bash
+# 本地检出
 git clone https://github.com/NekoBoxHQ/canoe.git && cd canoe
 sudo bash canoe-server/deploy/install.sh
+
+# 或者不 clone：
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/install.sh)"
 ```
 
-不带参数会**一项一项问你三件事**：
+向导会**一项一项问你四件事**：
 
 ```
 [1/3] 域名

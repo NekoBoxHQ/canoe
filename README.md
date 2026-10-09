@@ -174,31 +174,24 @@ set CANOE_CA_BUNDLE=canoe-server\data\certs\local-cert.pem
 
 ### 部署到服务器
 
-**在服务器上一条命令**（脚本自己把代码从项目拉下来）：
+**在服务器上一条命令** —— 出来就是管理菜单，选 `1` 安装：
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/install.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/canoe.sh)"
 ```
 
-> 用 `bash -c "$(curl …)"`，**不要**用 `curl … | sudo bash` ——
-> 管道会占掉 stdin，安装向导就再也读不到你敲的字了。
-
-或者在本地 clone 下来跑：
-
-```bash
-git clone https://github.com/NekoBoxHQ/canoe.git && cd canoe
-sudo ./canoe-server/deploy/install.sh
-```
-
-安装向导会依次问：域名、客户端端口（默认 `58588`）、面板端口、证书方式
-（Let's Encrypt / 自签 / 已有证书 / 不要 TLS）。细节见 `canoe-server/deploy/README.md`。
-
-装完就有个 `canoe` 管理脚本：
+整台机器只需要这一个脚本，代码和后续文件它自己去项目拉。装完以后直接：
 
 ```bash
 sudo canoe          # 菜单：安装 / 启动 / 停止 / 重启 / 状态 / 配置 / 升级 / 卸载
-sudo canoe status   # 也可以直接用子命令
+sudo canoe status   # 也可以直接用子命令（写进脚本/定时任务）
 ```
+
+> 用 `bash -c "$(curl …)"`，**不要**用 `curl … | sudo bash` ——
+> 管道会占掉 stdin，菜单和向导就再也读不到你敲的字了。
+
+安装向导会依次问：域名、客户端端口（默认 `58588`）、面板端口、证书方式
+（Let's Encrypt / 自签 / 已有证书 / 不要 TLS）。细节见 `canoe-server/deploy/README.md`。
 
 Web 管理面板在 `<域名>:<面板端口>/panel`，管用户、订阅、会话、版本发布。
 **给账号配订阅**就在「用户」页那一行的「订阅」按钮里。

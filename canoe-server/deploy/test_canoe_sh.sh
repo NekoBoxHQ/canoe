@@ -29,7 +29,7 @@ check() {
     fi
 }
 
-# 把脚本当库加载（它被 source 时不会跑 main）
+# 把脚本当库加载（source 时它不会跑 main —— 见脚本末尾的判据说明）
 # shellcheck source=canoe.sh
 source "$TARGET"
 
@@ -111,14 +111,41 @@ for cmd in install start stop restart status config upgrade uninstall logs passw
     check "帮助里有 $cmd" "$(grep -qE "^[[:space:]]*$cmd" <<< "$HELP" && echo 0 || echo 1)"
 done
 
-# 菜单：喂 0 让它渲染一遍就退出
-MENU="$(printf '0\n' | bash "$TARGET" 2>&1)"
+# 菜单：喂 0 让它渲染一遍就退出。
+#
+# 未安装时菜单只会列出「安装」—— 这是刻意的（其余几项点了也没用）。
+# 所以要验完整的 1-8，得先造一个"看起来装过了"的环境：
+# CANOE_APP_DIR 指过去，并在里面放一个可执行的 .venv/bin/python。
+FAKE_APP="$TMP/fakeapp"
+mkdir -p "$FAKE_APP/canoe-server/.venv/bin"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE_APP/canoe-server/.venv/bin/python"
+chmod +x "$FAKE_APP/canoe-server/.venv/bin/python"
+
+MENU_FRESH="$(printf '0\n' | bash "$TARGET" 2>&1)"
+check "★ 未安装时只提示先安装（不给一堆点了会报错的选项）" \
+      "$(grep -q "还没安装" <<< "$MENU_FRESH" && echo 0 || echo 1)" "$MENU_FRESH"
+check "未安装时不列出启动/停止这些" \
+      "$(grep -q "启动 Canoe" <<< "$MENU_FRESH" && echo 1 || echo 0)" "$MENU_FRESH"
+
+MENU="$(printf '0\n' | CANOE_APP_DIR="$FAKE_APP" bash "$TARGET" 2>&1)"
 for item in "安装 Canoe" "启动 Canoe" "停止 Canoe" "重启 Canoe" \
             "Canoe 状态" "Canoe 配置" "升级 Canoe" "卸载 Canoe"; do
-    check "菜单里有「$item」" "$(grep -qF "$item" <<< "$MENU" && echo 0 || echo 1)"
+    check "菜单里有「$item」" "$(grep -qF "$item" <<< "$MENU" && echo 0 || echo 1)" "$MENU"
 done
 check "菜单编号 0-8 齐全" \
       "$(for i in 1 2 3 4 5 6 7 8 0; do grep -qE "^[[:space:]]*$i[[:space:]]" <<< "$MENU" || exit 1; done; echo 0)"
+
+# 三种调用方式都必须能出菜单。曾经只认 BASH_SOURCE 惯用法，
+# 结果 bash -c "$(curl …)"（推荐的一行安装方式）下菜单一个字都不显示。
+for how in "直接" "管道"; do
+    if [[ "$how" == "直接" ]]; then
+        OUT="$(printf '0\n' | CANOE_APP_DIR="$FAKE_APP" bash "$TARGET" 2>&1)"
+    else
+        OUT="$(printf '0\n' | CANOE_APP_DIR="$FAKE_APP" bash -c "$(cat "$TARGET")" 2>&1)"
+    fi
+    check "★ $how 执行时菜单出得来" \
+          "$(grep -qF "安装 Canoe" <<< "$OUT" && echo 0 || echo 1)" "$OUT"
+done
 
 printf '\n[5] 命令分发\n'
 bash "$TARGET" 乱写 >/dev/null 2>&1
