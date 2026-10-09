@@ -39,6 +39,12 @@ log()  { printf '\033[1;36m[*]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# set -e 有个很不友好的地方：某条命令失败时它**一声不吭就退出**。
+# 用户看到的是"向导问完了，命令结束，什么都没发生"，完全无从下手
+# （真踩过：openssl 校验在 EC 密钥上失败，整个安装在最后一步静默中止）。
+# 这个 trap 保证任何非预期失败至少说清楚自己在哪一行、跑的是什么。
+trap 'rc=$?; printf "\n\033[1;31m[x]\033[0m 脚本在这里中断了（第 %s 行，退出码 %s）\n     命令：%s\n     这不是设计好的报错，是没兜住的失败。把上面这三行贴给开发者。\n" "$LINENO" "$rc" "$BASH_COMMAND" >&2; exit "$rc"' ERR
+
 usage() {
     cat <<'EOF'
 轻舟 / Canoe Server —— 安装向导（Debian / Ubuntu）
@@ -141,7 +147,7 @@ if [[ -t 0 ]]; then
 
     if [[ -z "$DOMAIN" ]]; then
         cat <<'TXT'
-[1/3] 域名
+[1/4] 域名
       用来申请证书、拼客户端下载地址（PUBLIC_BASE_URL）。
       没有域名就留空 —— 那样证书只能自签，客户端也得走 IP。
 TXT
@@ -219,13 +225,25 @@ if [[ "$CERT_MODE" == "existing" ]]; then
     [[ -f "$KEY_FILE"  ]] || die "找不到私钥文件：$KEY_FILE"
     openssl x509 -in "$CERT_FILE" -noout >/dev/null 2>&1 \
         || die "这不是一个合法的 X.509 证书：$CERT_FILE"
-    # 证书和私钥是不是一对（很常见的错配）
-    mc="$(openssl x509 -noout -modulus -in "$CERT_FILE" 2>/dev/null | openssl md5)"
-    mk="$(openssl rsa  -noout -modulus -in "$KEY_FILE"  2>/dev/null | openssl md5)"
-    if [[ -n "$mc" && -n "$mk" && "$mc" != "$mk" ]]; then
-        die "证书和私钥对不上（modulus 不一致）——确认一下是不是同一套"
+
+    # 证书和私钥是不是一对（很常见的错配）。
+    #
+    # ⚠ 两处讲究，都是踩出来的：
+    #   1) 每一步都跟 `|| true`。脚本开头是 set -euo pipefail，命令替换
+    #      一旦返回非 0，赋值语句就会触发 set -e，**一声不吭地退出** ——
+    #      用户看到的是"敲完最后一项，命令结束了，什么都没发生"。
+    #      这个检查只是提示性的，它跑不动不该把整个安装中止。
+    #   2) 用 -pubkey 比公钥，不用 -modulus 比模数。模数那套只对 RSA 有效，
+    #      遇到 EC / Ed25519 密钥时 openssl rsa 直接失败（就是上面第 1 条
+    #      触发的那一刻）。公钥比对对任何密钥类型都成立。
+    _cert_pub="$(openssl x509 -in "$CERT_FILE" -noout -pubkey 2>/dev/null | openssl sha256 2>/dev/null || true)"
+    _key_pub="$(openssl pkey -in "$KEY_FILE" -pubout 2>/dev/null | openssl sha256 2>/dev/null || true)"
+    if [[ -n "$_cert_pub" && -n "$_key_pub" && "$_cert_pub" != "$_key_pub" ]]; then
+        die "证书和私钥对不上 —— 确认一下是不是同一套"
     fi
-    log "已有证书检查通过：$(openssl x509 -noout -subject -in "$CERT_FILE" 2>/dev/null | sed 's/^subject=//')"
+
+    _subject="$(openssl x509 -noout -subject -in "$CERT_FILE" 2>/dev/null | sed 's/^subject=//' || true)"
+    log "已有证书检查通过：${_subject:-$CERT_FILE}"
 fi
 
 SCHEME="https"; [[ "$CERT_MODE" == "none" ]] && SCHEME="http"
@@ -429,8 +447,10 @@ HOOK
     else
         CN="${DOMAIN:-localhost}"
         SAN="DNS:${CN},IP:127.0.0.1"
-        # 顺手把本机内网 IP 也塞进 SAN，方便用 IP 直连
-        LANIP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+        # 顺手把本机内网 IP 也塞进 SAN，方便用 IP 直连。
+        # `|| true`：hostname -I 在个别环境里不可用，而脚本是 pipefail 的，
+        # 少个网卡就让整个自签流程静默中止，太不值当。
+        LANIP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
         [[ -n "$LANIP" ]] && SAN="$SAN,IP:$LANIP"
         tmp="$(mktemp -d)"
         openssl req -x509 -newkey rsa:2048 -nodes -days 825 \

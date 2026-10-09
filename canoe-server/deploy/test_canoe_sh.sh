@@ -186,6 +186,53 @@ PIPED="$(sed -n '/^_SELF=/,/^REPO_ROOT=/p' "$INSTALL" | bash 2>&1)"
 check "★ 管道执行（curl | bash）时不会炸" \
       "$(grep -q "unbound variable" <<< "$PIPED" && echo 1 || echo 0)" "$PIPED"
 
+# 证书校验：老版本用 `openssl rsa -noout -modulus` 比对，遇到 EC / Ed25519
+# 密钥会失败；脚本是 set -euo pipefail，赋值语句一失败就**静默退出** ——
+# 用户看到的是"向导问完了，什么都没发生"。真踩过一次（EC 证书）。
+# 这里把那段单独抠出来跑，断言它不会把脚本干掉。
+CERTBLOCK="$(sed -n '/^# ---- 已有证书：先验一遍/,/^fi$/p' "$INSTALL")"
+check "抠得出证书校验那段" "$([[ -n "$CERTBLOCK" ]] && echo 0 || echo 1)"
+# 找的是那段真代码（openssl rsa -noout -modulus），不是注释里提到它的地方
+check "★ 不再用只认 RSA 的 openssl rsa -modulus" \
+      "$(grep -qE 'openssl +rsa .*-modulus' "$INSTALL" && echo 1 || echo 0)"
+check "★ 每一步都有兜底（不会触发 set -e 静默退出）" \
+      "$(grep -c '|| true' <<< "$CERTBLOCK" | awk '{print ($1>=2)?0:1}')"
+
+if command -v openssl >/dev/null 2>&1; then
+    CERTDIR="$TMP/certs"; mkdir -p "$CERTDIR"
+
+    # EC 密钥 + 自签证书（新版 certbot --key-type ecdsa 就是这种）
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -nodes -days 2 -keyout "$CERTDIR/ec.key" -out "$CERTDIR/ec.crt" \
+        -subj "//CN=canoe.test" >/dev/null 2>&1
+
+    # 另一套，用来验"对不上"要被抓住
+    openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+        -keyout "$CERTDIR/other.key" -out "$CERTDIR/other.crt" \
+        -subj "//CN=other.test" >/dev/null 2>&1
+
+    run_certblock() {   # $1=cert $2=key
+        { printf 'set -euo pipefail\n'
+          printf 'log(){ :; }; warn(){ :; }; die(){ printf "DIED: %%s\\n" "$*"; exit 1; }\n'
+          printf 'CERT_MODE=existing\nCERT_FILE=%q\nKEY_FILE=%q\n' "$1" "$2"
+          printf '%s\n' "$CERTBLOCK"
+        } | bash 2>&1
+    }
+
+    out="$(run_certblock "$CERTDIR/ec.crt" "$CERTDIR/ec.key")"
+    check "★ EC 证书能通过校验（不再静默退出）" \
+          "$([[ -z "$out" ]] && echo 0 || echo 1)" "$out"
+
+    out="$(run_certblock "$CERTDIR/other.crt" "$CERTDIR/other.key")"
+    check "RSA 证书也照常通过" "$([[ -z "$out" ]] && echo 0 || echo 1)" "$out"
+
+    out="$(run_certblock "$CERTDIR/ec.crt" "$CERTDIR/other.key")"
+    check "★ 证书与私钥错配会被抓住并说明白" \
+          "$(grep -q '对不上' <<< "$out" && echo 0 || echo 1)" "$out"
+else
+    echo "  [跳过] 证书校验实测 —— 没有 openssl"
+fi
+
 HELP_I="$(bash "$INSTALL" --help 2>&1)"
 check "--help 能跑" "$(grep -q "安装向导" <<< "$HELP_I" && echo 0 || echo 1)"
 check "帮助里说明了代码从哪来" "$(grep -q "代码从哪来" <<< "$HELP_I" && echo 0 || echo 1)"
