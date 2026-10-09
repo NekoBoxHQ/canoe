@@ -270,6 +270,38 @@ def main() -> int:
           view.cb_system.isChecked() and not view.cb_tun.isChecked()
           and view.rb_split.isChecked())
 
+    # --- 5.5 工具按钮与日志面板 ---
+    print("\n[5.5] 工具按钮与输出日志")
+    check("★ 有「更新」按钮", hasattr(view, "update_btn") and "更新" in view.update_btn.text(),
+          getattr(view, "update_btn", None) and view.update_btn.text())
+    check("★ 有「TCping」按钮", hasattr(view, "tcping_btn") and "TCping" in view.tcping_btn.text(),
+          getattr(view, "tcping_btn", None) and view.tcping_btn.text())
+    check("★ 有「URL测试」按钮", hasattr(view, "urltest_btn") and "URL测试" in view.urltest_btn.text(),
+          getattr(view, "urltest_btn", None) and view.urltest_btn.text())
+    check("★ 有输出日志面板", hasattr(view, "log_view") and view.log_view is not None)
+    check("日志面板只读", view.log_view.isReadOnly())
+    check("★ 启航/靠岸带图标", "🚀" in view.launch_btn.text() and "🚢" in view.dock_btn.text(),
+          f"{view.launch_btn.text()!r} {view.dock_btn.text()!r}")
+
+    # 三个按钮的 objectName 决定样式，不能串
+    names = [view.update_btn.objectName(), view.tcping_btn.objectName(), view.urltest_btn.objectName()]
+    check("三个按钮样式名各不相同且正确",
+          names == ["ToolUpdate", "ToolPing", "ToolUrl"], str(names))
+
+    # 日志：程序自己写的能进面板
+    from canoe_client.logbus import bus as log_bus
+    log_bus.system("测试用日志行")
+    pump(app, 0.5)
+    check("★ 日志能显示到面板上",
+          "测试用日志行" in view.log_view.toPlainText(),
+          view.log_view.toPlainText()[-120:])
+
+    # URL 测试在未启航时应当给出提示而不是崩
+    view.urltest_btn.click()
+    pump(app, 0.6)
+    check("★ 未启航时点 URL 测试有提示且不崩",
+          "需要先启航" in view.log_view.toPlainText(), view.log_view.toPlainText()[-160:])
+
     # --- 6. 启航（真实） ---
     print("\n[6] 启航")
     if config.find_singbox() is None:

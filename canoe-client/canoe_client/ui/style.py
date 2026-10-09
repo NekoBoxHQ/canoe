@@ -85,6 +85,66 @@ def qss() -> str:
     }}
     QPushButton#Ghost:hover {{ color: {P.WHITE}; }}
 
+    /* --- 三个工具按钮：各自一个色调，靠描边和微光区分 --- */
+    QPushButton#ToolUpdate, QPushButton#ToolPing, QPushButton#ToolUrl {{
+        background: {P.SURFACE};
+        border-radius: 10px;
+        font-size: 12px;
+        font-weight: 500;
+        letter-spacing: 1px;
+        padding: 4px;
+    }}
+    QPushButton#ToolUpdate {{
+        border: 1px solid #2F6FA8;
+        color: #6FA8DC;
+    }}
+    QPushButton#ToolUpdate:hover {{ background: #16304A; border-color: #4A8FD0; }}
+    QPushButton#ToolPing {{
+        border: 1px solid {P.INK_CYAN};
+        color: {P.INK_CYAN_HOVER};
+    }}
+    QPushButton#ToolPing:hover {{ background: #123037; border-color: #3FB3C0; }}
+    QPushButton#ToolUrl {{
+        border: 1px solid #6B5AA8;
+        color: #A08FE0;
+    }}
+    QPushButton#ToolUrl:hover {{ background: #251E3D; border-color: #8A76D0; }}
+    QPushButton#ToolUpdate:disabled, QPushButton#ToolPing:disabled,
+    QPushButton#ToolUrl:disabled {{
+        border-color: {P.LINE};
+        color: {P.DIM};
+    }}
+
+    /* --- 输出日志 --- */
+    QLabel#LogTitle {{
+        color: {P.MUTED};
+        font-size: 12px;
+        letter-spacing: 1px;
+    }}
+    QPlainTextEdit#LogView {{
+        background: {P.INK};
+        border: 1px solid {P.LINE};
+        border-radius: 8px;
+        padding: 6px 8px;
+        font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI", monospace;
+        font-size: 11px;
+        color: #C9CDD3;
+        selection-background-color: {P.DEEP_BLUE};
+    }}
+    QScrollBar:vertical {{
+        background: transparent;
+        width: 8px;
+        margin: 2px;
+    }}
+    QScrollBar::handle:vertical {{
+        background: #2C3A48;
+        border-radius: 4px;
+        min-height: 24px;
+    }}
+    QScrollBar::handle:vertical:hover {{ background: #3C4E60; }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+
     QPushButton#Launch {{
         background: {P.INK_CYAN};
         font-size: 15px;

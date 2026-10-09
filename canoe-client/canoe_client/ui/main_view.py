@@ -1,19 +1,20 @@
-"""主界面 —— 启航 / 靠岸。
+"""主界面 —— 启航 / 靠岸 + 工具按钮 + 输出日志。
 
 需求：登录后主界面只显示三个东西 —— 节点名称、启航、靠岸。
-这里严格保留这三样作为主视觉，另外多了：
+这里保留这三样作为主视觉，另外多了：
 
   · 一行状态（渡江中… / 已启航 / 已靠岸 / 风浪太大，请重试）
-    —— 需求里明确规定了这四句文案，不显示用户就不知道当前状态
   · 一组可选设置（两排：分流/全局，系统代理/TUN）
-    —— 需求里的"客户可选部分，默认系统代理"
+  · 三个工具按钮：更新 / TCping / URL测试
+  · 输出日志面板（内核输出 + 程序事件）
   · 底部账号名 + 离舟
 
 **界面上永远不显示节点的地址、端口、协议、密码，也没有任何导出入口。**
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -21,17 +22,20 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QRadioButton,
     QVBoxLayout,
     QWidget,
 )
 
-from canoe_core import BRAND_CN, Text
+from canoe_core import BRAND_CN, VERSION, Text
 
 from .. import sysproxy
 from ..config import config
 from ..kernel import kernel
+from ..logbus import TAG_ERROR, TAG_KERNEL, TAG_SYSTEM, TAG_TEST, bus
+from ..nettest import DEFAULT_URL, tcping, url_test
 from ..options import (
     LABEL_SYSTEM_PROXY,
     LABEL_TUN,
@@ -41,9 +45,20 @@ from ..options import (
     RunOptions,
 )
 from ..session import STATE_DOCKED, STATE_SAILED, STATE_STORM, session
-from ..testnodes import build_proxy_outbound, node_display_name
+from ..testnodes import build_proxy_outbound, node_display_name, node_endpoint
 from ..tun import check_tun_ready, relaunch_as_admin
+from ..update import check as check_update
 from ..worker import Worker
+
+LOG_POLL_MS = 300
+
+# 日志里不同来源用不同颜色
+TAG_COLORS = {
+    TAG_SYSTEM: "#7A8DA0",
+    TAG_KERNEL: "#5F7F9A",
+    TAG_TEST: "#2A7F8F",
+    TAG_ERROR: "#C2603C",
+}
 
 
 class MainView(QWidget):
@@ -53,27 +68,37 @@ class MainView(QWidget):
         super().__init__()
         self.setObjectName("Root")
         self.setWindowTitle(BRAND_CN)
-        self.setFixedSize(390, 470)
+        self.setFixedSize(440, 720)
 
         self._opts = RunOptions.from_dict(config["options"])
+        self._log_seq = 0
+
         self._build()
         self._load_options_into_ui()
         self.refresh()
         self._set_state(STATE_DOCKED)
 
-    # ------------------------------------------------------------------
+        # 日志面板定时拉增量
+        self._log_timer = QTimer(self)
+        self._log_timer.timeout.connect(self._drain_log)
+        self._log_timer.start(LOG_POLL_MS)
+
+        bus.system(Text.LOG_READY)
+        self._drain_log()
+
+    # ==================================================================
     # 界面
-    # ------------------------------------------------------------------
+    # ==================================================================
     def _build(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(30, 24, 30, 18)
+        root.setContentsMargins(22, 16, 22, 14)
         root.setSpacing(0)
 
         brand = QLabel(BRAND_CN)
         brand.setObjectName("Slogan")
         brand.setAlignment(Qt.AlignCenter)
         root.addWidget(brand)
-        root.addSpacing(14)
+        root.addSpacing(10)
 
         # --- 1) 节点名称 ---
         self.node_label = QLabel("—")
@@ -84,14 +109,14 @@ class MainView(QWidget):
         self.status_label = QLabel(Text.ST_DISCONNECTED)
         self.status_label.setObjectName("Status")
         self.status_label.setAlignment(Qt.AlignCenter)
-        root.addSpacing(6)
+        root.addSpacing(4)
         root.addWidget(self.status_label)
 
-        root.addSpacing(22)
+        root.addSpacing(14)
 
         # --- 2) 启航  3) 靠岸 ---
         buttons = QHBoxLayout()
-        buttons.setSpacing(12)
+        buttons.setSpacing(10)
 
         self.launch_btn = QPushButton(Text.BTN_LAUNCH)
         self.launch_btn.setObjectName("Launch")
@@ -111,16 +136,33 @@ class MainView(QWidget):
         self.error_label.setObjectName("Error")
         self.error_label.setWordWrap(True)
         self.error_label.setAlignment(Qt.AlignCenter)
-        self.error_label.setMinimumHeight(34)
-        root.addSpacing(6)
+        self.error_label.setMinimumHeight(30)
+        root.addSpacing(4)
         root.addWidget(self.error_label)
 
-        root.addSpacing(8)
+        root.addSpacing(4)
 
         # --- 可选设置 ---
         root.addWidget(self._options_card())
+        root.addSpacing(10)
 
-        root.addStretch(1)
+        # --- 工具按钮 ---
+        tools = QHBoxLayout()
+        tools.setSpacing(8)
+        self.update_btn = self._tool_button(Text.BTN_UPDATE, "ToolUpdate", self._do_update)
+        self.tcping_btn = self._tool_button(Text.BTN_TCPING, "ToolPing", self._do_tcping)
+        self.urltest_btn = self._tool_button(Text.BTN_URLTEST, "ToolUrl", self._do_urltest)
+        tools.addWidget(self.update_btn)
+        tools.addWidget(self.tcping_btn)
+        tools.addWidget(self.urltest_btn)
+        root.addLayout(tools)
+
+        root.addSpacing(10)
+
+        # --- 输出日志 ---
+        root.addWidget(self._log_card(), 1)
+
+        root.addSpacing(8)
 
         # --- 账号 ---
         bottom = QHBoxLayout()
@@ -128,7 +170,6 @@ class MainView(QWidget):
         self.account_label.setObjectName("Hint")
         bottom.addWidget(self.account_label)
         bottom.addStretch(1)
-
         logout_btn = QPushButton(Text.BTN_LOGOUT)
         logout_btn.setObjectName("Ghost")
         logout_btn.setCursor(Qt.PointingHandCursor)
@@ -148,11 +189,9 @@ class MainView(QWidget):
         card = QFrame()
         card.setObjectName("Card")
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(14, 11, 14, 13)
-        lay.setSpacing(11)
+        lay.setContentsMargins(14, 10, 14, 12)
+        lay.setSpacing(10)
 
-        # --- 第一排：分流模式 ---
-        # 这两个互斥，用 QButtonGroup 明确成组，不依赖 Qt 的"同父自动互斥"
         self._group_profile = QButtonGroup(self)
         self.rb_split = QRadioButton(PROFILE_LABELS[PROFILE_SPLIT])
         self.rb_global = QRadioButton(PROFILE_LABELS[PROFILE_GLOBAL])
@@ -163,7 +202,6 @@ class MainView(QWidget):
         self.rb_global.setToolTip("所有流量都走代理")
         lay.addLayout(self._centered_row([self.rb_split, self.rb_global]))
 
-        # --- 第二排：接管方式（可同时勾选）---
         self.cb_system = QCheckBox(LABEL_SYSTEM_PROXY)
         self.cb_tun = QCheckBox(LABEL_TUN)
         self.cb_system.toggled.connect(self._on_options_changed)
@@ -176,7 +214,6 @@ class MainView(QWidget):
 
     @staticmethod
     def _centered_row(widgets: list) -> QHBoxLayout:
-        """把一组选项作为整体居中。"""
         row = QHBoxLayout()
         row.setSpacing(18)
         row.addStretch(1)
@@ -185,15 +222,57 @@ class MainView(QWidget):
         row.addStretch(1)
         return row
 
-    @staticmethod
-    def _hint(text: str) -> QLabel:
-        label = QLabel(text)
-        label.setObjectName("Hint")
-        return label
+    def _tool_button(self, text: str, object_name: str, slot) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setObjectName(object_name)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setMinimumHeight(56)
+        btn.clicked.connect(slot)
+        return btn
 
-    # ------------------------------------------------------------------
+    def _log_card(self) -> QFrame:
+        card = QFrame()
+        card.setObjectName("Card")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(12, 9, 12, 11)
+        lay.setSpacing(7)
+
+        title = QLabel(Text.LABEL_LOG)
+        title.setObjectName("LogTitle")
+        lay.addWidget(title)
+
+        self.log_view = QPlainTextEdit()
+        self.log_view.setObjectName("LogView")
+        self.log_view.setReadOnly(True)
+        self.log_view.setMaximumBlockCount(800)
+        # 长行折行、不要横向滚动条 —— 否则底部会多出一条灰条，很碍眼
+        self.log_view.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self.log_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        lay.addWidget(self.log_view, 1)
+        return card
+
+    # ==================================================================
+    # 日志
+    # ==================================================================
+    def _drain_log(self) -> None:
+        """把日志总线上新增的行追加到面板。"""
+        new = bus.since(self._log_seq)
+        if not new:
+            return
+        self._log_seq = new[-1].seq + 1
+
+        for line in new:
+            color = TAG_COLORS.get(line.tag, TAG_SYSTEM)
+            self.log_view.appendHtml(
+                f'<span style="color:#4A5A6B">{line.time_text}</span> '
+                f'<span style="color:{color}">[{line.tag}]</span> '
+                f'<span style="color:#C9CDD3">{_escape(line.message)}</span>'
+            )
+        self.log_view.moveCursor(QTextCursor.End)
+
+    # ==================================================================
     # 选项读写
-    # ------------------------------------------------------------------
+    # ==================================================================
     def _load_options_into_ui(self) -> None:
         self._loading = True
         self.rb_global.setChecked(self._opts.profile == PROFILE_GLOBAL)
@@ -206,10 +285,8 @@ class MainView(QWidget):
     def _on_options_changed(self) -> None:
         if getattr(self, "_loading", False):
             return
-
         if session.sailing:
-            # 运行中改选项：先靠岸，让用户重新启航，避免半途换配置
-            self._dock()
+            self._dock()          # 运行中改选项：先靠岸，避免半途换配置
 
         self._opts.profile = PROFILE_GLOBAL if self.rb_global.isChecked() else PROFILE_SPLIT
         self._opts.use_system_proxy = self.cb_system.isChecked()
@@ -218,7 +295,6 @@ class MainView(QWidget):
         self._update_tun_tooltip()
 
     def _update_tun_tooltip(self) -> None:
-        """TUN 勾上但环境不满足时，把原因挂在提示上。"""
         if not self._opts.use_tun:
             self.cb_tun.setToolTip("接管全部流量（IPv4 + IPv6），需要管理员权限和 wintun.dll")
             return
@@ -228,9 +304,9 @@ class MainView(QWidget):
             "接管全部流量（IPv4 + IPv6）" if ready else f"暂时不可用：{reason}"
         )
 
-    # ------------------------------------------------------------------
+    # ==================================================================
     # 状态
-    # ------------------------------------------------------------------
+    # ==================================================================
     def refresh(self) -> None:
         self.node_label.setText(session.node_name or "—")
         self.account_label.setText(session.username or "")
@@ -248,21 +324,23 @@ class MainView(QWidget):
         self.launch_btn.setEnabled(not sailing)
         self.dock_btn.setEnabled(sailing)
         self.launch_btn.setText(Text.BTN_LAUNCH)
+        self.dock_btn.setText(Text.BTN_DOCK)
 
-    # ------------------------------------------------------------------
-    # 启航
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # 启航 / 靠岸
+    # ==================================================================
     def _launch(self) -> None:
         self.error_label.setText("")
         self.launch_btn.setEnabled(False)
-        self.launch_btn.setText(Text.progress(Text.BTN_LAUNCH))
+        self.launch_btn.setText(Text.BTN_LAUNCH_BUSY)
         self.status_label.setText(Text.ST_CONNECTING)
+        bus.system("正在启航…")
 
-        # 勾了 TUN 就先查权限，不合格别白忙
         if self._opts.use_tun:
             exe = config.find_singbox()
             ready, reason = check_tun_ready(exe.parent if exe else None)
             if not ready:
+                bus.error(reason)
                 self._apply_buttons()
                 self._handle_tun_blocked(reason)
                 return
@@ -270,23 +348,24 @@ class MainView(QWidget):
         def on_ok(_none) -> None:
             self.refresh()
             self._set_state(STATE_SAILED)
+            bus.system("已启航")
 
-            # 勾了系统代理就把 Windows 代理指向本地 mixed 入站。
-            # 注意：这和 TUN 不冲突，两个都勾时两件事都做。
             if self._opts.use_system_proxy:
                 try:
                     sysproxy.set_proxy("127.0.0.1", int(self._opts.mixed_port))
+                    bus.system(f"系统代理已指向 127.0.0.1:{self._opts.mixed_port}")
                 except OSError as exc:
                     kernel.stop()
                     self._set_state(STATE_STORM, f"设置系统代理失败：{exc}")
+                    bus.error(f"设置系统代理失败：{exc}")
 
         def on_err(code: str, message: str) -> None:
             self._set_state(STATE_STORM, message)
+            bus.error(message)
 
         Worker(self._do_start_kernel).run_with(on_ok, on_err)
 
     def _do_start_kernel(self) -> None:
-        """在线程里跑，避免启动内核时界面卡住。"""
         kernel.start(build_proxy_outbound(), self._opts)
 
     def _handle_tun_blocked(self, reason: str) -> None:
@@ -307,29 +386,93 @@ class MainView(QWidget):
         else:
             self._set_state(STATE_DOCKED)
 
-    # ------------------------------------------------------------------
-    # 靠岸
-    # ------------------------------------------------------------------
     def _dock(self) -> None:
         self.dock_btn.setEnabled(False)
+        self.dock_btn.setText(Text.BTN_DOCK_BUSY)
+        bus.system("正在靠岸…")
 
         try:
             kernel.stop()
         except Exception as exc:  # noqa: BLE001
             self.error_label.setText(f"关闭内核时出错：{exc}")
+            bus.error(f"关闭内核时出错：{exc}")
 
-        # 只要启航时设过系统代理，靠岸就要还原 —— 不管 TUN 有没有同时开
         if self._opts.use_system_proxy:
             try:
                 sysproxy.clear_proxy()
+                bus.system("系统代理已还原")
             except OSError as exc:
                 self.error_label.setText(f"还原系统代理失败：{exc}")
+                bus.error(f"还原系统代理失败：{exc}")
 
         self._set_state(STATE_DOCKED)
+        bus.system("已靠岸")
 
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # 工具按钮
+    # ==================================================================
+    def _do_update(self) -> None:
+        self.update_btn.setEnabled(False)
+        bus.test("检查客户端更新…")
+        url = str(config["update_url"])
+
+        def on_ok(info) -> None:
+            self.update_btn.setEnabled(True)
+            if info.is_newer:
+                bus.test(f"发现新版本 {info.latest}（当前 {info.current}）")
+                if info.notes:
+                    bus.test(f"更新说明：{info.notes}")
+                detail = f"当前版本：{info.current}\n最新版本：{info.latest}"
+                if info.notes:
+                    detail += f"\n\n更新说明：\n{info.notes}"
+                if info.url:
+                    detail += f"\n\n下载地址：\n{info.url}"
+                QMessageBox.information(self, "有新版本", detail)
+            else:
+                bus.test(f"已是最新版本（{info.current}）")
+
+        def on_err(code: str, message: str) -> None:
+            self.update_btn.setEnabled(True)
+            bus.error(f"更新检查失败：{message}")
+
+        Worker(check_update, url, VERSION).run_with(on_ok, on_err)
+
+    def _do_tcping(self) -> None:
+        self.tcping_btn.setEnabled(False)
+        host, port = node_endpoint()
+        bus.test(f"TCping {host}:{port} …")
+
+        def on_ok(result) -> None:
+            self.tcping_btn.setEnabled(True)
+            (bus.test if result.ok else bus.error)(result.summary())
+
+        def on_err(code: str, message: str) -> None:
+            self.tcping_btn.setEnabled(True)
+            bus.error(f"TCping 失败：{message}")
+
+        Worker(tcping, host, port).run_with(on_ok, on_err)
+
+    def _do_urltest(self) -> None:
+        if not session.sailing:
+            bus.error("URL 测试需要先启航（它要走本地代理）")
+            return
+
+        self.urltest_btn.setEnabled(False)
+        bus.test(f"URL 测试 {DEFAULT_URL} …")
+
+        def on_ok(result) -> None:
+            self.urltest_btn.setEnabled(True)
+            (bus.test if result.ok else bus.error)(result.summary())
+
+        def on_err(code: str, message: str) -> None:
+            self.urltest_btn.setEnabled(True)
+            bus.error(f"URL 测试失败：{message}")
+
+        Worker(url_test, int(self._opts.mixed_port)).run_with(on_ok, on_err)
+
+    # ==================================================================
     # 离舟 / 关窗
-    # ------------------------------------------------------------------
+    # ==================================================================
     def _logout(self) -> None:
         answer = QMessageBox.question(
             self, Text.BTN_LOGOUT, "确定要离舟吗？", QMessageBox.Yes | QMessageBox.No
@@ -345,6 +488,7 @@ class MainView(QWidget):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         """关窗必须停内核并还原系统代理，否则用户会断网。"""
+        self._log_timer.stop()
         if session.sailing:
             self._dock()
         super().closeEvent(event)
@@ -352,3 +496,9 @@ class MainView(QWidget):
     def start_with_test_node(self, username: str) -> None:
         """阶段1：节点名来自写死的测试节点。阶段3 换成服务端下发的 node_name。"""
         session.login(username, node_display_name())
+
+
+def _escape(text: str) -> str:
+    return (
+        text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )

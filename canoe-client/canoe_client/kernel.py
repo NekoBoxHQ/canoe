@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import BIN_DIR, config
+from .logbus import bus
 from .options import RunOptions
 
 # 内核启动后等多久删临时配置。sing-box 启动瞬间就把配置读完了，
@@ -31,6 +33,9 @@ CONFIG_CLEANUP_DELAY = 2.0
 # TUN 靠岸后，等 wintun 把虚拟网卡收回去再允许下次启动。
 # 实测：不等的话，紧接着再启航会卡在 "open interface take too much time to finish!"。
 TUN_TEARDOWN_GRACE = 2.0
+
+#: 匹配 ANSI 转义序列（内核输出里的颜色码）
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 RULESET_DIR = BIN_DIR / "ruleset"
 
@@ -217,7 +222,9 @@ def _inbounds(opts: RunOptions) -> list[dict[str, Any]]:
 def build_config(proxy_outbound: dict[str, Any], opts: RunOptions) -> dict[str, Any]:
     """生成完整的 sing-box 配置。"""
     return {
-        "log": {"level": opts.log_level, "timestamp": True},
+        # timestamp 关掉：日志总线自己会加 [HH:MM:SS]，
+        # 开着的话每行会顶两个时间，面板里很挤。
+        "log": {"level": opts.log_level, "timestamp": False},
         "dns": _dns_config(opts),
         "inbounds": _inbounds(opts),
         "outbounds": [
@@ -239,6 +246,7 @@ class SingBoxKernel:
         self._config_path: Path | None = None
         self._cleaner: threading.Timer | None = None
         self._had_tun = False
+        self._reader: threading.Thread | None = None
 
     @property
     def running(self) -> bool:
@@ -275,8 +283,12 @@ class SingBoxKernel:
             self._proc = subprocess.Popen(
                 [str(exe), "run", "-c", str(self._config_path)],
                 cwd=str(exe.parent),      # 让内核能找到同目录的 wintun.dll 与规则集
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
                 creationflags=creationflags,
             )
         except OSError as exc:
@@ -296,6 +308,10 @@ class SingBoxKernel:
         self._cleaner = threading.Timer(CONFIG_CLEANUP_DELAY, self._remove_config)
         self._cleaner.daemon = True
         self._cleaner.start()
+
+        # 把内核输出接进日志总线，界面上能看到它在干什么、为什么失败
+        self._reader = threading.Thread(target=self._pump_output, args=(self._proc,), daemon=True)
+        self._reader.start()
 
     # -- 停止 -----------------------------------------------------------
     def stop(self, timeout: float = 5.0) -> None:
@@ -320,7 +336,31 @@ class SingBoxKernel:
             if self._had_tun:
                 time.sleep(TUN_TEARDOWN_GRACE)
 
+        reader, self._reader = self._reader, None
+        if reader is not None and reader.is_alive():
+            reader.join(timeout=2)
+
         self._remove_config()
+
+    def _pump_output(self, proc: subprocess.Popen) -> None:
+        """在工作线程里逐行读内核输出，塞进日志总线。
+
+        读管道必须在单独线程里做（否则会把主线程读死），
+        界面那边用定时器从总线取新增行，两边不用互相等。
+        """
+        try:
+            for line in iter(proc.stdout.readline, ""):
+                if line:
+                    # sing-box 即使输出到管道也会带 ANSI 颜色码，
+                    # 直接进日志面板会显示成 [36mINFO[0m 这种鬼东西，去掉。
+                    bus.kernel(_ANSI_RE.sub("", line).rstrip())
+        except (ValueError, OSError):
+            pass  # 进程退出时管道关闭，属正常
+        finally:
+            try:
+                proc.stdout.close()
+            except (OSError, AttributeError):
+                pass
 
     def _remove_config(self) -> None:
         if self._cleaner is not None:

@@ -36,12 +36,23 @@ CONFIG_DIR_NAME = "Canoe"
 class Text:
     """界面上的每一句话都在这里。改文案不用翻代码。"""
 
-    # 按钮
-    BTN_LAUNCH = "启航"
-    BTN_DOCK = "靠岸"
+    # 按钮（带图标，图标用 emoji，不需要额外的图片资源）
+    BTN_LAUNCH = "🚀  启航"
+    BTN_DOCK = "🚢  靠岸"
+    BTN_LAUNCH_BUSY = "🚀  渡江中…"
+    BTN_DOCK_BUSY = "🚢  靠岸中…"
     BTN_REGISTER = "注 册"
     BTN_LOGIN = "登 录"
     BTN_GUEST = "直接体验（跳过注册）"
+
+    # 工具按钮
+    BTN_UPDATE = "🔄\n更新"
+    BTN_TCPING = "📡\nTCping"
+    BTN_URLTEST = "🔗\nURL测试"
+    LABEL_LOG = "📋  输出日志"
+
+    # 日志面板首行
+    LOG_READY = "准备就绪，等待操作…"
 
     # 状态（需求指定的四态）
     ST_CONNECTING = "渡江中…"

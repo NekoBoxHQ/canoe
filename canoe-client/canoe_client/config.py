@@ -14,14 +14,19 @@ from canoe_core import CONFIG_DIR_NAME
 
 DEFAULTS: dict[str, Any] = {
     "singbox_path": "",            # 留空则自动在 bin/ 与 PATH 里找
-    # 界面选项（阶段1 的可选部分，见 options.py）
+    # 客户端更新检查地址（阶段4 部署服务端后填入，例如
+    # https://canoe.example.com/api/client/latest）
+    "update_url": "",
+    # 界面选项（见 options.py 的 RunOptions）
     "options": {
-        "mode": "system_proxy",    # 默认系统代理
-        "bypass_lan": True,
-        "bypass_china": True,
-        "tun_ipv6": True,
+        "profile": "split",         # 分流：绕过局域网和大陆
+        "use_system_proxy": True,   # 默认勾系统代理
+        "use_tun": False,           # TUN 默认关，可与系统代理同时开
+        "tun_ipv6": True,           # TUN 恒双栈
         "mixed_port": 20818,
-        "log_level": "warn",
+        # 界面上有输出日志面板，info 级别才有内容可看；
+        # 排查问题时可以在 client.json 里调成 debug
+        "log_level": "info",
     },
 }
 

@@ -45,6 +45,14 @@ def node_display_name() -> str:
     return NODE_DISPLAY_NAME
 
 
+def node_endpoint() -> tuple[str, int]:
+    """节点的 (host, port)，给 TCping 用。
+
+    ⚠ 界面上不显示这个。它只喂给 TCping 内部，用户看不到。
+    """
+    return str(TEST_NODE["server"]), int(TEST_NODE["server_port"])
+
+
 def build_proxy_outbound(tag: str = "proxy") -> dict[str, Any]:
     """把测试节点转成 sing-box 出站配置。
 
