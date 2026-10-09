@@ -212,7 +212,8 @@ if [[ -t 0 ]]; then read -rp "确认开始？[Y/n] " ok; [[ "${ok:-y}" =~ ^[Yy]?
 log "安装系统依赖…"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-PKGS=(python3 python3-venv python3-pip openssl rsync curl)
+# git：--repo 拉代码要用；用户自己 clone 的话也总得有
+PKGS=(python3 python3-venv python3-pip openssl rsync curl git ca-certificates)
 [[ "$CERT_MODE" == "le" ]] && PKGS+=(certbot)
 apt-get install -y -qq "${PKGS[@]}"
 
