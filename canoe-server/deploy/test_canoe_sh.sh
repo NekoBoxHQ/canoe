@@ -448,8 +448,60 @@ check "文档开头说明了「本来就是 root 就直接敲」" \
 check "非 root 的漏网提示保留（劝阻别人用 curl|bash 那句）" \
       "$(grep -q 'curl … | bash' "$REPO/README.md" && echo 0 || echo 1)"
 
+printf '\n[13] 发布客户端（canoe release）\n'
+check "帮助里有 release" \
+      "$(grep -qE '^[[:space:]]*release ' <<< "$(bash "$TARGET" help 2>&1)" && echo 0 || echo 1)"
+check "★ 子命令能派发到 cmd_release" \
+      "$(grep -qE '^ *release\|' "$TARGET" && echo 0 || echo 1)"
+check "★ 菜单项数不变（release 不进菜单，用户点名要 1-8+0）" \
+      "$(grep -qE "printf '   release" "$TARGET" && echo 1 || echo 0)"
+
+# 真跑一遍：拿一个假的服务端目录，as_user 直接执行（测试机上是 root），
+# 放一个假的 .venv/bin/python 把收到的参数原样打印出来。
+# 这样能验出**参数有没有被正确引用** —— 只看"调了 cmd_release"是看不出
+# `--notes "两个 词"` 会不会被拆成两个参数的。
+FAKE_SRV="$TMP/fakesrv"
+mkdir -p "$FAKE_SRV/.venv/bin"
+: > "$FAKE_SRV/release.py"
+cat > "$FAKE_SRV/.venv/bin/python" <<'PYEOF'
+#!/usr/bin/env bash
+# 假 python：把收到的 argv 一行一个打出来
+printf 'ARGC=%d\n' "$#"
+for a in "$@"; do printf 'ARG=<%s>\n' "$a"; done
+PYEOF
+chmod +x "$FAKE_SRV/.venv/bin/python"
+
+run_release() {
+    # $@ = 传给 cmd_release 的参数
+    local inner="source '$TARGET'; need_root(){ :; }; require_installed(){ :; }
+                 as_user(){ eval \"\$*\"; }; SERVER_DIR='$FAKE_SRV'; cmd_release"
+    local q=""
+    local a
+    for a in "$@"; do q+=" $(printf '%q' "$a")"; done
+    bash -c "$inner$q" 2>&1
+}
+
+OUT="$(run_release --notes '两个 词' /tmp/Canoe-1.0.1-win64.zip)"
+check "跑得起来" "$(grep -q 'ARGC=' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
+check "★ 带空格的 --notes 没被拆开（参数正确引用了）" \
+      "$(grep -q 'ARG=<两个 词>' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
+check "★ 参数个数对：release.py + --notes + 值 + 包路径 = 4" \
+      "$(grep -q 'ARGC=4' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
+check "★ 以应用用户身份跑（不是 root 直接跑）" \
+      "$(grep -q 'as_user' "$TARGET" && grep -q 'release.py' "$TARGET" && echo 0 || echo 1)"
+
+OUT="$(run_release 2>&1)"
+check "不给参数时打印用法" "$(grep -q 'canoe release' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
+check "用法里说了怎么把包弄上机器" \
+      "$(grep -q 'scp ' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
+
 printf '\n%s\n' "$(printf '=%.0s' {1..48})"
 printf '通过 %d 项，失败 %d 项\n' "$passed" "$failed"
+printf '%s\n\n' "$(printf '=%.0s' {1..48})"
+
+[[ $failed -eq 0 ]]
+
+
 printf '%s\n\n' "$(printf '=%.0s' {1..48})"
 
 [[ $failed -eq 0 ]]

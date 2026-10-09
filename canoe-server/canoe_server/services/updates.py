@@ -62,6 +62,48 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+class ReleaseTooLarge(Exception):
+    """安装包超过 settings.max_release_mb。"""
+
+
+def guess_version(filename: str) -> str:
+    """从文件名里抠版本号：Canoe-1.0.1-win64.zip -> 1.0.1。
+
+    只是为了少让用户手打一遍 —— 抠不出来就返回空串，由调用方要求显式给。
+    """
+    m = re.search(r"\d+(?:\.\d+)+", Path(filename).name)
+    return m.group(0) if m else ""
+
+
+def store_release_file(src, filename: str) -> tuple[Path, int, str]:
+    """把一个安装包流式落到 releases/ 下，返回 (路径, 字节数, sha256)。
+
+    传进来的 `src` 只要有 `.read(n)` 就行（UploadFile.file 或普通文件对象）。
+
+    超限或者写盘失败都**不会**把半个包留下 —— 留了的话，下载页面上会
+    挂着一个永远下不完的文件，而发布记录看起来是成功的。
+    """
+    dest = release_dir() / safe_filename(filename)
+    limit = settings.max_release_mb * 1024 * 1024
+    size = 0
+    try:
+        with dest.open("wb") as out:
+            while True:
+                chunk = src.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > limit:
+                    raise ReleaseTooLarge(
+                        f"安装包超过 {settings.max_release_mb} MB 上限"
+                    )
+                out.write(chunk)
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        raise
+    return dest, size, sha256_file(dest)
+
+
 # --------------------------------------------------------------------------
 # 客户端更新
 # --------------------------------------------------------------------------

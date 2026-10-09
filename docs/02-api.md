@@ -339,6 +339,11 @@ PUT /api/admin/users/12/nodes
 | GET | `/api/admin/releases/latest-preview` | 预览客户端会拿到什么 |
 | DELETE | `/api/admin/releases/{id}?delete_file=true` | 撤版本 |
 
+> 不想开面板的话，服务器上一条命令发同样的东西：
+> `canoe release /tmp/Canoe-1.0.1-win64.zip`。它和 `/upload` 走的是同一个
+> 落盘函数（`services/updates.store_release_file`），只是不用传令牌 ——
+> 你本来就是那台机器的 root。
+
 ---
 
 ## 8.6 GET /api/subscription —— 订阅更新

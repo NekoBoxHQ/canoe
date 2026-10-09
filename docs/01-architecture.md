@@ -25,7 +25,9 @@ canoe/
 │   ├── .env.example
 │   ├── run.py                   开发启动脚本
 │   ├── seed.py                  建表 / 管理员；--schema 输出 DDL
-│   ├── smoke_test.py            端到端冒烟测试（93 项）
+│   ├── release.py               ★ 命令行发布客户端安装包
+│   ├── smoke_test.py            端到端冒烟测试（104 项）
+│   └── test_release.py          发布命令的测试（自带临时库）
 │   ├── schema.sql               ★ 建表语句（由 ORM 模型自动生成，不会漂移）
 │   ├── deploy/                  ★ 部署材料（install.sh / canoe.sh / systemd / Nginx）
 │   └── canoe_server/

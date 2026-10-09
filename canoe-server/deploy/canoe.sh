@@ -7,7 +7,7 @@
 #      canoe status            也可以直接用子命令（方便写进脚本/定时任务）
 #
 #      canoe install | start | stop | restart | status | config | upgrade
-#      canoe uninstall | logs | passwd | version | help
+#      canoe uninstall | logs | passwd | release | version | help
 #
 #  设计说明：
 #    · 菜单和子命令走的是同一批函数，不会出现"菜单里能用、脚本里不行"。
@@ -697,6 +697,46 @@ PY
     dim "旧令牌不会自动失效 —— 要踢掉所有已登录的会话，用「面板 → 用户 → 封禁再解封」。"
 }
 
+cmd_release() {
+    need_root; require_installed
+
+    local script="$SERVER_DIR/release.py"
+    if [[ ! -f "$script" ]]; then
+        err "找不到 $script —— 这台的代码是旧版，先跑：canoe upgrade"
+        return 1
+    fi
+
+    if [[ $# -eq 0 ]]; then
+        printf '\n  发布一个客户端安装包\n\n'
+        printf '    canoe release <安装包> [--version X] [--notes "说明"]\n'
+        printf '    canoe release --list\n\n'
+        dim "版本号默认从文件名里抠（Canoe-1.0.1-win64.zip -> 1.0.1）。"
+        dim "包得先放到这台机器上，比如："
+        dim "  scp Canoe-1.0.1-win64.zip root@<这台机器>:/tmp/"
+        printf '\n'
+        return 1
+    fi
+
+    # 逐个参数 printf %q 再拼 —— 直接塞 "$*" 的话，--notes "两个 词"
+    # 会被拆成两个参数传进 Python。
+    local quoted=""
+    local a
+    for a in "$@"; do
+        quoted+=" $(printf '%q' "$a")"
+    done
+
+    # 以应用用户的身份跑：releases/ 和 sqlite 都是它的，
+    # root 跑会写出 root 属主的文件，之后服务自己就写不动了。
+    as_user "cd '$SERVER_DIR' && .venv/bin/python release.py$quoted"
+    local rc=$?
+
+    if [[ $rc -ne 0 ]]; then
+        err "发布没成功（退出码 $rc）—— 上面那几行就是原因"
+        return $rc
+    fi
+    ok "发布完成 —— 客户端点「更新」就能看到了"
+}
+
 cmd_version() {
     printf 'canoe 管理脚本  %s\n' "$([[ -f "$SELF_DEST" ]] && echo "$SELF_DEST" || echo "（未安装到 PATH）")"
     if installed; then
@@ -785,6 +825,7 @@ usage() {
     uninstall   卸载（会删 systemd 单元；数据是否保留会单独问）
     logs        跟随日志
     passwd      改管理员账号（用户名 / 密码）
+    release     发布一个客户端安装包（不用开面板）
     version     版本
     help        这份帮助
 
@@ -819,6 +860,7 @@ main() {
         uninstall|remove) cmd_uninstall ;;
         logs|log)  cmd_logs ;;
         passwd|admin) cmd_passwd ;;
+        release|rel|publish) cmd_release "$@" ;;
         version|-v|--version) cmd_version ;;
         help|-h|--help) usage ;;
         *) err "不认识的命令：$cmd"; printf '\n'; usage; exit 1 ;;

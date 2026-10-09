@@ -184,6 +184,13 @@ canoe          # 菜单：安装 / 启动 / 停止 / 重启 / 状态 / 配置 / 
 canoe status   # 也可以直接用子命令（写进脚本/定时任务）
 ```
 
+**发一版客户端**（安装包在哪台机器上都行，传上去再发）：
+
+```bash
+canoe release /tmp/Canoe-1.0.1-win64.zip --notes "更新说明"
+canoe release --list
+```
+
 > 用 `bash -c "$(curl …)"`，**不要**用 `curl … | bash` ——
 > 管道会占掉 stdin，菜单和向导就再也读不到你敲的字了。
 

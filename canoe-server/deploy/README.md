@@ -360,10 +360,50 @@ canoe config      # 改端口、换证书、编辑 .env（会问要不要重启�
 canoe upgrade     # 拉代码 -> 更新依赖 -> 对齐数据库 -> 重启 -> 健康检查
 canoe logs        # 跟随日志
 canoe passwd      # 改管理员账号（用户名 / 密码）
+canoe release     # 发布一个客户端安装包（不用开面板）
 ```
 
 `canoe upgrade` 不用手动 `git pull` + `pip install` + 重启那一串，
 它还会顺便跑一遍 `init_db()` 把新版本加的字段补上。
+
+### 发一版客户端
+
+客户端安装包是在开发机上打出来的，服务器这边只负责**发**。
+把 zip 传上来，一条命令发布：
+
+```bash
+scp Canoe-1.0.1-win64.zip root@<这台机器>:/tmp/     # 在你的开发机上执行
+canoe release /tmp/Canoe-1.0.1-win64.zip --notes "删掉中转层"
+```
+
+版本号默认从文件名里抠（`Canoe-1.0.1-win64.zip` → `1.0.1`），
+抠不出来就得用 `--version` 显式给 —— 不会静默发成 `0.0.0`。
+
+```
+  已发布    1.0.1    （库里一共 1 个版本）
+  文件      /opt/canoe/canoe-server/releases/Canoe-1.0.1-win64.zip
+  大小      83.8 MB
+  sha256    ae883256...
+  下载      https://canoe.s-ui.com:58588/downloads/Canoe-1.0.1-win64.zip
+```
+
+发布后：
+
+- `GET /api/client/latest` 立刻指向新版本；
+- 在线的客户端会收到 `release` 推送，结果框提示有新版本；
+- 「发布」页里也能看到它，跟面板上传是同一条记录。
+
+常用参数：
+
+```bash
+canoe release --list                             # 看已经发过哪些
+canoe release /tmp/x.zip --version 1.2.0         # 文件名抠不出版本号时
+canoe release https://example.com/x.zip          # 也可以直接给 URL，服务器自己下
+canoe release /tmp/x.zip --min-version 1.0.0     # 低于这个版本的客户端强制升级
+```
+
+> 也可以继续用面板：「发布」页 → 上传安装包。两条路走的是同一段代码
+> （`services/updates.store_release_file`），不会一边修了另一边忘。
 
 ### 手动做（脚本不在或想自己来）
 

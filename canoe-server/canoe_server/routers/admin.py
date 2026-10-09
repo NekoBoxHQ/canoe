@@ -52,12 +52,13 @@ from ..services.nodes import (
 )
 from ..services.sessions import revoke_user_sessions, revoke_user_tokens
 from ..services.updates import (
+    ReleaseTooLarge,
     latest_release,
     list_releases,
     publish_release,
     release_dir,
     safe_filename,
-    sha256_file,
+    store_release_file,
     subscription_revision,
     to_release_payload,
 )
@@ -596,38 +597,20 @@ def admin_upload_release(
 
     包落到 releases/ 下，由 StaticFiles 对外提供下载；
     /api/client/latest 会把地址拼成 <站点>/downloads/<文件名>。
+
+    真正的落盘逻辑在 services/updates.store_release_file() —— `canoe release`
+    那条命令行走的是同一个函数，免得两处实现慢慢跑偏。
     """
     filename = safe_filename(file.filename or "Canoe.zip")
-    dest = release_dir() / filename
-    limit = settings.max_release_mb * 1024 * 1024
-
-    size = 0
     try:
-        with dest.open("wb") as out:
-            while True:
-                chunk = file.file.read(1024 * 1024)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > limit:
-                    raise HTTPException(
-                        413,
-                        {
-                            "code": "too_large",
-                            "detail": f"安装包超过 {settings.max_release_mb} MB 上限",
-                        },
-                    )
-                out.write(chunk)
-    except HTTPException:
-        dest.unlink(missing_ok=True)     # 别把半个包留在磁盘上
-        raise
+        _dest, size, digest = store_release_file(file.file, filename)
+    except ReleaseTooLarge as exc:
+        raise HTTPException(413, {"code": "too_large", "detail": str(exc)}) from exc
     except OSError as exc:
-        dest.unlink(missing_ok=True)
         raise HTTPException(500, {"code": "io_error", "detail": f"写文件失败：{exc}"}) from exc
     finally:
         file.file.close()
 
-    digest = sha256_file(dest)
     row = publish_release(
         db,
         version=version,
