@@ -4,11 +4,11 @@ from __future__ import annotations
 import sys
 
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from canoe_core import BRAND_CN, SLOGAN_CN
 
-from . import sysproxy, update
+from . import single, sysproxy, update
 from .api import api
 from .config import ASSETS_DIR, BIN_DIR, CONFIG_DIR, CONFIG_FILE, config
 from .events import stream
@@ -251,6 +251,21 @@ def main() -> int:
     app.setApplicationName(BRAND_CN)
     app.setApplicationDisplayName(f"{BRAND_CN} · {SLOGAN_CN}")
     app.setStyleSheet(qss())
+
+    # ★ 单实例。轻舟占着一个**固定的本地端口**和一张**固定名字的 TUN 网卡**，
+    #   两个实例根本没法共存：后来者绑不上端口、也建不了那张网卡，启航只会
+    #   报 "Only one usage of each socket address"。更坑的是两个窗口长得
+    #   一模一样 —— 用户关掉上面那个、下面那个就露出来，报成"点 × 关不掉"。
+    if not single.acquire():
+        QMessageBox.information(
+            None,
+            BRAND_CN,
+            f"{BRAND_CN}已经在运行了。\n\n"
+            "看任务栏右下角的托盘图标（可能收在「^」里），"
+            "右键它，选「主界面」。",
+        )
+        return 1
+    app.aboutToQuit.connect(single.release)
 
     icon = _app_icon()
     if icon is not None:

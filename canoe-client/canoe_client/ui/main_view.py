@@ -1174,6 +1174,18 @@ class MainView(FramelessWindow):
             self._dock()
         super().closeEvent(event)
 
+        if self._force_close:
+            # ★ 强制关 = **真的要退出**，不只是把窗口收掉。
+            #
+            # 少这一步的后果（真机上出过）：托盘在的时候 app.py 设了
+            # setQuitOnLastWindowClosed(False)，窗口关掉进程照样活着 ——
+            # 变成个只有托盘图标、没有窗口的僵尸。
+            # 而"以管理员身份重启"正是走 force_close 的：新进程起来了、
+            # 旧进程不退，于是**两个实例**抢同一个 20818 端口和同一张
+            # canoe 网卡，启航永远失败；用户关掉一个还有一个，报成
+            # "点 × 窗口不消失"。
+            QApplication.quit()
+
     def start_with_node(self, username: str, node_name: str = "") -> None:
         """登录成功后进入主界面。
 

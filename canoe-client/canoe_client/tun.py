@@ -18,14 +18,27 @@ def relaunch_as_admin() -> bool:
     """以管理员身份重启自己（UAC 提权）。成功则当前进程应退出。"""
     import sys
 
+    from .single import acquire, release
+
+    # ★ 先把单实例锁放掉再起新进程。
+    #
+    # 顺序是"新进程先起来、我们这个随后才退"，而新进程第一件事就是抢那把
+    # 锁 —— 不放的话它会以为"已经有别的轻舟在跑"，直接退出，提权就白做了，
+    # 用户看到的是"点了『是』然后什么都没发生"。
+    release()
     try:
         params = " ".join(f'"{a}"' for a in sys.argv[1:])
         result = ctypes.windll.shell32.ShellExecuteW(
             None, "runas", sys.executable, params or None, None, 1
         )
-        return int(result) > 32  # >32 表示成功
+        ok = int(result) > 32  # >32 表示成功
     except OSError:
-        return False
+        ok = False
+
+    if not ok:
+        # 没起成，锁得拿回来 —— 不然这个实例就成了没有保护的那个
+        acquire()
+    return ok
 
 
 def wintun_present(bin_dir: Path | None = None) -> bool:

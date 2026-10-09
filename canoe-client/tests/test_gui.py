@@ -874,6 +874,37 @@ def main() -> int:
     forced = UpdateDialog(UpdateInfo(latest="2.0.0", current="1.0.0", min_version="2.0.0"))
     check("★ 强制升级时不给「稍后再说」", forced.later_btn.isHidden())
 
+    # ---- 单实例 ----
+    # 轻舟占着一个固定的本地端口和一张固定名字的 TUN 网卡，两个实例没法共存：
+    # 后来者绑不上端口，启航只会报 "Only one usage of each socket address"，
+    # 而两个窗口长得一模一样 —— 用户关掉一个还有一个，报成"点 × 关不掉"。
+    print("\n[单实例保护]")
+    from PySide6.QtCore import QLockFile
+
+    from canoe_client import single as single_mod
+    from canoe_client.tun import relaunch_as_admin as tun_relaunch
+
+    single_mod.CONFIG_DIR = tmp / "single"
+    single_mod._lock = None
+    check("★ 第一个实例能拿到锁", single_mod.acquire())
+    other = QLockFile(str(tmp / "single" / "canoe.lock"))
+    check("★ 第二个实例抢不到同一把锁（这就是保护生效）",
+          not other.tryLock(300), "第二个居然也拿到了")
+    single_mod.release()
+    check("★ 放锁之后别人能拿到", QLockFile(str(tmp / "single" / "canoe.lock")).tryLock(300))
+
+    # 强制关窗 = 真的退出。少这一步的话，托盘在时
+    # setQuitOnLastWindowClosed(False) 会让进程活下来变成只有托盘的僵尸 ——
+    # "以管理员身份重启"正好走 force_close，于是留下两个实例。
+    import inspect as _ins2
+
+    check("★ 强制关窗会真的退出进程（不然提权重启会留下僵尸实例）",
+          "QApplication.quit()" in _ins2.getsource(type(view).closeEvent),
+          "closeEvent 里没有 quit")
+    check("★ 提权重启前先放锁（不然新进程会以为自己撞上别人）",
+          "release()" in _ins2.getsource(tun_relaunch),
+          "relaunch_as_admin 没放锁")
+
     print(f"\n{'=' * 48}")
     print(f"通过 {passed} 项，失败 {failed} 项，跳过 {skipped} 项")
     print(f"{'=' * 48}\n")
