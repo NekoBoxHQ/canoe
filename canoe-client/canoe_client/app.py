@@ -309,7 +309,7 @@ def main() -> int:
 
     # 上次自更新如果没替换成功，.bat 会留一份说明。捡起来报给用户 ——
     # 不然他看到的只是"点了更新，程序关了，再打开还是旧版本"。
-    # 顺带把残留的 Canoe.exe.new / .bat 清掉。
+    # 顺带把残留的交班脚本 / 旧目录 / 暂存目录清掉。
     try:
         note = update.last_update_log()
         update.cleanup_leftovers()

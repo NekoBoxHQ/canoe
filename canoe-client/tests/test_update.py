@@ -54,9 +54,21 @@ def check(label: str, cond: bool, extra: str = "") -> None:
         print(f"  [FAIL] {label} {extra}")
 
 
-def make_zip(path: Path, member: str = "Canoe.exe", payload: bytes = FAKE_EXE) -> bytes:
+def make_zip(path: Path, members: dict[str, bytes] | None = None) -> bytes:
+    """造一个发布包。
+
+    形态跟真的一样：zip 里第一层是 `Canoe/`，里面是 Canoe.exe + _internal/。
+    用户解压到 `C:\\` 就得到 `C:\\Canoe\\`。
+    """
+    if members is None:
+        members = {
+            "Canoe/Canoe.exe": FAKE_EXE,
+            "Canoe/_internal/python313.dll": b"D" * 4096,
+            "Canoe/_internal/sub/extra.dll": b"E" * 2048,
+        }
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr(member, payload)
+        for name, payload in members.items():
+            z.writestr(name, payload)
     return path.read_bytes()
 
 
@@ -101,38 +113,44 @@ def main() -> int:
     check("没写最低版本就不强制",
           not update.UpdateInfo(latest="1.1.0", current="0.9.0").must_upgrade)
 
-    # --- 2. 取 exe ---
-    print("\n[2] 从发布包里取出 exe（prepare_update）")
+    # --- 2. 解包 ---
+    print("\n[2] 把发布包解到暂存目录（prepare_update）")
     good = tmp / "good.zip"
     blob = make_zip(good)
     digest = hashlib.sha256(blob).hexdigest()
 
-    fake_exe = tmp / "Canoe.exe"
+    app_dir = tmp / "app"
+    app_dir.mkdir(exist_ok=True)
+    fake_exe = app_dir / "Canoe.exe"
     fake_exe.write_bytes(b"MZ fake")
     real_frozen, real_exec = getattr(sys, "frozen", None), sys.executable
     sys.frozen = True
     sys.executable = str(fake_exe)
     try:
         check("★ 没打包运行时明确拒绝（不装作能更新）", update.can_self_update())
-        staged = update.staging_path()
-        check("★ 新程序放在当前程序同一个目录（同卷改名，快且稳）",
-              staged.parent == fake_exe.parent and staged.name == "Canoe.exe.new",
+        check("★ 安装目录 = 程序自己所在的目录",
+              update.install_dir() == app_dir, str(update.install_dir()))
+        staged = update.staging_dir()
+        check("★ 暂存目录放在安装目录**旁边**（同卷，换起来是改名不是拷贝）",
+              staged.parent == app_dir.parent and staged.name == app_dir.name + ".update",
               str(staged))
 
         out = update.prepare_update(good)
-        check("解出来的路径就是 staged", out == staged, str(out))
-        check("★ 内容跟包里一致", out.read_bytes() == FAKE_EXE,
-              f"{out.stat().st_size} 字节")
-        check("取完就没了中间文件之外的垃圾", out.is_file())
+        check("解出来的就是暂存目录", out == staged, str(out))
+        check("★ 里面剥掉了 Canoe/ 那一层，直接长成应用目录的样子",
+              (out / "Canoe.exe").is_file() and (out / "_internal" / "python313.dll").is_file(),
+              str(sorted(p.name for p in out.iterdir())))
+        check("★ exe 内容跟包里一致", (out / "Canoe.exe").read_bytes() == FAKE_EXE)
+        check("嵌套目录也解出来了", (out / "_internal" / "sub" / "extra.dll").is_file())
 
         # 包里没有 exe
         noexe = tmp / "noexe.zip"
-        make_zip(noexe, member="readme.txt", payload=b"hello")
+        make_zip(noexe, {"Canoe/readme.txt": b"hello"})
         try:
             update.prepare_update(noexe)
             check("包里没 exe 应当报错", False)
         except update.UpdateError as exc:
-            check("★ 包里没 exe -> 可读报错", "没有 exe" in exc.message, exc.message)
+            check("★ 包里没 exe -> 可读报错", "Canoe.exe" in exc.message, exc.message)
 
         # 坏的 zip
         bad = tmp / "bad.zip"
@@ -145,22 +163,35 @@ def main() -> int:
 
         # 不是 Windows 程序
         notwin = tmp / "notwin.zip"
-        make_zip(notwin, payload=b"PK\x03\x04" + b"\0" * 1_500_000)
+        make_zip(notwin, {
+            "Canoe/Canoe.exe": b"PK\x03\x04" + b"\0" * 1_500_000,
+            "Canoe/_internal/x.dll": b"x",
+        })
         try:
             update.prepare_update(notwin)
             check("非 PE 文件应当报错", False)
         except update.UpdateError as exc:
             check("★ 取出来的不是 Windows 程序 -> 拒收", "Windows" in exc.message, exc.message)
-            check("拒收时把半成品删掉（不留 Canoe.exe.new）", not staged.exists())
+            check("拒收时把半成品删掉（不留暂存目录）", not staged.exists())
 
         # 太小
         tiny = tmp / "tiny.zip"
-        make_zip(tiny, payload=b"MZ" + b"\0" * 100)
+        make_zip(tiny, {"Canoe/Canoe.exe": b"MZ" + b"\0" * 100, "Canoe/_internal/x.dll": b"x"})
         try:
             update.prepare_update(tiny)
             check("太小的应当报错", False)
         except update.UpdateError as exc:
             check("★ 太小的包 -> 拒收", "太小" in exc.message, exc.message)
+
+        # 少了 _internal 的残包（截断过的包就长这样）
+        partial = tmp / "partial.zip"
+        make_zip(partial, {"Canoe/Canoe.exe": FAKE_EXE})
+        try:
+            update.prepare_update(partial)
+            check("缺 _internal 的包应当报错", False)
+        except update.UpdateError as exc:
+            check("★ 缺 _internal -> 拒收（截断包就长这样）",
+                  "_internal" in exc.message, exc.message)
     finally:
         if real_frozen is None:
             del sys.frozen
@@ -233,20 +264,24 @@ def main() -> int:
 
     # --- 4. 交班脚本 ---
     print("\n[4] 替换脚本（.bat）")
-    fake_exe2 = tmp / "Canoe2.exe"
-    fake_exe2.write_bytes(b"MZ old")
-    staged2 = tmp / "Canoe2.exe.new"
-    staged2.write_bytes(b"MZ new")
+    inst = tmp / "Canoe2"
+    (inst / "_internal").mkdir(parents=True, exist_ok=True)
+    (inst / "Canoe.exe").write_bytes(b"MZ old")
+    stage2 = tmp / "Canoe2.update"
+    (stage2 / "_internal").mkdir(parents=True, exist_ok=True)
+    (stage2 / "Canoe.exe").write_bytes(b"MZ new")
 
     launched: list = []
     real_popen = update.subprocess.Popen
     update.subprocess.Popen = lambda *a, **k: launched.append((a, k)) or object()
     sys.frozen = True
-    sys.executable = str(fake_exe2)
+    sys.executable = str(inst / "Canoe.exe")
     try:
-        bat = update.install_and_restart(staged2)
+        bat = update.install_and_restart(stage2)
         check("写了一个 .bat", bat.is_file() and bat.suffix == ".bat", str(bat))
-        check("★ 启动了一次 cmd（替换动作交给系统做）", len(launched) == 1, str(len(launched)))
+        check("★ .bat 落在安装目录**外面**（整个目录待会儿要被改名挪走）",
+              bat.parent == inst.parent, str(bat))
+        check("★ 启动了一次 cmd（换目录交给系统做）", len(launched) == 1, str(len(launched)))
         args, kwargs = launched[0]
         check("★ 起的是 cmd /c 那个脚本",
               args[0][:2] == ["cmd", "/c"] and args[0][2] == str(bat), str(args[0][:3]))
@@ -256,35 +291,32 @@ def main() -> int:
 
         script = bat.read_text(encoding="ascii")   # 不是纯 ASCII 这里就抛
         check("★ 脚本是纯 ASCII（批处理按控制台代码页读，中文会乱码）", True)
-        check("★ 等文件锁释放后再替换（ping 当 sleep）", "ping -n 2 127.0.0.1" in script)
-        check("★ 替换失败会重试，不是试一次就算了", "goto swap" in script)
-        # ★ 换文件必须**先改名挪开旧的**。正在运行的 exe 删不掉（WinError 5），
-        #   所以 `move /y new cur` 在旧进程还活着时永远失败 —— 用户那边就是
-        #   "更新一直 ping 个没停"、而且压根没装上。改名对运行中的 exe 是允许的。
-        # ren 的第二个参数必须是**名字**不是路径，所以脚本里用的是裸文件名。
-        # 这里正好也钉死这一点 —— 写成完整路径会静默失败（第一版就是）。
-        check("★ 先改名挪开旧的（运行中的 exe 删不掉、但能改名）",
-              f'ren "{fake_exe2.name}" "{fake_exe2.name}.old"' in script,
-              "没看到 ren ...old；这样旧进程一活着 move 就永远失败")
-        check("★ ren 用的是裸名字（第二个参数给路径会静默失败）",
-              f'"{fake_exe2}.old"' not in script)
-        check("★ 替换成功后把新程序拉起来", f'start "" "{fake_exe2}"' in script)
-        # 用户在真机上撞到过：更新完第一次启动弹
-        #   Failed to load Python DLL '...python313.dll'
-        # 单文件 exe 启动时会解压到 %TEMP%\_MEIxxxx 并清理上一次的同名目录，
-        # 新的太早起来就会被对方清掉。所以必须先等旧进程真没了。
-        check("★ 重试有上限（换不动也要退出）", "lss 30 goto swap" in script)
-        check("★ 拉新的之前先等旧进程退干净（删得掉 .old 才算退了）",
-              'del "{old_name}"' in update._BAT and ":waitold" in update._BAT)
-        check("★ 换完先等一会儿再启动（杀毒扫描刚落盘的 exe）",
-              "ping -n 5 127.0.0.1" in script, "没找到启动前的等待")
-        # 用户在真机上撞到过：更新后重启弹引导器的原生框
-        #   Failed to load Python DLL '...\_MEI00003ae42\python313.dll'.
-        # 但手工再开一次就好了 —— 也就是说那一次解压/加载是偶发失败，exe 没坏。
-        # 既然重开能好，脚本就得自己重开，并且要有依据知道"到底起来没有"：
-        # 光看进程在不在不行，引导器失败时也会留个挂在错误框上的进程。
+        check("★ 重试里带 sleep（ping 当 sleep）", "ping -n 2 127.0.0.1" in script)
+        check("★ 换目录失败会重试，不是试一次就算了", "goto swap" in script)
+        # ★ 目录里有正在运行的 exe 时 ren 一定失败 —— 所以这个重试循环**本身
+        #   就是"等旧进程退出"**。这也正是 onefile 时代那个"更新一直 ping 个
+        #   没停"的病根：当年是 move 覆盖不了运行中的 exe。
+        check("★ 先把旧目录改名挪开（ren 失败=旧进程还在，重试就是等它）",
+              f'ren "{inst.name}" "{inst.name}.old"' in script, script[:500])
+        # ren 只认名字不认路径。给完整路径它会**静默失败**（第一版就栽在这儿，
+        # 而且测试全绿 —— 只有"旧进程没退"那条路会暴露）。
+        check("★ ren 用的是裸名字（给完整路径会静默失败）",
+              f'ren "{inst.name}" "{inst.name}.old"' in script
+              and f'ren "{inst}" ' not in script,
+              "ren 那行的路径不对")
+        check("★ 再把暂存目录搬进来", f'move "{stage2}" "{inst.name}"' in script)
+        check("★ 换失败要把旧目录改回去（不能把用户唯一的程序弄没）",
+              f'if not exist "{inst.name}" ren "{inst.name}.old" "{inst.name}"' in script)
+        check("★ 重试有上限（换不动也要退出）", "lss 60 goto swap" in script)
+        check("★ 换完先等一会儿再启动（杀毒扫刚落盘的文件）",
+              "ping -n 5 127.0.0.1" in script)
+        check("★ 拉起来的是安装目录里的 Canoe.exe",
+              f'start "" "{inst}\\Canoe.exe"' in script)
+        # 用户在真机上撞到过：更新后重启起不来（原生框 "Failed to load Python
+        # DLL"）。既然手工再开一次能好，脚本就得自己重开，而且要有依据知道
+        # "到底起来没有" —— 光看进程在不在不算数。
         check("★ 启动后要确认它真的起来了（光看进程不算数）",
-              "if exist" in script and "goto launch" in script,
+              "if exist" in script and "goto relaunch" in script,
               "重启之后没有确认步骤")
         check("★ 判断依据是程序自己写的启动脚印", "started.txt" in script
               and "{marker}" not in script, "脚本没去看 started.txt / 占位符没替换")
@@ -292,41 +324,41 @@ def main() -> int:
               "lss 3 goto relaunch" in script)
         # 真机事故：那段 `tasklist | findstr` 轮询会**永久卡住** ——
         # cmd 等 findstr，findstr 等一个永远不来的 EOF，更新挂死 18 分钟。
-        # 重试 move 本身就是"等旧进程退出"（进程在跑时文件锁着、move 必失败），
-        # 根本不需要再去问系统 pid 还在不在。
         check("★ 不许有 tasklist|findstr 那种管道轮询（卡死过一次）",
               "tasklist" not in update._BAT and "findstr" not in update._BAT,
               "那段轮询把一次真实更新挂死了 18 分钟")
-        check("脚本里带上了新程序路径", str(staged2) in script)
-        check("脚本里带上了当前程序路径", str(fake_exe2) in script)
+        check("脚本里带上了暂存目录路径", str(stage2) in script)
+        check("脚本里带上了安装目录路径", str(inst) in script)
         check("失败会记日志（不然用户只看到'点完没反应'）",
               "canoe-update.log" in script)
 
-        # 没准备好新程序时不该乱写脚本
+        # 没准备好新版本时不该乱写脚本
         try:
-            update.install_and_restart(tmp / "nope.exe")
-            check("新程序不存在应当报错", False)
+            update.install_and_restart(tmp / "nope")
+            check("新版本不存在应当报错", False)
         except update.UpdateError as exc:
-            check("★ 新程序还没解出来就拒绝交班", exc.code == "no_staged", exc.code)
+            check("★ 新版本还没解出来就拒绝交班", exc.code == "no_staged", exc.code)
 
-        # 不能拿当前程序自己替换自己
+        # 不能拿安装目录自己换自己
         try:
-            update.install_and_restart(fake_exe2)
+            update.install_and_restart(inst)
             check("自己换自己应当报错", False)
         except update.UpdateError as exc:
-            check('★ 拒绝「新程序=当前程序」这种调用', exc.code == "same_file", exc.code)
+            check('★ 拒绝「新版本=当前安装目录」这种调用', exc.code == "same_dir", exc.code)
 
         # 收拾残局
-        (fake_exe2.with_name("canoe-update.log")).write_text("上次失败了", encoding="utf-8")
-        leftover = fake_exe2.with_name("Canoe.exe.new")
-        leftover.write_bytes(b"x")
+        update.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        (update.CONFIG_DIR / "canoe-update.log").write_text("上次失败了", encoding="utf-8")
+        old_dir = inst.parent / (inst.name + ".old")
+        old_dir.mkdir(exist_ok=True)
+        (old_dir / "Canoe.exe").write_bytes(b"MZ old")
         check("★ 能读出上次失败留下的日志", update.last_update_log() == "上次失败了",
               update.last_update_log())
         check("读完就把日志删了（只提醒一次）",
-              not fake_exe2.with_name("canoe-update.log").exists())
+              not (update.CONFIG_DIR / "canoe-update.log").exists())
         update.cleanup_leftovers()
-        check("★ 启动时顺手清掉上次没删成的东西",
-              not bat.exists() and not leftover.exists())
+        check("★ 启动时顺手清掉上次没删成的东西（交班脚本 + 旧目录）",
+              not bat.exists() and not old_dir.exists())
     finally:
         update.subprocess.Popen = real_popen
         sys.executable = real_exec
@@ -345,18 +377,26 @@ def main() -> int:
     if not (where_exe.is_file() and host_exe.is_file()):
         skip("真跑 .bat", "这台机器上没有 where.exe / hostname.exe 当替身")
     else:
-        old = sand / "Canoe.exe"
-        new = sand / "Canoe.exe.new"
-        old.write_bytes(where_exe.read_bytes())      # 冒充"当前程序"
-        new.write_bytes(host_exe.read_bytes())       # 冒充"新程序"
-        log = sand / "canoe-update.log"
+        inst = sand / "Canoe"
+        stage = sand / "Canoe.update"
+        (inst / "_internal").mkdir(parents=True, exist_ok=True)
+        (stage / "_internal").mkdir(parents=True, exist_ok=True)
+        (inst / "Canoe.exe").write_bytes(where_exe.read_bytes())    # 冒充"当前版本"
+        (stage / "Canoe.exe").write_bytes(host_exe.read_bytes())    # 冒充"新版本"
+        (inst / "_internal" / "old.dll").write_bytes(b"old")
+        (stage / "_internal" / "new.dll").write_bytes(b"new")
+
+        new_exe_bytes = host_exe.read_bytes()
+        log = tmp / "canoe-update.log"
         marker = sand / "started.txt"
         bat = sand / "canoe-update.bat"
         bat.write_text(
-            update._BAT.replace("{old_name}", old.name + ".old")
-            .replace("{cur_name}", old.name)
-            .replace("{new}", str(new))
-            .replace("{cur}", str(old))
+            update._BAT.replace("{old_dir}", str(sand / "Canoe.old"))
+            .replace("{old_name}", inst.name + ".old")
+            .replace("{parent}", str(sand))
+            .replace("{stage}", str(stage))
+            .replace("{install}", str(inst))
+            .replace("{name}", inst.name)
             .replace("{log}", str(log))
             .replace("{marker}", str(marker)),
             encoding="ascii",
@@ -385,11 +425,15 @@ def main() -> int:
             stop_touch.set()
             toucher.join(timeout=5)
         check("脚本跑完退出码 0", proc.returncode == 0, f"{proc.returncode} {proc.stderr[:200]}")
-        check("★ 文件真的被换掉了", old.read_bytes() == host_exe.read_bytes(),
-              f"{old.stat().st_size} 字节")
-        check("换完之后 .new 没了（是 move 不是 copy）", not new.exists())
-        check("换完之后 .old 也被收掉了（旧进程早退了，del 删得掉）",
-              not (sand / "Canoe.exe.old").exists())
+        check("★ 整个安装目录被换掉了（Canoe.exe 是新的那份）",
+              (inst / "Canoe.exe").read_bytes() == new_exe_bytes,
+              f"{(inst / 'Canoe.exe').stat().st_size} 字节")
+        check("★ 新版本带的东西也在（_internal/new.dll）",
+              (inst / "_internal" / "new.dll").is_file())
+        check("★ 旧版本的东西没跟过来（_internal/old.dll）",
+              not (inst / "_internal" / "old.dll").exists())
+        check("暂存目录没了（是 move 不是 copy）", not stage.exists())
+        check("旧的目录被收掉了", not (sand / "Canoe.old").exists())
         check("没有失败日志（说明没走到失败分支）", not log.exists())
         # .bat 特意**不**自删：删掉正在执行的批处理，cmd 读不到下一行，
         # 会退回 1 并喷一句"找不到批处理文件"。留着不影响什么 ——
@@ -404,15 +448,17 @@ def main() -> int:
         # 所以这里钉死两件事：上限还在，而且脚本里**不许**再有那种轮询。
         fail_bat = sand / "fail.bat"
         fail_bat.write_text(
-            update._BAT.replace("{old_name}", old.name + ".old")
-            .replace("{cur_name}", old.name)
-            .replace("{new}", str(sand / "does-not-exist.exe"))
-            .replace("{cur}", str(old))
+            update._BAT.replace("{old_dir}", str(sand / "Canoe.old"))
+            .replace("{old_name}", inst.name + ".old")
+            .replace("{parent}", str(sand))
+            .replace("{stage}", str(sand / "does-not-exist"))
+            .replace("{install}", str(inst))
+            .replace("{name}", inst.name)
             .replace("{log}", str(log))
             .replace("{marker}", str(marker))
             # 上限改成 2 次，等价逻辑但测试只要等几秒
-            # （换文件那一步会失败：new 指向一个不存在的文件）
-            .replace("lss 30 goto swap", "lss 2 goto swap"),
+            # （换目录那一步会失败：暂存目录根本不存在）
+            .replace("lss 60 goto swap", "lss 2 goto swap"),
             encoding="ascii",
         )
         t0 = time.time()
@@ -421,6 +467,10 @@ def main() -> int:
         took = time.time() - t0
         check("★ 换不动时会放弃（重试有上限，不会一直转）",
               took < 60, f"跑了 {took:.1f}s")
+        # ★ 换失败必须把旧目录**还回去** —— 否则一次失败的更新会让用户
+        #   手里连个程序都没有。
+        check("★ 放弃时把旧目录还回来了（不能让用户没有程序）",
+              (inst / "Canoe.exe").is_file(), str(sorted(p.name for p in sand.iterdir())))
         # 日志是 cmd 写的，用的是系统 ANSI 代码页（中文机器上是 GBK），
         # 不是 UTF-8 —— 读它得容错，最后给用户看的时候也一样。
         check("★ 放弃时留下失败日志（用户能知道出了什么事）",
@@ -432,20 +482,12 @@ def main() -> int:
         src = _ins.getsource(update.last_update_log)
         check("★ 读日志时容得下非 UTF-8（cmd 写的是 GBK）",
               "gbk" in src or "mbcs" in src, "last_update_log 只按 utf-8 读会崩")
-        # 真拿一份 GBK 字节喂给它，确认不再崩。
-        # ⚠ 文件名必须是 canoe-update.log —— last_update_log() 是拿
-        #   _current_exe() 的**目录**再拼上这个名字去找的。
-        probe_dir = tmp / "gbklog"
-        probe_dir.mkdir(exist_ok=True)
-        real_cur = update._current_exe
-        try:
-            (probe_dir / "canoe-update.log").write_bytes("中文日志".encode("gbk"))
-            update._current_exe = lambda: probe_dir / "Canoe.exe"  # type: ignore[assignment]
-            check("★ 真喂一份 GBK 的日志也不崩", update.last_update_log() == "中文日志",
-                  "读法还是有问题")
-        finally:
-            update._current_exe = real_cur  # type: ignore[assignment]
-        log.unlink(missing_ok=True)
+        # 真拿一份 GBK 字节喂给它，确认不再崩。日志在配置目录里。
+        update.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        (update.CONFIG_DIR / "canoe-update.log").write_bytes("中文日志".encode("gbk"))
+        check("★ 真喂一份 GBK 的日志也不崩", update.last_update_log() == "中文日志",
+              "读法还是有问题")
+        (update.CONFIG_DIR / "canoe-update.log").unlink(missing_ok=True)
 
     # --- 6. 更新这条路不该走系统代理 ---
     # 用户报的："系统代理加 TUN 的时候无法下载更新客户端"。
