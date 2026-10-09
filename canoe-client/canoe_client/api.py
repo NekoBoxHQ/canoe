@@ -70,6 +70,17 @@ class CanoeApi:
     def __init__(self) -> None:
         self._http = requests.Session()
         self._http.headers.update({"User-Agent": "Canoe-Client/1.0"})
+        # ★ 客户端跟服务端说话这条路**不走系统代理**。
+        #
+        # 代理配置本来就是服务端下发的 —— 让"连得上服务端"依赖"代理能用"，
+        # 就成了个环：代理一坏，连"点更新"都下不下来，程序自己没法自愈。
+        #
+        # 这不是理论问题。系统代理被写成 127.0.0.1:20818、内核却已经退了，
+        # 那条代理就是个死端口，requests 会老老实实走它 —— 于是"系统代理
+        # 加 TUN 的时候下不了更新"（用户报的）。直连的话这条路一直是通的。
+        #
+        # 服务端是自己的域名，直连得到；真直连不了，本来也登不上舟。
+        self._http.trust_env = False
         self.token: str | None = None
         #: 会话级订阅密钥。**只在内存**，登舟时拿到，离舟时丢掉。
         self.sub_key: str = ""

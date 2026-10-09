@@ -366,8 +366,55 @@ def main() -> int:
         check("等超时之后照样把文件换掉了（不会卡死在那儿）",
               old.read_bytes() == host_exe.read_bytes())
 
-    # --- 6. 没打包运行时一律拒绝 ---
-    print("\n[6] 源码运行时不装作能自更新")
+    # --- 6. 更新这条路不该走系统代理 ---
+    # 用户报的："系统代理加 TUN 的时候无法下载更新客户端"。
+    # 代理配置本来就是服务端下发的 —— 让"取更新"依赖"代理能用"就成环了：
+    # 代理一坏，连更新都点不动，程序自己没法自愈。
+    print("\n[6] 更新不走系统代理")
+    _Handler.blob = b'{"version":"9.9.9","url":"http://x/y.zip"}'
+    _Handler.status = 200
+    _Handler.truncate = False
+    srv2 = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    port2 = srv2.server_address[1]
+    threading.Thread(target=srv2.serve_forever, daemon=True).start()
+    target = f"http://127.0.0.1:{port2}/latest"
+
+    import requests as _rq  # noqa: PLC0415
+
+    saved_env = {k: os.environ.get(k) for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")}
+    os.environ["HTTP_PROXY"] = os.environ["http_proxy"] = "http://127.0.0.1:1"   # 死代理
+    try:
+        # 对照组：先证明这个环境变量**真的**会被 requests 采纳，
+        # 否则下面那条断言就是在测一个不存在的场景
+        try:
+            _rq.get(target, timeout=5)
+            check("对照组：死代理本该让普通请求失败", False, "居然通了")
+        except Exception:
+            check("对照组：死代理确实会让普通请求失败（所以下面那条有意义）", True)
+
+        try:
+            info2 = update.check(target, "1.0.0")
+            check("★ update.check 无视系统代理，直连成功",
+                  info2.latest == "9.9.9", info2.latest)
+        except update.UpdateError as exc:
+            check("★ update.check 无视系统代理，直连成功", False, exc.message)
+
+        try:
+            dest9 = tmp / "dl-proxy.zip"
+            update.download(target, dest9)
+            check("★ update.download 也无视系统代理", dest9.is_file())
+        except update.UpdateError as exc:
+            check("★ update.download 也无视系统代理", False, exc.message)
+    finally:
+        srv2.shutdown()
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # --- 7. 没打包运行时一律拒绝 ---
+    print("\n[7] 源码运行时不装作能自更新")
     del sys.frozen
     check("can_self_update() 为假", not update.can_self_update())
     for name, fn in (("prepare_update", lambda: update.prepare_update(good)),

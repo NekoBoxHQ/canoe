@@ -216,6 +216,14 @@ def main() -> int:
 
     from canoe_client.api import CanoeApi, CanoeApiError
 
+    # 顺带钉一条：客户端跟服务端说话这条路**不走系统代理**。
+    # 代理配置是服务端下发的，让"连服务端"依赖"代理能用"就成环了 ——
+    # 代理一坏，连更新都点不动，程序自己没法自愈。
+    # （用户报的"系统代理加 TUN 的时候下不了更新"就是这个环。）
+    check("★ 登录/订阅等接口不走系统代理",
+          CanoeApi()._http.trust_env is False,
+          "trust_env 没关掉，requests 会去走注册表里那条代理")
+
     class _Ok:
         status_code = 200
         text = "{}"

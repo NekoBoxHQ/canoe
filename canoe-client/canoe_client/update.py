@@ -99,15 +99,31 @@ def human_size(n: int) -> str:
     return f"{n / 1024 / 1024:.1f} MB"
 
 
+def _session() -> requests.Session:
+    """更新这条路用的会话。**不走系统代理**。
+
+    跟 api.py 里同一个理由：更新地址就是服务端自己的域名，而代理配置是
+    服务端下发的。让"取更新"依赖"代理能用"会成环 —— 代理一坏，连更新都
+    下不下来，程序自己没法自愈。
+
+    现实里踩到过：系统代理指向 127.0.0.1:20818 而内核已经退了，那条代理
+    就是个死端口，requests 老老实实走它，于是"系统代理 + TUN 的时候点更新
+    没反应"。直连就一直通。
+    """
+    s = requests.Session()
+    s.headers.update({"User-Agent": "Canoe-Client/1.0"})
+    s.trust_env = False
+    return s
+
+
 def check(url: str, current: str) -> UpdateInfo:
     """拉取更新信息。url 为空或格式不对会抛 UpdateError。"""
     if not url or not url.strip():
         raise UpdateError("未配置更新地址（阶段4 部署服务端后填入）")
 
     try:
-        resp = requests.get(url.strip(), timeout=TIMEOUT,
-                            headers={"User-Agent": "Canoe-Client/1.0"},
-                            verify=config.ca_bundle)
+        resp = _session().get(url.strip(), timeout=TIMEOUT,
+                              verify=config.ca_bundle)
     except requests.exceptions.SSLError as exc:
         raise UpdateError(f"TLS 握手失败：{exc}", code="tls_error") from exc
     except requests.exceptions.ConnectionError as exc:
@@ -165,9 +181,8 @@ def download(
             on_progress(done, total)
 
     try:
-        resp = requests.get(
+        resp = _session().get(
             url, stream=True, timeout=DOWNLOAD_TIMEOUT,
-            headers={"User-Agent": "Canoe-Client/1.0"},
             verify=config.ca_bundle,
         )
     except requests.exceptions.SSLError as exc:

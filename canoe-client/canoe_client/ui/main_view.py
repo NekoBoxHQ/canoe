@@ -598,6 +598,17 @@ class MainView(FramelessWindow):
             self._hb_timer.start(self._heartbeat_seconds * 1000)
 
         def on_err(code: str, message: str) -> None:
+            # 启航没成功 —— 我们自己设过的那条系统代理必须还回去。
+            #
+            # 不还的话注册表指向一个**没人在听的端口**：用户接下来是断网的，
+            # 而且连"点更新"都会失败（requests 会老老实实走那条死代理，
+            # 于是"系统代理加 TUN 的时候下不了更新"）。
+            if sysproxy.has_backup():
+                try:
+                    sysproxy.clear_proxy()
+                    bus.system("系统代理已还原")
+                except OSError:
+                    pass
             self._set_state(STATE_STORM, message)
             bus.error(message)
             if code == "no_subscription":
@@ -796,6 +807,17 @@ class MainView(FramelessWindow):
     def _on_heartbeat(self) -> None:
         if not session.sailing or not self._session_id:
             self._hb_timer.stop()
+            return
+
+        # 内核半路没了，得当场发现并收拾。
+        #
+        # 不看的话程序还显示"已启航"，而注册表里的系统代理指向一个**没人
+        # 在听的端口** —— 用户那边就是断网，还查不出原因（浏览器、以及
+        # 我们自己点更新，全会老老实实去撞那条死代理）。
+        # 就地靠岸：把代理还回去、把界面拉回真实状态。
+        if not kernel.running:
+            bus.error("内核已经不在了（可能被杀掉或崩了），自动靠岸")
+            self._dock()
             return
 
         sid = self._session_id
