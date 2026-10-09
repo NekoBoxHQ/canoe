@@ -122,3 +122,18 @@ coll = COLLECT(
     upx_exclude=[],
     name="Canoe",
 )
+
+# ---------------------------------------------------------------------------
+# 给用户看的说明，放到产物根目录，文件名用中文。
+#
+# 不塞进 datas 是因为 PyInstaller 会保留源文件名（SHIP_README.txt），
+# 而用户在解压出来的文件夹里第一眼要找的是「使用说明」。这里 COLLECT
+# 之后再复制一份改好名，两边都留一份，谁也不会找不到。
+# ---------------------------------------------------------------------------
+_ship = BASE / "SHIP_README.txt"
+if _ship.is_file():
+    import shutil as _shutil
+
+    _dest = BASE / "dist" / "Canoe"
+    if _dest.is_dir():
+        _shutil.copy2(_ship, _dest / "使用说明.txt")
