@@ -139,6 +139,24 @@ check "菜单只有 9 行选项（1-8 加 0）" \
       "$([[ "$(grep -cE '^[[:space:]]+[0-9]  ' <<< "$MENU")" == "9" ]] && echo 0 || echo 1)" \
       "实际 $(grep -cE '^[[:space:]]+[0-9]  ' <<< "$MENU") 行"
 
+# 配置子菜单。cmd_config 要 root / 要已安装，两个检查 stub 掉就能验。
+CONFIG_MENU="$(printf '0\n' | bash -c "
+    source '$TARGET'
+    need_root() { :; }
+    require_installed() { :; }
+    cmd_config
+" 2>&1)"
+check "配置子菜单里有「改管理员密码」" \
+      "$(grep -q "改管理员密码" <<< "$CONFIG_MENU" && echo 0 || echo 1)" "$CONFIG_MENU"
+check "配置子菜单里有「查看当前配置」" \
+      "$(grep -q "查看当前配置" <<< "$CONFIG_MENU" && echo 0 || echo 1)"
+check "★ 配置子菜单里不再有「改客户端口」（客户端写死，不该给这个选项）" \
+      "$(grep -q "改客户端口" <<< "$CONFIG_MENU" && echo 1 || echo 0)" "$CONFIG_MENU"
+
+# 「看日志」归到状态里，不再单列 —— 用户明确说 l/p 那两个是多余的。
+check "★ 状态里带最近日志（所以不需要单独的「看日志」项）" \
+      "$(grep -q '最近日志' "$TARGET" && echo 0 || echo 1)"
+
 # 三种调用方式都必须能出菜单。曾经只认 BASH_SOURCE 惯用法，
 # 结果 bash -c "$(curl …)"（推荐的一行安装方式）下菜单一个字都不显示。
 for how in "直接" "管道"; do

@@ -385,21 +385,22 @@ cmd_config() {
     need_root; require_installed
 
     while true; do
-        hr
-        printf '  %s配置%s\n' "$C_INFO" "$C_OFF"
-        hr
-        printf '    1  查看当前配置\n'
-        printf '    2  改客户端端口（客户端固定用 58588）\n'
-        printf '    3  改面板端口\n'
-        printf '    4  用编辑器打开 .env（高级）\n'
-        printf '    5  重新走安装向导（改端口 / 域名 / 证书）\n'
-        printf '    0  返回\n\n'
+        printf '%s\n' "$MENU_RULE"
+        printf '         %s配置%s\n' "$C_INFO" "$C_OFF"
+        printf '%s\n' "$MENU_RULE"
+        printf '   1  查看当前配置\n'
+        printf '   2  改管理面板端口\n'
+        printf '   3  改管理员密码\n'
+        printf '   4  用编辑器打开 .env（高级）\n'
+        printf '   5  重新走安装向导（域名 / 端口 / 证书）\n'
+        printf '   0  返回\n'
+        printf '%s\n' "$MENU_RULE"
         printf '  请选择: '
         local c; read -r c
         case "$c" in
             1) show_config ;;
-            2) change_port PORT "客户端口" ;;
-            3) change_port PANEL_PORT "面板口" ;;
+            2) change_port PANEL_PORT "面板端口" ;;
+            3) cmd_passwd ;;
             4) edit_env ;;
             5) run_install_wizard ;;
             0) return 0 ;;
