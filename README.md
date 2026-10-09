@@ -167,22 +167,24 @@ set CANOE_CA_BUNDLE=canoe-server\data\certs\local-cert.pem
 
 **不要**去关 TLS 校验 —— 关了就给了中间人伪造渡口、骗走用户令牌的机会。
 
+下面命令都按**已经是 root**写 —— VPS 上装完就是。不是 root 的话先 `sudo -i` 切过去。
+
 ### 部署到服务器
 
 **在服务器上一条命令** —— 出来就是管理菜单，选 `1` 安装：
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/canoe.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/canoe.sh)"
 ```
 
 整台机器只需要这一个脚本，代码和后续文件它自己去项目拉。装完以后直接：
 
 ```bash
-sudo canoe          # 菜单：安装 / 启动 / 停止 / 重启 / 状态 / 配置 / 升级 / 卸载
-sudo canoe status   # 也可以直接用子命令（写进脚本/定时任务）
+canoe          # 菜单：安装 / 启动 / 停止 / 重启 / 状态 / 配置 / 升级 / 卸载
+canoe status   # 也可以直接用子命令（写进脚本/定时任务）
 ```
 
-> 用 `bash -c "$(curl …)"`，**不要**用 `curl … | sudo bash` ——
+> 用 `bash -c "$(curl …)"`，**不要**用 `curl … | bash` ——
 > 管道会占掉 stdin，菜单和向导就再也读不到你敲的字了。
 
 安装向导会依次问：域名、面板端口、管理员账号、证书方式
@@ -193,9 +195,9 @@ sudo canoe status   # 也可以直接用子命令（写进脚本/定时任务）
 Web 管理面板在 `<域名>:<面板端口>/panel`，管用户、节点、会话、版本发布。
 **给客户发节点**：先在「节点」页贴一行节点链接，再去「用户」页点「分配节点」勾给他。
 
-> 装完之后**别再去跑 install.sh** —— 它检测到已经装过就会停下，把 `sudo canoe`
+> 装完之后**别再去跑 install.sh** —— 它检测到已经装过就会停下，把 `canoe`
 > 那条命令指给你。安装向导只该在第一次、或者你明确要改域名/端口/证书时走
-> （`sudo canoe config` → 重新走安装向导）。
+> （`canoe config` → 重新走安装向导）。
 
 ---
 

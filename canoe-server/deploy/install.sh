@@ -2,8 +2,8 @@
 #
 # 轻舟 / Canoe Server —— 安装向导（Debian / Ubuntu）
 #
-#   sudo bash deploy/install.sh                 # 一路问下来
-#   sudo bash deploy/install.sh --domain canoe.s-ui.com --port 58588 --cert-mode le
+#   bash deploy/install.sh                      # 一路问下来
+#   bash deploy/install.sh --domain canoe.s-ui.com --port 58588 --cert-mode le
 #
 # 会问你三件事：**域名 / Web 端口 / 证书**。
 #
@@ -81,9 +81,9 @@ usage() {
     cat <<'EOF'
 轻舟 / Canoe Server —— 安装向导（Debian / Ubuntu）
 
-  sudo bash deploy/install.sh
-  sudo bash deploy/install.sh --domain canoe.s-ui.com --port 58588 --cert-mode le
-  sudo bash deploy/install.sh --domain x.com --port 58588 --panel-port 58589
+  bash deploy/install.sh
+  bash deploy/install.sh --domain canoe.s-ui.com --port 58588 --cert-mode le
+  bash deploy/install.sh --domain x.com --port 58588 --panel-port 58589
 
 不带参数会一项一项问你：域名 / 管理面板端口 / 证书。
 
@@ -116,7 +116,7 @@ usage() {
                         只在克隆那一次用到，用完立刻从 remote 里擦掉。
   --no-seed             跳过种子数据
   --reconfigure         已经装过的机器上，强制重走一遍向导。
-                        不加这个：检测到装完了就停下来，告诉你用 `sudo canoe`
+                        不加这个：检测到装完了就停下来，告诉你用 `canoe`
                         那个管理菜单 —— 免得每次改点东西都从「[1/3] 域名」问起。
   -h, --help            看这个
 
@@ -125,18 +125,18 @@ usage() {
 代码从哪来
 ------------------------------------------------------------------
   1) 在检出目录里跑（最常见）—— 直接把当前这份代码同步到 /opt/canoe
-         sudo bash canoe-server/deploy/install.sh
+         bash canoe-server/deploy/install.sh
 
   2) 不在检出目录里跑 —— 脚本自己去仓库拉
-         sudo bash install.sh --repo https://github.com/NekoBoxHQ/canoe.git
+         bash install.sh --repo https://github.com/NekoBoxHQ/canoe.git
 
   私有仓库有两条路（二选一，都是只读）：
     · Deploy Key（推荐，一次配好，以后 `canoe upgrade` 直接能拉）
         ssh-keygen -t ed25519 -f ~/.ssh/canoe -N ""
         # 把 ~/.ssh/canoe.pub 加到仓库 Settings -> Deploy keys（不要勾写入）
-        sudo bash install.sh --repo git@github.com:NekoBoxHQ/canoe.git
+        bash install.sh --repo git@github.com:NekoBoxHQ/canoe.git
     · PAT（临时用，方便）
-        sudo bash install.sh --token <你的PAT>
+        bash install.sh --token <你的PAT>
       注意：令牌用完会被擦掉，所以之后 `canoe upgrade` 拉不动，
       得重新给一次。想一劳永逸就用上面的 Deploy Key。
 EOF
@@ -206,7 +206,7 @@ if [[ -d "$SERVER_DIR/.venv" && -f "$SERVER_DIR/.env" \
   平时请用**管理脚本**，安装 / 启动 / 停止 / 状态 / 配置 / 升级 / 卸载
   都在那一个菜单里：
 
-      sudo canoe
+      canoe
 
   菜单没装到 PATH 上？取一份来跑：
 
@@ -214,7 +214,7 @@ if [[ -d "$SERVER_DIR/.venv" && -f "$SERVER_DIR/.env" \
 
   真要重走一遍安装向导（改域名 / 端口 / 证书；代码会被覆盖，数据不动）：
 
-      sudo CANOE_RECONFIGURE=1 bash -c "\$(curl -fsSL $SELF_RAW)"
+      CANOE_RECONFIGURE=1 bash -c "\$(curl -fsSL $SELF_RAW)"
 
 TXT
     exit 0
@@ -492,7 +492,7 @@ if [[ -n "$REPO_URL" ]]; then
             die "拉取失败。私有仓库拉不动通常是凭据问题：
       · Deploy Key：确认 ~/.ssh/ 里的私钥在，且公钥已加到仓库
         （Settings -> Deploy keys，只读即可）
-      · PAT：sudo bash install.sh --token <新的PAT>
+      · PAT：bash install.sh --token <新的PAT>
       · 本地有改动？git -C $APP_DIR status 看看"
         fi
         git -C "$APP_DIR" remote set-url origin "$REPO_URL"
@@ -506,9 +506,9 @@ if [[ -n "$REPO_URL" ]]; then
        Deploy Key（推荐）：
          ssh-keygen -t ed25519 -f ~/.ssh/canoe -N \"\"
          # 把 ~/.ssh/canoe.pub 加到仓库 Settings -> Deploy keys
-         sudo bash install.sh --repo git@github.com:NekoBoxHQ/canoe.git
+         bash install.sh --repo git@github.com:NekoBoxHQ/canoe.git
        PAT（临时）：
-         sudo bash install.sh --token <你的PAT>
+         bash install.sh --token <你的PAT>
      仓库是公开的话这条不该失败，检查一下域名拼写。"
         fi
         [[ -n "$REPO_TOKEN" ]] && git -C "$APP_DIR" remote set-url origin "$REPO_URL"
@@ -626,7 +626,7 @@ HOOK
     TLS_CERT="$LIVE_DIR/fullchain.pem"
     TLS_KEY="$LIVE_DIR/privkey.pem"
     log "证书已就位：$(openssl x509 -noout -subject -in "$LIVE_DIR/fullchain.pem" 2>/dev/null | sed 's/^subject=//')"
-    warn "已有证书不会自动续期：到期前换掉 $LIVE_DIR/ 里的文件，再 sudo canoe restart"
+    warn "已有证书不会自动续期：到期前换掉 $LIVE_DIR/ 里的文件，再 canoe restart"
     ;;
 
   none)
@@ -712,7 +712,7 @@ EOF
   密码:     $ADMIN_PASS
 
 登录后请改掉并删掉这个文件。
-以后想改： sudo canoe config -> 改管理员密码
+以后想改：canoe config -> 改管理员账号
 EOF
         chmod 600 "$APP_DIR/ADMIN_PASSWORD.txt"
     fi
@@ -742,10 +742,10 @@ systemctl is-active --quiet canoe-api \
     && log "canoe-api 已在跑" \
     || { journalctl -u canoe-api -n 40 --no-pager; die "canoe-api 起不来，日志见上"; }
 
-# 顺带装管理脚本：以后启停 / 看状态 / 改配置 / 升级都用 `sudo canoe`
+# 顺带装管理脚本：以后启停 / 看状态 / 改配置 / 升级都用 `canoe`
 if [[ -f "$SERVER_DIR/deploy/canoe.sh" ]]; then
     install -m 755 "$SERVER_DIR/deploy/canoe.sh" /usr/local/bin/canoe
-    log "管理脚本已安装：sudo canoe"
+    log "管理脚本已安装：canoe"
 fi
 
 # ---------------------------------------------------------------------------
@@ -788,12 +788,12 @@ cat <<EOF
   客户端更新接口 : $BASE_SHOWN/api/client/latest
   健康检查       : $BASE_SHOWN/api/health
 
-  管理脚本 : sudo canoe        （菜单：启动/停止/状态/配置/升级/卸载）
+  管理脚本 : canoe             （菜单：启动/停止/状态/配置/升级/卸载）
   配置     : $SERVER_DIR/.env
 
   登录面板 : $ADMIN_USER
              密码就是你刚才设的那个
-             忘了的话：sudo canoe config -> 改管理员密码
+             忘了的话：canoe config -> 改管理员账号
 
   下一步：
     1. 面板「用户」里给账号配**订阅** —— 点那行的「订阅」按钮，

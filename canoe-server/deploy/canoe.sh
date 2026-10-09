@@ -3,8 +3,8 @@
 #  轻舟 / Canoe —— 服务端管理脚本
 #
 #  用法：
-#      sudo canoe              交互菜单
-#      sudo canoe status       也可以直接用子命令（方便写进脚本/定时任务）
+#      canoe                   交互菜单
+#      canoe status            也可以直接用子命令（方便写进脚本/定时任务）
 #
 #      canoe install | start | stop | restart | status | config | upgrade
 #      canoe uninstall | logs | passwd | version | help
@@ -54,7 +54,7 @@ die() { err "$*"; exit 1; }
 hr() { printf '%s\n' "------------------------------------------------------------"; }
 
 need_root() {
-    [[ ${EUID:-$(id -u)} -eq 0 ]] || die "需要 root：请用 sudo canoe"
+    [[ ${EUID:-$(id -u)} -eq 0 ]] || die "需要 root：sudo canoe，或者 su - 切到 root 再敲 canoe"
 }
 
 # 以 $APP_USER 的身份跑一条命令（交给 bash -c）。
@@ -78,7 +78,7 @@ as_user() {
 installed() { [[ -x "$SERVER_DIR/.venv/bin/python" ]]; }
 
 require_installed() {
-    installed || die "还没安装。先跑：sudo canoe install"
+    installed || die "还没安装。先跑：canoe install"
 }
 
 # ---------------------------------------------------------------------------
@@ -240,7 +240,7 @@ cmd_install() {
     printf '\n'
     if [[ $rc -eq 0 && -x "$SERVER_DIR/.venv/bin/python" ]]; then
         ok "安装完成"
-        dim "以后直接敲：sudo canoe    （这个菜单现在装在 $SELF_DEST 了）"
+        dim "以后直接敲：canoe    （这个菜单现在装在 $SELF_DEST 了）"
     elif [[ $rc -ne 0 ]]; then
         err "安装向导以退出码 $rc 结束 —— 它上面的输出就是原因"
     fi
@@ -513,7 +513,7 @@ cmd_upgrade() {
             dim "2) 私有仓库的凭据还在不在（最常见）："
             dim "   Deploy Key：确认 ~/.ssh/ 里的私钥在、公钥还在仓库的 Deploy keys 里"
             dim "   用的是 PAT：令牌会被擦掉，得重新给一次 ——"
-            dim "              sudo bash $SERVER_DIR/deploy/install.sh --token <新PAT>"
+            dim "              bash $SERVER_DIR/deploy/install.sh --token <新PAT>"
             printf '\n  跳过拉代码，只重装依赖并重启？[y/N] '
             local a; read -r a
             [[ "$a" =~ ^[Yy]$ ]] || { log "已取消"; return 0; }
@@ -551,7 +551,7 @@ print(\"    表结构已对齐\")
     else
         err "升级后服务不正常"
         journalctl -u "$UNIT" -n 30 --no-pager
-        dim "回滚：git -C $APP_DIR checkout <上一个 tag> 然后 sudo canoe restart"
+        dim "回滚：git -C $APP_DIR checkout <上一个 tag> 然后 canoe restart"
         return 1
     fi
     hr
@@ -607,7 +607,7 @@ cmd_uninstall() {
         fi
     else
         log "保留 $APP_DIR 与 $CERT_DIR"
-        dim "想彻底清干净：sudo rm -rf $APP_DIR $CERT_DIR"
+        dim "想彻底清干净：rm -rf $APP_DIR $CERT_DIR"
     fi
 
     hr
@@ -771,8 +771,8 @@ usage() {
 轻舟 / Canoe —— 服务端管理脚本
 
 用法：
-    sudo canoe                交互菜单
-    sudo canoe <命令>         直接用子命令
+    canoe                     交互菜单
+    canoe <命令>              直接用子命令
 
 命令：
     install     安装（交给安装向导，选域名 / 管理端口 / 证书）

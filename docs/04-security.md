@@ -136,10 +136,10 @@ assert_no_leaks(payload) # 有就抛异常
 
 ```bash
 # 在节点服务器上，只放行你自己的出口 IP / 中转机
-sudo ufw default deny incoming
-sudo ufw allow 22/tcp
-sudo ufw allow from <你自己用出口 IP> to any port <节点端口> proto tcp
-sudo ufw enable
+ufw default deny incoming
+ufw allow 22/tcp
+ufw allow from <你自己用出口 IP> to any port <节点端口> proto tcp
+ufw enable
 ```
 
 **这一条在本项目的代码之外，但缺了它，第 3 层的实际价值会打折** ——

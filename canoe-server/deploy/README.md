@@ -44,7 +44,7 @@ uvicorn canoe_server.app:app --workers 1     # ← 必须
 **在服务器上一条命令，进管理菜单：**
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/canoe.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/canoe.sh)"
 ```
 
 出来的就是管理菜单：
@@ -65,10 +65,10 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/mai
 装完这个菜单就落到 `/usr/local/bin/canoe`，以后直接：
 
 ```bash
-sudo canoe
+canoe
 ```
 
-> ⚠️ 一定要用 `bash -c "$(curl …)"` 这个写法，**不要**用 `curl … | sudo bash`。
+> ⚠️ 一定要用 `bash -c "$(curl …)"` 这个写法，**不要**用 `curl … | bash`。
 > 管道会把 stdin 占掉，菜单和向导的 `read` 就再也读不到你敲的字了 ——
 > 表现是它卡在那里不动，或者读到你上一条命令的残留。
 
@@ -77,7 +77,7 @@ sudo canoe
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/canoe.sh -o canoe.sh
 less canoe.sh
-sudo bash canoe.sh
+bash canoe.sh
 ```
 
 ### 只想装、不想进菜单
@@ -85,17 +85,17 @@ sudo bash canoe.sh
 也可以直接跑安装向导，或者用参数跳过问答（适合脚本化）。
 
 > ⚠️ **这条路只走第一次。** 机器上已经装好之后，install.sh 会检测到
-> （`.venv` + `.env` + systemd 单元都在）然后**停下来**，把 `sudo canoe`
+> （`.venv` + `.env` + systemd 单元都在）然后**停下来**，把 `canoe`
 > 那条命令指给你 —— 不会又从头问一遍「[1/3] 域名」。
 > 确实要重走向导，加 `--reconfigure`（或环境变量 `CANOE_RECONFIGURE=1`）。
 
 ```bash
 # 本地检出
 git clone https://github.com/NekoBoxHQ/canoe.git && cd canoe
-sudo bash canoe-server/deploy/install.sh
+bash canoe-server/deploy/install.sh
 
 # 或者不 clone：
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/install.sh)"
 ```
 
 向导会**一项一项问你四件事**：
@@ -130,7 +130,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/mai
 忘了密码随时可以改：
 
 ```bash
-sudo canoe config      # -> 3 改管理员账号
+canoe config      # -> 3 改管理员账号
 ```
 
 > **客户端口（58588）不问**：客户端把服务端地址写死在代码里了，
@@ -141,8 +141,8 @@ sudo canoe config      # -> 3 改管理员账号
 也可以全用参数跳过问答（适合脚本化）：
 
 ```bash
-sudo bash deploy/install.sh --domain canoe.s-ui.com --port 58588 --cert-mode le
-sudo bash deploy/install.sh --domain x.com --cert-mode existing \
+bash deploy/install.sh --domain canoe.s-ui.com --port 58588 --cert-mode le
+bash deploy/install.sh --domain x.com --cert-mode existing \
      --cert /root/ssl/fullchain.pem --key /root/ssl/privkey.pem
 ```
 
@@ -205,7 +205,7 @@ Let's Encrypt 续期后会由 `/etc/letsencrypt/renewal-hooks/deploy/canoe.sh`
 你就能在安全组/防火墙里只放行自己的 IP：
 
 ```bash
-sudo bash deploy/install.sh --domain x.com --port 58588 --panel-port 58589 --cert-mode le
+bash deploy/install.sh --domain x.com --port 58588 --panel-port 58589 --cert-mode le
 ```
 
 效果：
@@ -227,8 +227,8 @@ sudo bash deploy/install.sh --domain x.com --port 58588 --panel-port 58589 --cer
 **只改 `.env` 就行**，不用碰 systemd 也不用 daemon-reload：
 
 ```bash
-sudo -e /opt/canoe/canoe-server/.env     # 改 PORT / TLS_CERT / TLS_KEY
-sudo systemctl restart canoe-api
+${EDITOR:-vi} /opt/canoe/canoe-server/.env     # 改 PORT / TLS_CERT / TLS_KEY
+systemctl restart canoe-api
 ```
 
 `serve.py` 读 `.env` 决定监听什么。
@@ -237,7 +237,7 @@ sudo systemctl restart canoe-api
 > 改成别的口，所有已经发出去的客户端都会连不上 —— 除非你打算重发一版客户端。
 > 面板口随便改，两者互不影响。
 >
-> 改配置也可以用管理脚本：`sudo canoe config`（会问你要不要重启）。
+> 改配置也可以用管理脚本：`canoe config`（会问你要不要重启）。
 
 ---
 
@@ -245,31 +245,31 @@ sudo systemctl restart canoe-api
 
 ```bash
 # 3.1 用户与代码
-sudo useradd -r -s /usr/sbin/nologin -d /opt/canoe canoe
-sudo mkdir -p /opt/canoe && sudo chown canoe:canoe /opt/canoe
-sudo -u canoe git clone <仓库> /opt/canoe
+useradd -r -s /usr/sbin/nologin -d /opt/canoe canoe
+mkdir -p /opt/canoe && chown canoe:canoe /opt/canoe
+runuser -u canoe -- git clone <仓库> /opt/canoe
 
 # 3.2 依赖（注意先装 canoe-core）
 cd /opt/canoe/canoe-server
-sudo -u canoe python3 -m venv .venv
-sudo -u canoe .venv/bin/pip install -U pip
-sudo -u canoe .venv/bin/pip install -e ../canoe-core -r requirements.txt
+runuser -u canoe -- python3 -m venv .venv
+runuser -u canoe -- .venv/bin/pip install -U pip
+runuser -u canoe -- .venv/bin/pip install -e ../canoe-core -r requirements.txt
 
 # 3.3 配置
-sudo -u canoe cp .env.example .env
+runuser -u canoe -- cp .env.example .env
 # 必须改的：
 #   TICKET_SECRET   （生成：python3 -c "import secrets;print(secrets.token_urlsafe(48))"）
 #   ADMIN_PASSWORD  （seed 用，装完再改也行）
 #   PUBLIC_BASE_URL=https://api.canoe.example.com   ← 安装包下载地址靠它拼
-sudo -u canoe $EDITOR .env
+runuser -u canoe -- $EDITOR .env
 
 # 3.4 建库 + 管理员
-sudo -u canoe .venv/bin/python seed.py
+runuser -u canoe -- .venv/bin/python seed.py
 
 # 3.5 服务
-sudo cp deploy/canoe-api.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now canoe-api
+cp deploy/canoe-api.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now canoe-api
 ```
 
 ---
@@ -286,11 +286,11 @@ sudo systemctl enable --now canoe-api
 Nginx 负责终止 TLS：
 
 ```bash
-sudo cp deploy/nginx.canoe.conf /etc/nginx/sites-available/canoe
-sudo ln -sf /etc/nginx/sites-available/canoe /etc/nginx/sites-enabled/canoe
-sudo certbot --nginx -d canoe.s-ui.com
-sudo nginx -t && sudo systemctl reload nginx
-sudo systemctl restart canoe-api
+cp deploy/nginx.canoe.conf /etc/nginx/sites-available/canoe
+ln -sf /etc/nginx/sites-available/canoe /etc/nginx/sites-enabled/canoe
+certbot --nginx -d canoe.s-ui.com
+nginx -t && systemctl reload nginx
+systemctl restart canoe-api
 ```
 
 `nginx.canoe.conf` 里有三处**不能省**：
@@ -337,7 +337,7 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
 装完就有个管理脚本 `canoe`（在 `/usr/local/bin/`）：
 
 ```bash
-sudo canoe          # 菜单：
+canoe          # 菜单：
 
                     ┌──────────────────────────────┐
                     │   1  安装 Canoe              │
@@ -355,11 +355,11 @@ sudo canoe          # 菜单：
 也可以直接用子命令（写进脚本、定时任务都行，菜单和子命令是同一批函数）：
 
 ```bash
-sudo canoe status      # 端口 / 健康检查 / 账号数 / 在线会话 / 最近日志
-sudo canoe config      # 改端口、换证书、编辑 .env（会问要不要重启）
-sudo canoe upgrade     # 拉代码 -> 更新依赖 -> 对齐数据库 -> 重启 -> 健康检查
-sudo canoe logs        # 跟随日志
-sudo canoe passwd      # 改管理员账号（用户名 / 密码）
+canoe status      # 端口 / 健康检查 / 账号数 / 在线会话 / 最近日志
+canoe config      # 改端口、换证书、编辑 .env（会问要不要重启）
+canoe upgrade     # 拉代码 -> 更新依赖 -> 对齐数据库 -> 重启 -> 健康检查
+canoe logs        # 跟随日志
+canoe passwd      # 改管理员账号（用户名 / 密码）
 ```
 
 `canoe upgrade` 不用手动 `git pull` + `pip install` + 重启那一串，
@@ -376,9 +376,9 @@ tar czf canoe-backup-$(date +%F).tgz \
     -C /opt/canoe/canoe-server data releases
 
 # 升级
-cd /opt/canoe && sudo -u canoe git pull
-sudo -u canoe canoe-server/.venv/bin/pip install -e canoe-core -r canoe-server/requirements.txt
-sudo systemctl restart canoe-api
+cd /opt/canoe && runuser -u canoe -- git pull
+runuser -u canoe -- canoe-server/.venv/bin/pip install -e canoe-core -r canoe-server/requirements.txt
+systemctl restart canoe-api
 ```
 
 > 改客户端口（`PORT`）前想清楚：客户端把服务器地址写死在 `58588` 了，

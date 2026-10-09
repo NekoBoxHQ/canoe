@@ -385,7 +385,7 @@ printf '\n[11] 已经装过了就别再问一遍向导\n'
 # 服务端明明跑着，重新执行一遍安装命令，迎面又是「[1/3] 域名」，
 # 看着像要把装好的东西推倒重来。其实他多半只是想打开管理菜单。
 #
-# 现在：检测到装完了就停下，把 `sudo canoe` 指给他；真要重装得显式说。
+# 现在：检测到装完了就停下，把 `canoe` 那条命令指给他；真要重装得显式说。
 check "★ install.sh 有「已经装过」的闸门" \
       "$(grep -q '已经装过 Canoe' "$INSTALL" && echo 0 || echo 1)"
 check "★ 闸门里给出的是管理菜单那条命令（而不是继续问）" \
@@ -419,6 +419,34 @@ check "★ 「重新走安装向导」带 --reconfigure" \
       "$(grep -A 4 'run_install_wizard()' "$TARGET" | grep -q -- '--reconfigure' && echo 0 || echo 1)"
 check "★ 菜单「安装」在已装机器上确认后也带 --reconfigure" \
       "$(grep -q 'already -eq 1' "$TARGET" && echo 0 || echo 1)"
+
+printf '\n[12] 提示里不要塞 sudo\n'
+# 用户的提示符是 `root@localhost:~#` —— 他本来就是 root，每条命令前面挂个
+# sudo 纯属噪音；而且 Debian 最小安装**根本没装 sudo**，真敲下去是
+# `sudo: command not found`（这个坑真踩过两次）。门面上的命令一律不带它，
+# 只有"你不是 root"那种劝阻里才提。
+check "★ 管理脚本打印的提示里不带 sudo 命令" \
+      "$(grep -qE '^[[:space:]]*(dim|log|printf|ok|warn) .*sudo (canoe|bash|rm|systemctl|cat|grep)' "$TARGET" && echo 1 || echo 0)"
+# 排除 `sudo -u <用户>` —— 那是 as_user() 内部"切到 canoe 用户"的实现，
+# 跟提示用户"你该敲 sudo xxx"是两回事。
+check "★ 管理脚本的 usage 里不是 sudo 开头的命令" \
+      "$(grep -qE '^[[:space:]]+sudo [^-]' "$TARGET" && echo 1 || echo 0)"
+check "★ 安装向导的用法里不是 sudo 开头的命令" \
+      "$(grep -qE '^[[:space:]]+sudo bash' "$INSTALL" && echo 1 || echo 0)"
+check "★ 「已经装过」那段提示里的命令也不带 sudo" \
+      "$(grep -qE '^      sudo ' "$INSTALL" && echo 1 || echo 0)"
+
+REPO="$(cd "$HERE/../.." && pwd)"
+for doc in "$REPO/README.md" "$REPO/canoe-server/deploy/README.md"; do
+    check "★ $(basename "$(dirname "$doc")")/$(basename "$doc") 里的命令不带 sudo 前缀" \
+          "$(grep -nE '^[[:space:]]*sudo (bash|canoe|systemctl|git|rm|cat|grep|useradd|mkdir|cp|ln|certbot|nginx|ufw|pip|python)' "$doc" \
+            && echo 1 || echo 0)"
+done
+# 不是 root 的用户也得有道儿 —— 文档开头得说明白
+check "文档开头说明了「本来就是 root 就直接敲」" \
+      "$(grep -q '已经是 root' "$REPO/README.md" && echo 0 || echo 1)"
+check "非 root 的漏网提示保留（劝阻别人用 curl|bash 那句）" \
+      "$(grep -q 'curl … | bash' "$REPO/README.md" && echo 0 || echo 1)"
 
 printf '\n%s\n' "$(printf '=%.0s' {1..48})"
 printf '通过 %d 项，失败 %d 项\n' "$passed" "$failed"
