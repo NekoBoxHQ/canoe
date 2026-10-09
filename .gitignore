@@ -45,3 +45,10 @@ canoe-client/bin/fake-singbox.cmd
 *.swp
 .DS_Store
 Thumbs.db
+
+# ---- 临时脚本 / 离屏渲染产物 ----
+# 调试和截图用的一次性文件，写完就删；万一手滑忘了删，
+# 这一条能挡住它被 `git add -A` 顺手带走（踩过一次，
+# 6 张 _lights*.png 和 _shot.py 跟着发布提交上了生产）。
+_*.py
+_*.png
