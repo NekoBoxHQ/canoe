@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -301,13 +302,42 @@ def prepare_update(archive: Path) -> Path:
 #: 为什么非得绕这一圈：Windows 上正在运行的 exe 既删不掉也覆盖不了。
 #: 任何"我先退出、退出前自己替换"的写法都死在"退出之后没人干活"。
 #: 交给系统来做 —— cmd 等本进程真的没了（文件锁释放）再动手。
+#:
+#: 三个动作的顺序都是有原因的，别简化：
+#:
+#:   1. **等旧进程真的消失**，不是等文件锁松开。单文件 exe 启动时会解压到
+#:      %TEMP%\_MEIxxxx，并且会顺手清理上一次留下的同名临时目录。新的
+#:      这时候要是已经起来了，它自己的目录会被对方清掉，然后弹：
+#:          Failed to load Python DLL '...python313.dll'
+#:          LoadLibrary: 找不到指定的模块。
+#:      用户在真机上就是这么栽的（更新完第一次启动起不来，再点一次才行）。
+#:      tasklist 轮询能把这段窗口盖住。
+#:   2. 换文件，失败就重试（旧进程收尾慢）。
+#:   3. **换完再等三四秒才拉起来** —— 刚落盘的新 exe 会被杀毒软件实时扫描，
+#:      扫的过程中去跑它，同样会撞上面的错。
 _BAT = r"""@echo off
 rem Canoe self-update: wait for the old process to exit, swap the exe, restart.
 setlocal
 cd /d "%~dp0"
+
+set /a waited=0
+:wait_old
+rem Wait for OUR OWN pid, not "any Canoe.exe" - otherwise a second instance
+rem the user happens to have open would stall this for the whole timeout.
+rem findstr, not find: "find" collides with the MSYS/Git-Bash one, which
+rem wins on PATH for anyone who has Git installed and then blows up with
+rem "find: '1234': No such file or directory". findstr has no such twin.
+tasklist /FI "PID eq {pid}" /NH /FO CSV 2>nul | findstr /C:"{pid}" >nul
+if errorlevel 1 goto swap
+set /a waited+=1
+if %waited% geq 15 goto swap
+rem ping is used as a sleep - "timeout" fails when stdin is redirected.
+ping -n 2 127.0.0.1 >nul
+goto wait_old
+
+:swap
 set /a tries=0
 :retry
-rem ping is used as a sleep - "timeout" fails when stdin is redirected.
 ping -n 2 127.0.0.1 >nul
 move /y "{new}" "{cur}" >nul 2>&1
 if not errorlevel 1 goto ok
@@ -315,9 +345,16 @@ set /a tries+=1
 if %tries% lss 40 goto retry
 echo [%date% %time%] could not replace "{cur}" > "{log}"
 exit /b 1
+
 :ok
+rem let antivirus finish scanning the freshly written exe before running it.
+ping -n 4 127.0.0.1 >nul
 start "" "{cur}"
-del "%~f0" >nul 2>&1
+
+rem Deliberately NOT "del %~f0". Deleting the running batch file makes cmd
+rem fail to read its next line and exit 1 with "The batch file cannot be
+rem found" - noise in the logs for no gain. The leftover .bat is removed by
+rem cleanup_leftovers() on the next startup, which we run anyway.
 """
 
 
@@ -344,7 +381,14 @@ def install_and_restart(new_exe: Path | None = None) -> Path:
 
     bat = cur.with_name("canoe-update.bat")
     log = cur.with_name("canoe-update.log")
-    script = _BAT.replace("{new}", str(new)).replace("{cur}", str(cur)).replace("{log}", str(log))
+    script = (
+        _BAT.replace("{new}", str(new))
+        .replace("{cur}", str(cur))
+        .replace("{log}", str(log))
+        # 只等**我们自己这个 pid** 消失。写成"等任何 Canoe.exe" 的话，
+        # 用户正好开着第二个实例时这一等就是整整一个超时。
+        .replace("{pid}", str(os.getpid()))
+    )
     try:
         bat.write_text(script, encoding="ascii")
     except OSError as exc:

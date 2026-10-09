@@ -98,6 +98,9 @@ def qss() -> str:
     QLabel#Status {{ font-size: 14px; color: {P.TEXT_DIM}; letter-spacing: 2px; }}
     QLabel#Error  {{ color: {P.AMBER}; font-size: 12px; }}
     QLabel#Hint   {{ color: {P.TEXT_DIM}; font-size: 12px; }}
+    /* 底部正中的版本号。压在水面上，得够淡才不抢戏，
+       但也不能淡到看不见 —— TEXT_FAINT 是这套配色里最暗的一档。 */
+    QLabel#Version {{ color: {P.TEXT_FAINT}; font-size: 11px; letter-spacing: 1px; }}
 
     /* 主界面顶部「轻舟」两侧的横线 */
     QFrame#Rule {{ background: {P.CARD_LINE}; border: none; }}

@@ -38,7 +38,7 @@ if hasattr(sys.stdout, "reconfigure"):
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QToolButton  # noqa: E402
 
-from canoe_core import Text, new_sub_key, seal, unseal  # noqa: E402
+from canoe_core import VERSION, Text, new_sub_key, seal, unseal  # noqa: E402
 
 from canoe_client.api import CanoeApiError  # noqa: E402
 from canoe_client.kernel import kernel  # noqa: E402
@@ -260,6 +260,11 @@ def main() -> int:
     #   所以内存里这份也要清干净，测试从确定的状态起步。
     cfg_mod.config["remember"] = {"enabled": False, "username": "", "secret": ""}
 
+    # ⚠ 同一类坑，选项版：options 也是 import 时就从**真实那份**读进来的。
+    #   开发机上真勾过 TUN 的话，「默认勾系统代理、不勾 TUN」那条断言必红 ——
+    #   而且更糟：测试是拿开发者的真实设置跑的，结果随人而异。
+    cfg_mod.config["options"] = dict(cfg_mod.DEFAULTS["options"])
+
     # --- 1. 界面构造 ---
     print("[1] 界面")
     auth = AuthView()
@@ -291,6 +296,23 @@ def main() -> int:
           view.status_label.text() == Text.ST_DISCONNECTED, view.status_label.text())
     check("初始靠岸按钮不可用",
           not view.dock_btn.isEnabled() and view.launch_btn.isEnabled())
+
+    # 底部正中的版本号。用户报问题时第一句常常是"我装的是哪个版本"，
+    # 而更新弹窗只在有新版本时才出来 —— 得有个地方随时能看。
+    check("★ 底部有版本号，写作「当前版本:V{版本}」",
+          view.version_label.text() == f"当前版本:V{VERSION}",
+          view.version_label.text())
+    check("★ 版本号居中",
+          bool(view.version_label.alignment() & Qt.AlignHCenter),
+          str(view.version_label.alignment()))
+    # 比"最后一个控件"而不是比 y 坐标 —— 这里窗口还没 show 过，
+    # 所有控件的 y 都是 0，比出来是 0 vs 0（踩过）。排版顺序才是这里要的。
+    _widgets = [view.body_layout.itemAt(i).widget()
+                for i in range(view.body_layout.count())]
+    _widgets = [w for w in _widgets if w is not None]
+    check("★ 版本号排在最后（在节点灯和水面之下）",
+          bool(_widgets) and _widgets[-1] is view.version_label,
+          f"最后一个控件是 {_widgets[-1].objectName() if _widgets else '（空）'}")
 
     # --- 2. 界面不该出现的东西 ---
     print("\n[2] 界面不该出现节点的敏感信息")
@@ -666,8 +688,9 @@ def main() -> int:
     from canoe_client.ui.tray import Tray
     t = Tray(None)
     acts = [a.text() for a in t.icon.contextMenu().actions() if a.text()]
-    check("★ 托盘右键菜单里有「退出」", "退出" in acts, str(acts))
-    check("托盘菜单里也有「显示主界面」", "显示主界面" in acts, str(acts))
+    check("★ 托盘右键菜单里是「确认退出」", "确认退出" in acts, str(acts))
+    check("托盘菜单里是「主界面」（不是「显示主界面」）",
+          "主界面" in acts and "显示主界面" not in acts, str(acts))
     seen = []
     t.quit_requested.connect(lambda: seen.append("quit"))
     t._quit_action.trigger()
@@ -714,12 +737,12 @@ def main() -> int:
     dotted = tray_mod.with_dot(base)
     img_plain = base.pixmap(32, 32).toImage()
     img_dot = dotted.pixmap(32, 32).toImage()
-    dot_px = img_dot.pixelColor(24, 8)
-    check("★ 右上角真的点上了红点",
+    dot_px = img_dot.pixelColor(16, 16)
+    check("★ 正中真的点上了红点",
           dot_px.red() > 150 and dot_px.green() < 110, dot_px.name())
     check("原图同一个位置不是红的",
-          img_plain.pixelColor(24, 8).name() != dot_px.name(),
-          img_plain.pixelColor(24, 8).name())
+          img_plain.pixelColor(16, 16).name() != dot_px.name(),
+          img_plain.pixelColor(16, 16).name())
 
     t2 = Tray(base)
     plain_key = t2.icon.icon().cacheKey()

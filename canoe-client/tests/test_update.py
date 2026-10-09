@@ -16,9 +16,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
 import tempfile
 import threading
+import time
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,7 +32,13 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from canoe_client import update  # noqa: E402
 
-passed = failed = 0
+passed = failed = skipped = 0
+
+
+def skip(label: str, why: str) -> None:
+    global skipped
+    skipped += 1
+    print(f"  [跳过] {label} —— {why}")
 
 #: 够大就行 —— prepare_update 会拦"文件太小"，所以造个 1.5MB 的假 exe
 FAKE_EXE = b"MZ" + b"\0" * (1_500_000)
@@ -251,6 +259,18 @@ def main() -> int:
         check("★ 等文件锁释放后再替换（ping 当 sleep）", "ping -n 2 127.0.0.1" in script)
         check("★ 替换失败会重试，不是试一次就算了", "goto retry" in script)
         check("★ 替换成功后把新程序拉起来", f'start "" "{fake_exe2}"' in script)
+        # 用户在真机上撞到过：更新完第一次启动弹
+        #   Failed to load Python DLL '...python313.dll'
+        # 单文件 exe 启动时会解压到 %TEMP%\_MEIxxxx 并清理上一次的同名目录，
+        # 新的太早起来就会被对方清掉。所以必须先等旧进程真没了。
+        check("★ 先等旧进程消失，不是只等文件锁",
+              "tasklist" in script and ":wait_old" in script and "goto wait_old" in script)
+        # 别用 find —— 装了 Git 的机器上 PATH 里 MSYS 那个 find 会赢，
+        # 脚本当场报 "find: '1234': No such file or directory"（真踩过）
+        check("★ 用 findstr 而不是 find（find 会被 MSYS 的那份抢走）",
+              "findstr" in script and "| find " not in script)
+        check("★ 换完文件先等一会儿再启动（刚落盘的 exe 会被杀毒软件扫）",
+              "ping -n 4 127.0.0.1" in script, "没找到启动前的等待")
         check("脚本里带上了新程序路径", str(staged2) in script)
         check("脚本里带上了当前程序路径", str(fake_exe2) in script)
         check("失败会记日志（不然用户只看到'点完没反应'）",
@@ -285,8 +305,69 @@ def main() -> int:
         update.subprocess.Popen = real_popen
         sys.executable = real_exec
 
-    # --- 5. 没打包运行时一律拒绝 ---
-    print("\n[5] 源码运行时不装作能自更新")
+    # --- 5. 真的把 .bat 跑一遍 ---
+    # 上面那些只验了脚本的**文字**。这段是真执行：在沙箱目录里放两个无害的
+    # 系统小工具冒充新旧程序，看它到底换没换成功、有没有跑到最后一步。
+    print("\n[5] 真跑一遍替换脚本")
+    import subprocess  # noqa: PLC0415
+
+    sand = tmp / "bat-sandbox"
+    sand.mkdir(exist_ok=True)
+    where_exe = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "where.exe"
+    host_exe = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "hostname.exe"
+
+    if not (where_exe.is_file() and host_exe.is_file()):
+        skip("真跑 .bat", "这台机器上没有 where.exe / hostname.exe 当替身")
+    else:
+        old = sand / "Canoe.exe"
+        new = sand / "Canoe.exe.new"
+        old.write_bytes(where_exe.read_bytes())      # 冒充"当前程序"
+        new.write_bytes(host_exe.read_bytes())       # 冒充"新程序"
+        log = sand / "canoe-update.log"
+        bat = sand / "canoe-update.bat"
+        # 用一个**已经死掉的 pid**，等待循环应当立刻放行
+        bat.write_text(
+            update._BAT.replace("{new}", str(new))
+            .replace("{cur}", str(old))
+            .replace("{log}", str(log))
+            .replace("{pid}", "999999"),
+            encoding="ascii",
+        )
+
+        proc = subprocess.run(["cmd", "/c", str(bat)], cwd=str(sand),
+                              capture_output=True, text=True, timeout=120)
+        check("脚本跑完退出码 0", proc.returncode == 0, f"{proc.returncode} {proc.stderr[:200]}")
+        check("★ 文件真的被换掉了", old.read_bytes() == host_exe.read_bytes(),
+              f"{old.stat().st_size} 字节")
+        check("换完之后 .new 没了（是 move 不是 copy）", not new.exists())
+        check("没有失败日志（说明没走到失败分支）", not log.exists())
+        # .bat 特意**不**自删：删掉正在执行的批处理，cmd 读不到下一行，
+        # 会退回 1 并喷一句"找不到批处理文件"。留着不影响什么 ——
+        # 下次启动 cleanup_leftovers() 会清掉它（[4] 里验过那个函数）。
+        check("★ 脚本里没有自删（自删会让 cmd 退出码变成 1）",
+              'del "%~f0"' not in update._BAT)
+
+        # 旧进程还活着时会等 —— 拿当前进程的 pid 试，等一小会儿就该超时放行
+        old.write_bytes(where_exe.read_bytes())
+        new.write_bytes(host_exe.read_bytes())
+        bat.write_text(
+            update._BAT.replace("{new}", str(new))
+            .replace("{cur}", str(old))
+            .replace("{log}", str(log))
+            .replace("{pid}", str(os.getpid())),
+            encoding="ascii",
+        )
+        t0 = time.time()
+        subprocess.run(["cmd", "/c", str(bat)], cwd=str(sand),
+                       capture_output=True, text=True, timeout=180)
+        waited = time.time() - t0
+        check("★ 脚本会先等旧进程消失（这里等的是自己的 pid）",
+              waited > 5, f"只等了 {waited:.1f}s")
+        check("等超时之后照样把文件换掉了（不会卡死在那儿）",
+              old.read_bytes() == host_exe.read_bytes())
+
+    # --- 6. 没打包运行时一律拒绝 ---
+    print("\n[6] 源码运行时不装作能自更新")
     del sys.frozen
     check("can_self_update() 为假", not update.can_self_update())
     for name, fn in (("prepare_update", lambda: update.prepare_update(good)),

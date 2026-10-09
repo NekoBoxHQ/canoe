@@ -236,7 +236,8 @@ class MainView(FramelessWindow):
 
     def _build(self) -> None:
         root = self.body_layout
-        root.setContentsMargins(SIDE_PAD, 10, SIDE_PAD, 0)
+        # 底部留 6px —— 最后一行是版本号，贴着窗口下沿会像被切掉一截
+        root.setContentsMargins(SIDE_PAD, 10, SIDE_PAD, 6)
         root.setSpacing(0)
 
         root.addWidget(self._kicker())
@@ -334,6 +335,14 @@ class MainView(FramelessWindow):
 
         # --- 底部水面 ---
         root.addSpacing(SCENE_BAND)
+
+        # --- 版本号 ---
+        #   压在底边正中。用户报问题时第一句常常是"我装的是哪个版本"，
+        #   而更新弹窗只在有新版本时才出来 —— 得有个地方随时能看。
+        self.version_label = QLabel(f"当前版本:V{VERSION}")
+        self.version_label.setObjectName("Version")
+        self.version_label.setAlignment(Qt.AlignCenter)
+        root.addWidget(self.version_label)
 
     def _options_card(self) -> QFrame:
         """两排，整体居中，不带行标签。

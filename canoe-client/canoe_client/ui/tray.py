@@ -31,11 +31,8 @@ _DOT_SIZES = (16, 20, 24, 32, 48, 64, 128)
 #: 红点占图标的比例。
 #:
 #: 这个数调过两轮：0.46 那版像图标上破了个洞，0.34 那版用户说"太小了
-#: 看不到"。0.44 是任务栏 16px 下还能一眼看见、又不至于盖住船帆的位置。
-#: **别按大屏幕上的观感调** —— 托盘图标在 100% 缩放下真的只有 16px。
-_DOT_RATIO = 0.44
-#: 圆心离右上角留这点空隙，免得被任务栏边框切掉半颗
-_DOT_PAD = 0.02
+#: 看不到"。**别按大屏幕上的观感调** —— 托盘图标在 100% 缩放下只有 16px。
+_DOT_RATIO = 0.5
 
 
 def with_dot(icon: QIcon) -> QIcon:
@@ -61,11 +58,13 @@ def with_dot(icon: QIcon) -> QIcon:
         p = QPainter(pm)
         p.setRenderHint(QPainter.Antialiasing, True)
         d = size * _DOT_RATIO
-        pad = size * _DOT_PAD
-        p.setPen(QPen(DOT_EDGE, max(0.8, size * 0.045)))
+        p.setPen(QPen(DOT_EDGE, max(0.8, size * 0.05)))
         p.setBrush(DOT_COLOR)
-        # 圆心贴在右上角、正好不越界
-        p.drawEllipse(QPointF(size - d / 2 - pad, d / 2 + pad), d / 2, d / 2)
+        # **正中**，不是角落。
+        # 角落那颗在 16px 下只有 5px 出头，还挨着任务栏边缘，用户说"看不到"；
+        # 挪到中间、放大到半个图标，扫一眼就撞上。代价是挡住船帆大半 ——
+        # 但托盘图标本来就小，先要"看得见"，再谈"好看"。
+        p.drawEllipse(QPointF(size / 2, size / 2), d / 2, d / 2)
         p.end()
         out.addPixmap(pm)
     return out if not out.isNull() else icon
@@ -93,10 +92,14 @@ class Tray(QObject):
         self.icon.setToolTip(f"{BRAND_CN} · {SLOGAN_CN}")
 
         menu = QMenu()
-        self._show_action = menu.addAction("显示主界面")
+        # 「主界面」不是「显示主界面」—— 菜单就两项，短的那版一眼扫完，
+        # 也不用为了对齐去读完整的动宾短语。
+        self._show_action = menu.addAction("主界面")
         self._show_action.triggered.connect(self.show_requested.emit)
         menu.addSeparator()
-        self._quit_action = menu.addAction("退出")
+        # 「确认退出」：这一项是**真的把程序关掉**（关窗只是收进托盘）。
+        # 写成「退出」太轻描淡写，写成「确认退出」让人在点之前抬一下眼皮。
+        self._quit_action = menu.addAction("确认退出")
         self._quit_action.triggered.connect(self.quit_requested.emit)
 
         # 菜单得挂在托盘上，否则会被当临时对象回收掉，右键什么都不弹
