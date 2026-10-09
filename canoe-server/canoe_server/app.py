@@ -66,6 +66,24 @@ async def panel_port_guard(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def panel_no_store(request: Request, call_next):
+    """面板的静态资源强制每次校验，别让浏览器拿旧样式糊弄人。
+
+    面板是 SPA：改完样式/脚本推上去之后，用户那个**一直开着的标签页**不会
+    重新去取 style.css —— 它内存里那份旧的会一直用下去，于是"我明明改好了"
+    和"我这儿看着没变"同时成立。真发生过：统计卡底下的空隙补上了，用户
+    截图上还是老样子。
+
+    no-cache（不是 no-store）＝ 可以缓存，但每次用之前必须带 ETag 回服务端
+    问一声。文件没变就是 304，几乎不花流量；变了立刻生效。
+    """
+    resp = await call_next(request)
+    if request.url.path.startswith(settings.panel_path):
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return resp
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     init_db()

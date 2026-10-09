@@ -194,13 +194,19 @@ html.booting #login-screen { display: none; }
   border-radius: var(--radius); padding: 16px 18px; margin-bottom: 16px;
 }
 .card > h3 { margin: 0 0 12px; font-size: 14px; color: var(--dim); font-weight: 600; }
-.card-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+/* 按钮行。它是用户页的"小节标题"，上下都要有气口：
+   上面比下面多一倍，视线才会把它和底下那张表格分开，
+   不然一行孤零零的小按钮贴在卡片下面，看着像表格的一部分。 */
+.card-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 14px; }
 
 /* 统计卡。底下留一段距离 —— 它现在贴在用户页顶上，紧挨着「新建用户」
-   那一行会糊在一起，看着很挤（用户反馈的）。 */
+   那一行会糊在一起，看着很挤（用户反馈过两次）。
+
+   28px 是量出来的：卡片是两块并排的深色块，按钮是它的三分之一高，
+   中间少于 26px 就会读成"卡片的一部分"。 */
 .stat-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 12px; margin-bottom: 20px;
+  gap: 12px; margin-bottom: 28px;
 }
 .stat {
   background: var(--card); border: 1px solid var(--line);
