@@ -270,42 +270,58 @@ def main() -> int:
               f'"{fake_exe2}.old"' not in script)
         check("★ 替换成功后把新程序拉起来", f'start "" "{fake_exe2}"' in script)
         # 用户在真机上撞到过：更新完第一次启动弹
-        #   Failed to load Python DLL '...python313.dll'
-        # 单文件 exe 启动时会解压到 %TEMP%\_MEIxxxx 并清理上一次的同名目录，
-        # 新的太早起来就会被对方清掉。所以必须先等旧进程真没了。
+        #   Failed to load Python DLL '...\_MEI000005842\python313.dll'.
+        #   LoadLibrary: 找不到指定的模块。
+        # ★★ 2026-10-10 找到病根了，跟 pid、跟解压目录撞名都无关 ★★
+        #   这个脚本是老进程的子进程，**继承了老进程的 PyInstaller 环境变量**；
+        #   而新 exe 被换到了**同一个路径**上，于是引导器里那句
+        #       if (_PYI_ARCHIVE_FILE == 自己的归档文件名) -> 继承父进程环境
+        #   成立 —— 新进程认定自己是"父进程已经解压好的那一半"，**不再解压**，
+        #   直接沿用 _PYI_APPLICATION_HOME_DIR 指的那个**老 _MEI 目录**；而那个
+        #   目录此刻正被老进程的引导器删除。报错里印出来的目录名属于**老实例**，
+        #   所以看起来才像 pid 撞名。
+        #   手工双击一直没事，是因为 Explorer 的环境里没有这些变量。
+        #   这台机器上确定性复现过：把那三个变量喂进去 -> 卡在那句报错上；
+        #   再加上 PYINSTALLER_RESET_ENVIRONMENT=1 -> 正常起来。
+        check("★ 拉起新版本前清掉继承来的 PyInstaller 环境变量（DLL 报错的病根）",
+              "PYINSTALLER_RESET_ENVIRONMENT=1" in script
+              and "set _PYI_ARCHIVE_FILE=" in script
+              and "set _PYI_APPLICATION_HOME_DIR=" in script
+              and "set _PYI_PARENT_PROCESS_LEVEL=" in script,
+              "没有清 _PYI_*，也没设 PYINSTALLER_RESET_ENVIRONMENT")
+        check("★ 起 cmd 时环境就洗过一遍（双保险，源头不漏）",
+              isinstance(kwargs.get("env"), dict)
+              and not any(k.startswith("_PYI_") for k in kwargs["env"])
+              and kwargs["env"].get("PYINSTALLER_RESET_ENVIRONMENT") == "1",
+              f"env={'None' if kwargs.get('env') is None else '没洗'}")
+
         check("★ 重试有上限（换不动也要退出）", "lss 30 goto swap" in script)
         # ★ 这里**故意没有**"等旧进程退出"那一段。以前靠"能不能删掉 .old"来判，
         #   但 .old 正是回滚要用的那份 —— 先删了它，更新失败就没得退了。
-        #   三次重试本来就覆盖了"旧进程还在"（它会撞一次单实例锁，下一次就好）。
+        #   换文件那个循环本身就覆盖了"旧进程还在"：文件锁着，move 必然失败。
         check("★ 不许提前删 .old（它是回滚的底本）",
               ":waitold" not in update._BAT)
+        # ★ 早先还加过一段"等旧进程的 _MEI 解压目录消失再启动"，方向正好是反的：
+        #   病根就是环境变量把新进程引到了那个目录上，等它消失等于保证新进程扑空。
+        check("★ 不许再等旧解压目录消失（那一步是反的）",
+              ":waitmei" not in update._BAT and "{old_mei}" not in script)
         check("★ 换完先等一会儿再启动（杀毒扫描刚落盘的 exe）",
               "ping -n 5 127.0.0.1" in script, "没找到启动前的等待")
-        # 用户在真机上撞到过：更新后重启弹引导器的原生框
-        #   Failed to load Python DLL '...\_MEI00003ae42\python313.dll'.
-        # 但手工再开一次就好了 —— 也就是说那一次解压/加载是偶发失败，exe 没坏。
-        # 既然重开能好，脚本就得自己重开，并且要有依据知道"到底起来没有"：
-        # 光看进程在不在不行，引导器失败时也会留个挂在错误框上的进程。
+        # 光看进程在不在不算数 —— 引导器失败时也会留一个挂在原生错误框上的进程。
+        # 判据是程序自己起来后写的那个启动脚印（started.txt，见 mark_started）。
         check("★ 启动后要确认它真的起来了（光看进程不算数）",
-              "if exist" in script and "goto relaunch" in script,
+              "started.txt" in script and "goto done" in script,
               "重启之后没有确认步骤")
-        check("★ 判断依据是程序自己写的启动脚印", "started.txt" in script
-              and "{marker}" not in script, "脚本没去看 started.txt / 占位符没替换")
-        # ★ 用户截图里的 _MEI00005842 反解出来是他**当时正开着的那个实例**的 pid。
-        #   解压目录名是 pid 派生的（hex(pid*16+2)），新进程很容易拿到刚释放的
-        #   同一个 pid、算出同名目录，而上一版正在删它 —— 结果就是
-        #   "Failed to load Python DLL ...\_MEI00005842\python313.dll"。
-        #   所以拉起新版本之前必须先等那个目录消失。
-        check("★ 拉起新版本之前要等上一版的解压目录消失（_MEI 撞名的病根）",
-              ":waitmei" in update._BAT and "waitmei" in script
-              and "{old_mei}" not in script,
-              "没有等 _MEI 消失这一步")
-        check("★ 重开有上限（连试 3 次就不试了，别死循环）",
-              "lss 3 goto relaunch" in script)
-        # ★ 三次都起不来就**回滚**。用户真机上撞到过新版本起不来
+        check("★ 判断依据是程序自己写的启动脚印", "{marker}" not in script,
+              "占位符没替换")
+        # 用户原话："更新环境要静默，不要一堆弹窗，这样让客户感觉不安全"。
+        # 连试三次、每次开跑前 taskkill 收弹窗 = 最多三个原生框，改成只试一次。
+        check("★ 只启动一次（不连试三次，免得弹一堆原生框）",
+              "goto relaunch" not in update._BAT, "又把重试循环加回来了")
+        # ★ 起不来就**回滚**。用户真机上撞到过新版本起不来
         #   （"Failed to load Python DLL"），而旧程序还躺在 .old 里 ——
         #   宁可退回去用旧版本，也不能让人手里是个打不开的程序。
-        check("★ 三次起不来要把旧版本换回去（不能留个打不开的程序）",
+        check("★ 起不来要把旧版本换回去（不能留个打不开的程序）",
               f'ren "{fake_exe2.name}" "{fake_exe2.name}.bad"' in script
               and f'ren "{fake_exe2.name}.old" "{fake_exe2.name}"' in script,
               "没看到回滚")
@@ -379,7 +395,6 @@ def main() -> int:
             .replace("{new}", str(new))
             .replace("{cur}", str(old))
             .replace("{log}", str(log))
-            .replace("{old_mei}", str(sand / "no-such-mei"))
             .replace("{marker}", str(marker)),
             encoding="ascii",
         )
@@ -431,7 +446,6 @@ def main() -> int:
             .replace("{new}", str(sand / "does-not-exist.exe"))
             .replace("{cur}", str(old))
             .replace("{log}", str(log))
-            .replace("{old_mei}", str(sand / "no-such-mei"))
             .replace("{marker}", str(marker))
             # 上限改成 2 次，等价逻辑但测试只要等几秒
             # （换文件那一步会失败：new 指向一个不存在的文件）
@@ -531,10 +545,11 @@ def main() -> int:
 
     # --- 8. 清掉强杀留下的 _MEI 残留 ---
     #
-    # 单文件 exe 的临时目录名是**确定性的**：`_MEI` + hex(pid*16+2)，里面编码着
-    # 引导器的 pid（实测 5/5 对得上，不是随机数）。被强杀留下的残留目录会在
-    # pid 被重用的那天**正好撞名** —— 这是"更新后第一次启动偶发起不来、手动
-    # 再开一次又好了"最像的成因。所以启动时按 pid 清残留，但只清确定死掉的那批。
+    # 目录名是确定性的：`_MEI` + 引导器 pid 的 8 位十六进制 + `_wtempnam` 补的
+    # 一位（拿报错截图里那个名字验）。这类残留是被强杀/崩溃留下来的 —— 引导器
+    # 退出前要删掉整个目录，而内核 bin/sing-box.exe 还住在里面时删不掉。
+    # 清理纯粹是收拾地方，不承担正确性（那个 DLL 报错的病根是环境变量继承，
+    # 见 update.py 里的 _BAT 注释）。所以只清确定死掉的那批。
     print("\n[8] 清理 _MEI 残留")
     m = update._MEI_RE.fullmatch("_MEI00003ae42")     # 用户截图里那个名字
     check("★ 目录名里确实能解出 pid（拿报错截图里的名字验）",
@@ -568,14 +583,22 @@ def main() -> int:
     ours_live = mk_mei(os.getpid())                    # 我们的 + pid 活着 -> 该留
     ours_fresh = mk_mei(dead_pid + 4, age=time.time())  # 刚建出来的 -> 该留
     current = mk_mei(dead_pid + 8)                     # 当前进程自己用的 -> 该留
+    # 只解压到一半就死掉的残骸：还没来得及有 assets/，但 bin/sing-box.exe 已经
+    # 落盘了 —— 那也是我们的，得认得出来。
+    ours_partial = fake_tmp / ("_MEI%08x" % (((dead_pid + 16) << 4) | 2))
+    (ours_partial / "bin").mkdir(parents=True)
+    (ours_partial / "bin" / "sing-box.exe").write_bytes(b"x")
+    os.utime(ours_partial, (aged, aged))
 
     gone = update.clean_stale_temp_dirs(root=fake_tmp, mine=current)
     check("★ 强杀留下的、pid 已经没了的 -> 清掉", not ours_dead.exists(), str(gone))
+    check("★ 只解压到一半的残骸也认得出来（bin/sing-box.exe 也是标记）",
+          not ours_partial.exists())
     check("★ 别的程序的 _MEI 一律不碰（误删等于砸人家饭碗）", others_dead.is_dir())
     check("★ pid 还活着的不碰（可能是正在启动的另一个实例）", ours_live.is_dir())
     check("★ 刚建出来的不碰（提权那个实例可能正在启动）", ours_fresh.is_dir())
     check("★ 当前进程自己用的那个不碰", current.is_dir())
-    check("清掉的个数对得上", gone == 1, str(gone))
+    check("清掉的个数对得上", gone == 2, str(gone))
     _shutil.rmtree(fake_tmp, ignore_errors=True)
 
     print(f"\n{'=' * 48}")

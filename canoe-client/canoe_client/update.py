@@ -332,8 +332,14 @@ def mark_started() -> None:
         pass
 
 
-#: 单文件 exe 解压出来的临时目录名：`_MEI` + hex(pid*16+2)，补到 8 位。
-#: **是确定性的，不是随机数** —— 实测 5/5：名字里那个值 >> 4 就是引导器的 pid。
+#: 单文件 exe 解压出来的临时目录名。跟着 PyInstaller 的引导器源码对过：
+#:
+#:     swprintf(prefix, 16, L"_MEI%08x", _getpid());   /* pyi_utils_win32.c */
+#:     application_home_dir_w = _wtempnam(tempdir_path, prefix);
+#:
+#: 也就是 `_MEI` + 引导器 pid 的 8 位十六进制 + `_wtempnam` 补的那一位。
+#: 实测这台机器上 6/6 对得上（pid 3464 -> `_MEI0000d882`），所以名字右移 4 位
+#: 就能拿回那个 pid —— 下面用它判断"当初建这个目录的实例还在不在"。
 _MEI_RE = re.compile(r"_MEI([0-9a-fA-F]+)")
 
 #: 目录要多老才敢动（秒）。
@@ -341,8 +347,8 @@ _MEI_RE = re.compile(r"_MEI([0-9a-fA-F]+)")
 #: pid 那一道不够稳：**刚退出的进程，只要还有谁攥着它的句柄，OpenProcess
 #: 照样成功**（实测：`cmd /c exit` 之后问那个 pid，回答是"还活着"，而
 #: tasklist 里已经没有了）。所以再加一道时间护栏 —— 几分钟前刚建出来的目录
-#: 一律不碰，那多半是另一个正在启动的实例（比如提权后那个）。误删它正好就是
-#: 我们要修的那个故障，宁可少清一个。
+#: 一律不碰，那多半是另一个正在启动的实例（比如提权后那个）。宁可少清一个，
+#: 也不要误删一个正在启动的实例。
 _STALE_AFTER = 3600
 
 
@@ -375,11 +381,14 @@ def clean_stale_temp_dirs(root: Path | None = None, mine: Path | None = None) ->
     自己会删。但**被强杀**（任务管理器结束进程、崩溃、被安全软件掐掉）就删不掉，
     目录原地留下 —— 实测这台机器上攒了 13 个、约 1.9GB。
 
-    光占地方还不是最要命的：**这个名字是确定性的**，里面编码着引导器的 pid
-    （见 _MEI_RE）。Windows 会重用 pid，一旦重用到同一个 pid，新进程算出来的
-    名字和那个残留目录**一模一样**。这就是"更新后第一次启动偶发起不来、手动
-    再开一次又好了"最像的成因 —— 也是为什么我按这种规律反复启动复现不出来：
-    每次拿到的都是新 pid，而残留早被我清过一次。
+    为什么留在盘上：引导器退出前要把这个目录整个删掉，而我们启动的内核
+    `bin/sing-box.exe` 就住在里面 —— 内核还活着（或者刚被强杀、句柄还没完全
+    放手）时那个文件删不掉，整个目录就跟着留下了。
+
+    ⚠ 别再把这个和那句 "Failed to load Python DLL" 扯上关系 —— 那是误会。
+      真病根是环境变量继承（见 _BAT 第 2 段），而且引导器建目录走的是
+      `_wtempnam()`，本来就会挑一个不重名的。这里清残留纯粹是收拾地方，
+      不承担正确性 —— 清了更好，清不掉也不影响这次能不能起来。
 
     所以按 pid 清，而且只清**确定是死的**那一批：
 
@@ -413,7 +422,10 @@ def clean_stale_temp_dirs(root: Path | None = None, mine: Path | None = None) ->
                 continue
             if mine is not None and path.resolve() == mine:
                 continue
-            if not (path / "assets" / "canoe.ico").is_file():
+            # 两个都算"我们的"：完整的包里有 assets/canoe.ico；只解压到一半就
+            # 死掉的残骸可能还来不及有 assets/，但 bin/sing-box.exe 已经落盘了。
+            if not ((path / "assets" / "canoe.ico").is_file()
+                    or (path / "bin" / "sing-box.exe").is_file()):
                 continue        # 不是我们的包，别动
             try:
                 if time.time() - path.stat().st_mtime < _STALE_AFTER:
@@ -454,7 +466,7 @@ def _write_bat(path: Path, script: str) -> None:
 #: 任何"我先退出、退出前自己替换"的写法都死在"退出之后没人干活"。
 #: 交给系统来做 —— 写个 .bat，让 cmd 去换。
 #:
-#: 三件事，顺序都有原因：
+#: 三段，顺序都有原因：
 #:
 #:   1. **换文件：先把旧的改名挪开，再把新的放进去**。
 #:
@@ -472,121 +484,143 @@ def _write_bat(path: Path, script: str) -> None:
 #:        来的输入结束。用户那边的表现就是"点了更新，程序关了，然后
 #:        什么都没发生，桌面上留着 Canoe.exe.new 和这个 .bat"。
 #:
-#:   2. **等旧进程真的退干净，再拉新的**。旧 exe 改名成了 .old，但仍然被旧
-#:      进程占着、删不掉 —— **删得掉就说明它退了**，拿这个当判据，不用去问
-#:      系统"那个 pid 还在不在"。不等到就拉起新的，新实例会撞上单实例锁、
-#:      白起一次。等不到就写日志收摊：文件已经换好了，下次打开就是新版本。
+#:      ⚠ `ren` 的第二个参数必须是**裸名字**，不是路径 —— 给完整路径会
+#:        静默失败，而这一步错了看不出来：ren 失败、move 跟着失败，你只会
+#:        发现"怎么更新都不动"。下面传的是 cur.name。
 #:
-#:   3. **拉起来之后确认它真的起来了，没起来就重开**。
+#:   2. **在一个干净的环境里拉起新版本。★★ 这就是那个 DLL 报错的病根 ★★**
 #:
-#:      ★ 这一条是真出过事才加的。用户报"更新后重启报错，找不到模块"，
-#:        截图是引导器的原生框：
-#:            Failed to load Python DLL '...\\_MEI00003ae42\\python313.dll'.
-#:            LoadLibrary: 找不到指定的模块。
-#:        但**手动再开一次就好了** —— 说明 exe 本身没坏，是这一次解压/加载
-#:        偶发失败（杀软正在翻一个刚写出来的二进制）。既然重开一次能好，
-#:        就让脚本自己重开。依据是程序起来后会写的那个 started.txt
-#:        （见 mark_started）；连试三次都不行才写日志认输，日志会在下次
-#:        启动时弹给用户看。
+#:      这个脚本是老进程的子进程，**继承了老进程的 PyInstaller 环境变量**。
+#:      而新 exe 被换到了**同一个路径**上，于是引导器里那句继承判定
+#:
+#:          if (_PYI_ARCHIVE_FILE == 自己的归档文件名)  ->  继承父进程的环境
+#:
+#:      成立 —— 新进程认定自己是"父进程已经解压好的那一半"，**不再解压**，
+#:      直接沿用 `_PYI_APPLICATION_HOME_DIR` 指的那个**老 _MEI 目录**。而那个
+#:      目录此刻正被老进程的引导器删除：
+#:
+#:          Failed to load Python DLL '...\_MEI000005842\python313.dll'.
+#:          LoadLibrary: 找不到指定的模块。
+#:
+#:      那个目录名里编码的 pid 属于**老实例**，所以看起来像"pid 撞名"。不是。
+#:      真正的原因是我们把新 exe 放到了同一个路径上，让名字比对通过了。
+#:      2026-10-10 在这台机器上确定性复现过：把这几个变量喂进去，exe 就挂在
+#:      那句报错上；再加上 PYINSTALLER_RESET_ENVIRONMENT=1 就一切正常。
+#:      手工双击一直没事，是因为 Explorer 的环境里没有这些变量。
+#:
+#:      `PYINSTALLER_RESET_ENVIRONMENT=1` 是引导器**自带的开关**，含义就是
+#:      "我是一个全新的顶层进程"：它会清掉继承来的那些值、从头解压。下面同时
+#:      把变量显式清空，不让整个修复吊在一个开关上。
+#:
+#:   3. **确认它真起来了；没起来就把旧版本换回去**。
+#:
+#:      光看进程在不在不算数 —— 引导器解压失败时也会留一个挂在原生错误框上的
+#:      进程。判据是程序自己写的启动脚印（started.txt，见 mark_started）。
+#:      **只试一次**：以前是连试三次、每次开跑前 taskkill 收弹窗，用户看到的
+#:      就是"一堆弹窗"（原话："更新环境要静默，不要一堆弹窗，这样让客户感觉
+#:      不安全"）。起不来就直接退回旧版本 —— 宁可让人用旧版本，也不能让人
+#:      手里是个打不开的程序。
 _BAT = r"""@echo off
-rem Canoe self-update: swap the exe once the old process lets go, start the new
-rem one, and restart it until it really comes up.
+rem Canoe self-update handover. Pure ASCII: cmd reads .bat in the console code page.
 setlocal
 cd /d "%~dp0"
 
-rem --- 1) swap -------------------------------------------------------------
-rem Rename the old exe aside FIRST. Renaming a running exe works; deleting one
-rem does not. So a plain "move /y" onto it can NEVER succeed while the old
-rem process is alive - the retry loop just pings for a minute, which is exactly
-rem what a user saw ("the update keeps pinging and never stops", with the new
-rem version not installed at all).
-rem NOTE: ren's second argument is a NAME, not a path - passing a full path
-rem silently fails. We cd'd to the exe's folder above, so bare names are what
-rem we use here. Getting this wrong is invisible: ren fails, move then fails
-rem too, and you only notice it because nothing ever updates.
+rem --- 1) swap -----------------------------------------------------------
+rem A running exe cannot be deleted or overwritten, but it CAN be renamed. So
+rem rename the old one aside first (that always works), then drop the new one
+rem in. If the move did not land, the source file is still there - retry.
+rem NOTE: ren's second argument is a NAME, not a path. A full path fails
+rem silently, and you only notice because nothing ever updates.
+rem
+rem Two things this must never do:
+rem   - start a program that is not there: on Windows that pops a modal
+rem     "Windows cannot find ..." box, which nothing can dismiss, so the whole
+rem     handover hangs. Only :swapped may reach "start", and only with an exe
+rem     that is proven to be on disk.
+rem   - count "the old exe is still in place" as success. The move landing is
+rem     what we check, not the mere presence of a file with that name.
 set /a tries=0
 :swap
+if not exist "{new}" goto giveup
 if exist "{cur}" del "{old_name}" >nul 2>&1
 if exist "{cur}" ren "{cur_name}" "{old_name}" >nul 2>&1
 move /y "{new}" "{cur}" >nul 2>&1
-if not exist "{cur}" goto unswap
-if exist "{new}" goto unswap
-goto swapped
-:unswap
-rem Did not land. Put the old one back - a failed update must never leave the
-rem user with no exe at all (the old one is sitting there as .old).
+if exist "{new}" goto retry
+if exist "{cur}" goto swapped
+:retry
 if not exist "{cur}" ren "{old_name}" "{cur_name}" >nul 2>&1
 rem ping is used as a sleep - "timeout" fails when stdin is redirected.
 ping -n 2 127.0.0.1 >nul
 set /a tries+=1
 if %tries% lss 30 goto swap
+:giveup
 echo [%date% %time%] could not replace "{cur}" > "{log}"
 exit /b 1
 :swapped
 
-rem --- 2) wait until the OLD build has finished deleting its own unpack dir --
-rem !! This is the fix for "Failed to load Python DLL" after an update. !!
+rem --- 2) start the new build in a CLEAN PyInstaller environment ----------
+rem !! THIS IS THE FIX for "Failed to load Python DLL" after an update !!
 rem
-rem A onefile exe unpacks to %TEMP%\_MEI<hex(pid*16+2)> - the name is DERIVED
-rem FROM THE PID. Windows hands out a just-freed pid again very quickly, so the
-rem new process often computes THE SAME directory name the previous build had,
-rem while that build's bootloader is still deleting it. The new process writes
-rem python313.dll into it, the old one removes it, and loading the DLL fails:
-rem     Failed to load Python DLL '...\_MEI00005842\python313.dll'
-rem The user's screenshot showed exactly that - and decoding that name gives
-rem the pid of the instance they were RUNNING at the time.
+rem This script is a child of the OLD Canoe process, so it inherited that
+rem process's PyInstaller environment. The new exe is dropped in AT THE SAME
+rem PATH as the old one, so the bootloader's inherit check
 rem
-rem So do not launch until the previous unpack directory is gone. The path
-rem below is this process's own sys._MEIPASS, substituted at write time.
-set /a waited=0
-:waitmei
-if not exist "{old_mei}" goto launch
-ping -n 2 127.0.0.1 >nul
-set /a waited+=1
-if %waited% lss 30 goto waitmei
-rem Still there after a minute - carry on anyway, the retries below cover it.
-
-:launch
-rem The new exe touches {marker} once its window is up - nothing else proves
-rem it, because a failed unpack still leaves a process behind (sitting on a
-rem native error box). Three shots, then roll back (see step 3).
-set /a boots=0
-:relaunch
-rem If the previous attempt failed, it left a process stuck on a NATIVE ERROR
-rem BOX ("Failed to load Python DLL ..."). Sweep it away before trying again -
-rem otherwise the boxes pile up and the whole update looks alarming. Never
-rem touch anything on the very first attempt (nothing of ours is running yet).
-if %boots% gtr 0 taskkill /F /IM "Canoe.exe" >nul 2>&1
+rem     if (_PYI_ARCHIVE_FILE == our own archive filename) -> keep parent env
+rem
+rem passes. The new process then concludes it is the child half of a onefile
+rem parent that has already unpacked, so it does NOT unpack - it just uses
+rem _PYI_APPLICATION_HOME_DIR, i.e. the OLD _MEI directory, which the old
+rem process is deleting at that very moment:
+rem
+rem     Failed to load Python DLL '...\_MEI000005842\python313.dll'.
+rem     LoadLibrary: The specified module could not be found.
+rem
+rem The pid encoded in that directory name belongs to the OLD instance, which
+rem is why this looked like a pid collision. It is not - it is the move onto
+rem the same path that makes the name check pass.
+rem
+rem Starting the exe by hand always worked because Explorer's environment
+rem carries none of these variables. Reproduced deterministically here:
+rem feeding in the three variables below makes the exe hang on that very
+rem dialog; adding PYINSTALLER_RESET_ENVIRONMENT=1 makes it start normally.
+rem
+rem PYINSTALLER_RESET_ENVIRONMENT=1 is the bootloader's own switch for "I am a
+rem brand-new top-level process": it wipes the inherited values and unpacks
+rem from scratch. We clear the variables explicitly as well, so the fix does
+rem not hinge on a single knob.
+set PYINSTALLER_RESET_ENVIRONMENT=1
+set _PYI_APPLICATION_HOME_DIR=
+set _PYI_ARCHIVE_FILE=
+set _PYI_PARENT_PROCESS_LEVEL=
+set _PYI_SPLASH_IPC=
 del "{marker}" >nul 2>&1
-rem Settle first, so we do not race the antivirus scan of the fresh exe.
+rem Settle a moment first, so we do not race the antivirus scan of the fresh exe.
 ping -n 5 127.0.0.1 >nul
 start "" "{cur}"
+
+rem --- 3) confirm the new build came up; otherwise roll back ---------------
+rem started.txt is written by the program itself once its window is up (see
+rem mark_started). Do not wait for a process instead: a failed unpack also
+rem leaves a process behind, sitting on a native error box.
 set /a waited=0
 :waitup
 ping -n 3 127.0.0.1 >nul
 if exist "{marker}" goto done
 set /a waited+=1
-if %waited% lss 12 goto waitup
-set /a boots+=1
-if %boots% lss 3 goto relaunch
+if %waited% lss 10 goto waitup
 
-rem --- 4) all three shots failed: roll back ---------------------------------
-rem Reaching here means the NEW exe cannot start in this environment (a real
-rem user hit "Failed to load Python DLL" here and we could not reproduce it).
-rem The previous program is still sitting there as .old - go back to it. A user
+rem Reaching here means the NEW exe does not start in this environment. The
+rem previous program is still sitting there as .old - go back to it. A user
 rem stuck on an older version is far better than a user with a program that
-rem will not open.
-rem Move the broken one aside first (it may still be holding the name behind a
-rem native error box), then give .old its name back and start it.
+rem will not open. Move the broken one aside first (it may still be holding
+rem the name behind a native error box), then give .old its name back.
 echo [%date% %time%] the new version did not come up; rolled back to the previous one > "{log}"
-rem Sweep away whatever is stuck on a native error box before starting the old one.
-taskkill /F /IM "Canoe.exe" >nul 2>&1
 if not exist "{old_name}" exit /b 0
+taskkill /F /IM "{cur_name}" >nul 2>&1
 ren "{cur_name}" "{bad_name}" >nul 2>&1
 ren "{old_name}" "{cur_name}" >nul 2>&1
 if not exist "{cur}" exit /b 0
 del "{marker}" >nul 2>&1
-ping -n 5 127.0.0.1 >nul
 start "" "{cur}"
 exit /b 0
 
@@ -595,10 +629,10 @@ rem The new build is confirmed up, so the rollback copy can go (if it will not
 rem delete, fine - cleanup_leftovers() collects it next start).
 del "{old_name}" >nul 2>&1
 
-rem Deliberately NOT "del %~f0". Deleting the running batch file makes cmd
-rem fail to read its next line and exit 1 with "The batch file cannot be
-rem found" - noise in the logs for no gain. The leftover .bat is removed by
-rem cleanup_leftovers() on the next startup, which we run anyway.
+rem Deliberately NOT "del %~f0": deleting the running batch file makes cmd fail
+rem to read its next line and exit 1 with "The batch file cannot be found" -
+rem noise for no gain. The leftover .bat is removed by cleanup_leftovers() on
+rem the next startup, which we run anyway.
 """
 
 
@@ -629,17 +663,13 @@ def install_and_restart(new_exe: Path | None = None) -> Path:
     # ⚠ 顺序：`{cur_name}` / `{old_name}` 必须排在 `{cur}` **前面** ——
     #   `{cur}` 是它们的前缀，先替换 `{cur}` 会把 `{cur_name}` 拆成
     #   `<路径>_name`。ren 只认名字不认路径，错了会静默失败（见 _BAT 里的注释）。
-    # `{old_mei}` = 我们自己这次用的解压目录（onefile 才有）。交班脚本要等
-    # 它消失之后才拉新版本 —— 新进程很可能算出一模一样的名字（pid 派生），
-    # 而我们的引导器此刻正在删它。源码运行时没有 _MEIPASS，给个永远不存在的
-    # 路径，那句 `if not exist` 直接就过了。
-    old_mei = getattr(sys, "_MEIPASS", None) or str(CONFIG_DIR / "no-such-meipass")
-
+    # 注意占位符里**没有**旧程序那个解压目录（sys._MEIPASS）—— 早先加过一段
+    # "等它消失再启动"，方向正好是反的：报错的病根是环境变量把新进程引到了
+    # 那个目录上，等它消失等于保证新进程一定扑空。见 _BAT 第 2 段。
     script = (
         _BAT.replace("{old_name}", cur.name + ".old")
         .replace("{bad_name}", cur.name + ".bad")
         .replace("{cur_name}", cur.name)
-        .replace("{old_mei}", str(old_mei))
         .replace("{new}", str(new))
         .replace("{cur}", str(cur))
         .replace("{log}", str(log))
@@ -652,6 +682,14 @@ def install_and_restart(new_exe: Path | None = None) -> Path:
 
     # 新进程要能活过我们这一下，所以脱离控制台、另起进程组
     detached = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    # ★ 交给脚本的环境必须是**洗过的**。我们自己是 PyInstaller 单文件进程，
+    #   环境里有 _PYI_ARCHIVE_FILE / _PYI_APPLICATION_HOME_DIR /
+    #   _PYI_PARENT_PROCESS_LEVEL；原样漏下去，新 exe（路径和我们完全相同）
+    #   就会被引导器判定成"父进程已经解压好的那一半"，不重新解压、直接用我们
+    #   这个正在被删的 _MEI 目录 —— 那就是那句 "Failed to load Python DLL"。
+    #   脚本里自己也清了一遍（见 _BAT 第 2 段），这里再挡一道：从源头就不漏。
+    env = {k: v for k, v in os.environ.items() if not k.startswith("_PYI_")}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     try:
         subprocess.Popen(
             ["cmd", "/c", str(bat)],
@@ -661,6 +699,7 @@ def install_and_restart(new_exe: Path | None = None) -> Path:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=env,
         )
     except OSError as exc:
         raise UpdateError(f"启动替换脚本失败：{exc}", code="io_error") from exc
