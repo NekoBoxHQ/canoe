@@ -524,15 +524,39 @@ echo [%date% %time%] could not replace "{cur}" > "{log}"
 exit /b 1
 :swapped
 
-rem --- 2) start, then confirm -----------------------------------------------
-rem NOTE: deliberately NO "wait for the old process" step here. We used to
-rem delete the .old copy to detect its exit - but .old is ALSO the rollback
-rem source (see step 3), and deleting it first meant a failed update had
-rem nothing to go back to. The three attempts below already absorb a lingering
-rem old process: it just trips the single-instance guard once, and the next
-rem attempt goes through.
+rem --- 2) wait until the OLD build has finished deleting its own unpack dir --
+rem !! This is the fix for "Failed to load Python DLL" after an update. !!
+rem
+rem A onefile exe unpacks to %TEMP%\_MEI<hex(pid*16+2)> - the name is DERIVED
+rem FROM THE PID. Windows hands out a just-freed pid again very quickly, so the
+rem new process often computes THE SAME directory name the previous build had,
+rem while that build's bootloader is still deleting it. The new process writes
+rem python313.dll into it, the old one removes it, and loading the DLL fails:
+rem     Failed to load Python DLL '...\_MEI00005842\python313.dll'
+rem The user's screenshot showed exactly that - and decoding that name gives
+rem the pid of the instance they were RUNNING at the time.
+rem
+rem So do not launch until the previous unpack directory is gone. The path
+rem below is this process's own sys._MEIPASS, substituted at write time.
+set /a waited=0
+:waitmei
+if not exist "{old_mei}" goto launch
+ping -n 2 127.0.0.1 >nul
+set /a waited+=1
+if %waited% lss 30 goto waitmei
+rem Still there after a minute - carry on anyway, the retries below cover it.
+
+:launch
+rem The new exe touches {marker} once its window is up - nothing else proves
+rem it, because a failed unpack still leaves a process behind (sitting on a
+rem native error box). Three shots, then roll back (see step 3).
 set /a boots=0
 :relaunch
+rem If the previous attempt failed, it left a process stuck on a NATIVE ERROR
+rem BOX ("Failed to load Python DLL ..."). Sweep it away before trying again -
+rem otherwise the boxes pile up and the whole update looks alarming. Never
+rem touch anything on the very first attempt (nothing of ours is running yet).
+if %boots% gtr 0 taskkill /F /IM "Canoe.exe" >nul 2>&1
 del "{marker}" >nul 2>&1
 rem Settle first, so we do not race the antivirus scan of the fresh exe.
 ping -n 5 127.0.0.1 >nul
@@ -555,6 +579,8 @@ rem will not open.
 rem Move the broken one aside first (it may still be holding the name behind a
 rem native error box), then give .old its name back and start it.
 echo [%date% %time%] the new version did not come up; rolled back to the previous one > "{log}"
+rem Sweep away whatever is stuck on a native error box before starting the old one.
+taskkill /F /IM "Canoe.exe" >nul 2>&1
 if not exist "{old_name}" exit /b 0
 ren "{cur_name}" "{bad_name}" >nul 2>&1
 ren "{old_name}" "{cur_name}" >nul 2>&1
@@ -603,10 +629,17 @@ def install_and_restart(new_exe: Path | None = None) -> Path:
     # ⚠ 顺序：`{cur_name}` / `{old_name}` 必须排在 `{cur}` **前面** ——
     #   `{cur}` 是它们的前缀，先替换 `{cur}` 会把 `{cur_name}` 拆成
     #   `<路径>_name`。ren 只认名字不认路径，错了会静默失败（见 _BAT 里的注释）。
+    # `{old_mei}` = 我们自己这次用的解压目录（onefile 才有）。交班脚本要等
+    # 它消失之后才拉新版本 —— 新进程很可能算出一模一样的名字（pid 派生），
+    # 而我们的引导器此刻正在删它。源码运行时没有 _MEIPASS，给个永远不存在的
+    # 路径，那句 `if not exist` 直接就过了。
+    old_mei = getattr(sys, "_MEIPASS", None) or str(CONFIG_DIR / "no-such-meipass")
+
     script = (
         _BAT.replace("{old_name}", cur.name + ".old")
         .replace("{bad_name}", cur.name + ".bad")
         .replace("{cur_name}", cur.name)
+        .replace("{old_mei}", str(old_mei))
         .replace("{new}", str(new))
         .replace("{cur}", str(cur))
         .replace("{log}", str(log))

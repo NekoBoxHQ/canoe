@@ -291,6 +291,15 @@ def main() -> int:
               "重启之后没有确认步骤")
         check("★ 判断依据是程序自己写的启动脚印", "started.txt" in script
               and "{marker}" not in script, "脚本没去看 started.txt / 占位符没替换")
+        # ★ 用户截图里的 _MEI00005842 反解出来是他**当时正开着的那个实例**的 pid。
+        #   解压目录名是 pid 派生的（hex(pid*16+2)），新进程很容易拿到刚释放的
+        #   同一个 pid、算出同名目录，而上一版正在删它 —— 结果就是
+        #   "Failed to load Python DLL ...\_MEI00005842\python313.dll"。
+        #   所以拉起新版本之前必须先等那个目录消失。
+        check("★ 拉起新版本之前要等上一版的解压目录消失（_MEI 撞名的病根）",
+              ":waitmei" in update._BAT and "waitmei" in script
+              and "{old_mei}" not in script,
+              "没有等 _MEI 消失这一步")
         check("★ 重开有上限（连试 3 次就不试了，别死循环）",
               "lss 3 goto relaunch" in script)
         # ★ 三次都起不来就**回滚**。用户真机上撞到过新版本起不来
@@ -370,6 +379,7 @@ def main() -> int:
             .replace("{new}", str(new))
             .replace("{cur}", str(old))
             .replace("{log}", str(log))
+            .replace("{old_mei}", str(sand / "no-such-mei"))
             .replace("{marker}", str(marker)),
             encoding="ascii",
         )
@@ -421,6 +431,7 @@ def main() -> int:
             .replace("{new}", str(sand / "does-not-exist.exe"))
             .replace("{cur}", str(old))
             .replace("{log}", str(log))
+            .replace("{old_mei}", str(sand / "no-such-mei"))
             .replace("{marker}", str(marker))
             # 上限改成 2 次，等价逻辑但测试只要等几秒
             # （换文件那一步会失败：new 指向一个不存在的文件）
