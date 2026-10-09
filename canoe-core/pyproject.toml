@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "canoe-core"
+version = "1.0.0"
+description = "轻舟 / Canoe —— 客户端与服务端的公共库"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["pydantic>=2.7,<3"]
+
+[tool.setuptools.packages.find]
+include = ["canoe_core*"]

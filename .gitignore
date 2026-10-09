@@ -1,0 +1,43 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+*.spec.bak
+
+# ---- 运行时数据 ----
+canoe-server/data/*.db
+canoe-server/data/*.json
+canoe-client/*.log
+
+# ---- 密钥与本地配置 —— 绝对不要提交 ----
+.env
+.env.local
+
+# ---- 二进制 / 大文件：不进仓库，由用户或脚本获取 ----
+# sing-box 内核约 82MB，放仓库不合适。获取方式见 canoe-client/bin/README.md
+canoe-client/bin/sing-box.exe
+canoe-client/bin/sing-box
+# 打包测试用的假内核
+canoe-client/bin/fake-singbox.cmd
+
+# wintun.dll（427KB）**入库** —— TUN 模式必需，体积小，
+# 且其许可证明确允许随"通过其 API 使用它的软件"一同分发
+# （见 canoe-client/bin/wintun-LICENSE.txt）。
+# 取消下面这行注释即可改为不入库：
+# canoe-client/bin/wintun.dll
+
+# 规则集（约 90KB）目前**入库** —— 体积小，且入库后clone 下来即可运行。
+# 需要刷新时跑：python canoe-client/scripts/fetch_rulesets.py --force
+# 如果你更希望它们不入库，取消下面两行注释并改用上面的脚本获取：
+# canoe-client/bin/ruleset/*.srs
+
+# ---- 编辑器 ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

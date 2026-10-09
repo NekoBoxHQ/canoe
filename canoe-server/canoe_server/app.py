@@ -1,0 +1,49 @@
+"""轻舟 / Canoe Server —— FastAPI 应用入口。"""
+from __future__ import annotations
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from canoe_core import BRAND_CN, SLOGAN_CN, VERSION, Api
+
+from .config import settings
+from .database import init_db
+from .routers import admin, auth, client
+
+app = FastAPI(
+    title=settings.app_name,
+    version=VERSION,
+    description=f"{BRAND_CN} 服务端 · {SLOGAN_CN}",
+)
+
+# 桌面客户端不走浏览器 CORS，这里留一个受控的默认值方便你用 web 面板调试
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"] if settings.debug else [],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """调试时回原始异常，生产只回笼统信息。"""
+    detail = repr(exc) if settings.debug else "服务器内部错误"
+    return JSONResponse(
+        status_code=500, content={"code": "internal_error", "detail": detail}
+    )
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    init_db()
+
+
+# 路由挂在 /api 下；/api/health 由 client 路由提供
+app.include_router(auth.router, prefix="")
+app.include_router(client.router, prefix="")
+app.include_router(admin.router, prefix="")
+
+_ = Api  # 路径常量在路由里直接用，这里只是保持 import 可见

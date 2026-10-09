@@ -1,0 +1,75 @@
+"""FastAPI 依赖：令牌鉴权、当前用户、管理员校验。"""
+from __future__ import annotations
+
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
+from sqlalchemy.orm import Session as DBSession
+
+from canoe_core import ErrorCode
+
+from .database import get_db
+from .models import Token, User
+from .security import token_hash
+
+bearer = HTTPBearer(auto_error=False)
+
+# 统一用 {"code": ..., "detail": ...} 的响应体，与 canoe_core.ApiError 对齐
+def _err(http_status: int, code: str, detail: str) -> HTTPException:
+    return HTTPException(status_code=http_status, detail={"code": code, "detail": detail})
+
+
+UNAUTHORIZED = _err(status.HTTP_401_UNAUTHORIZED, ErrorCode.UNAUTHORIZED, "令牌无效或已过期")
+
+
+def get_current_user(
+    creds: HTTPAuthorizationCredentials | None = Depends(bearer),
+    db: DBSession = Depends(get_db),
+) -> User:
+    if creds is None or not creds.credentials:
+        raise UNAUTHORIZED
+
+    record = db.scalars(
+        select(Token).where(Token.token_hash == token_hash(creds.credentials))
+    ).first()
+
+    # 顺序很重要：先查令牌是否存在，再看账号状态，最后才判令牌有效性。
+    #
+    # 因为封禁用户时我们会顺手吊销其令牌，如果先判 is_valid 就直接返回 401，
+    # 用户只会看到"登录已失效"，看不到"账号已被封禁"这个真正的原因。
+    # 把账号状态放在前面，安全性和之前完全一样（令牌照样是废的），
+    # 但客户端能给出准确的提示。
+    if record is None:
+        raise UNAUTHORIZED
+
+    user = db.get(User, record.user_id)
+    if user is None:
+        raise UNAUTHORIZED
+
+    if user.status == "banned":
+        raise _err(status.HTTP_403_FORBIDDEN, ErrorCode.BANNED, "账号已被封禁")
+
+    if user.is_expired:
+        raise _err(status.HTTP_403_FORBIDDEN, ErrorCode.EXPIRED, "账号已到期")
+
+    if not record.is_valid:
+        raise UNAUTHORIZED
+
+    # 顺手记一下最后活跃时间，管理后台要用
+    from .models import utcnow
+
+    user.last_login_at = user.last_login_at or utcnow()
+    return user
+
+
+def get_current_admin(user: User = Depends(get_current_user)) -> User:
+    if user.role != "admin":
+        raise _err(status.HTTP_403_FORBIDDEN, ErrorCode.UNAUTHORIZED, "需要管理员权限")
+    return user
+
+
+def client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else ""

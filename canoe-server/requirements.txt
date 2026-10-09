@@ -1,0 +1,7 @@
+# 公共库（本地路径，先安装它再装本文件）
+#   pip install -e ../canoe-core
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.30,<0.35
+sqlalchemy>=2.0,<2.1
+pydantic>=2.7,<3
+pydantic-settings>=2.3,<3
