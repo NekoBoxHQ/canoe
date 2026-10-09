@@ -61,6 +61,10 @@ class UserInfo(BaseModel):
 
     id: int
     username: str
+    #: ★ 必须回给客户端/面板。
+    #: 管理面板登录后要判断 role=='admin' 才放行；缺失的话那个判断
+    #: 永远为真（undefined !== 'admin'），面板就永远进不去 —— 真出过。
+    role: str = "user"
     status: str = "active"
     expire_at: int | None = None
     node_name: str | None = None
@@ -245,6 +249,8 @@ class DeviceInfo(BaseModel):
 class MeResponse(BaseModel):
     id: int
     username: str
+    #: 同上：面板靠它判断能不能进，必须在响应里
+    role: str = "user"
     status: str
     expire_at: int | None
     node_name: str | None

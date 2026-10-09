@@ -170,6 +170,14 @@ def main() -> int:
     check("★ 登录响应无 real_* 字段", not scan_real_keys(body))
     check("登录响应含 user.node_name", "node_name" in body["user"])
 
+    # ★ 契约断言：管理面板靠这两个字段判断"这人能不能进面板"。
+    #   面板的 DOM 测试是 mock 的 API，mock 里手写了 role —— 于是真服务端
+    #   漏返回 role 时它照样全绿，而实际上面板登录页永远报"不是管理员"。
+    #   真正能兜住这种漂移的只有对着**真服务端**跑的测试，就是这里。
+    # （这一步登的是普通用户，所以值就该是 user；随后管理员那次登录取 admin）
+    check("★ 登录响应含 user.role（面板靠它放行）",
+          body["user"].get("role") in ("user", "admin"), str(body["user"])[:200])
+
     H = {"Authorization": f"Bearer {token}"}
 
     # 3. 鉴权
@@ -180,6 +188,9 @@ def main() -> int:
     check("坏 token 401", r.status_code == 401, f"got {r.status_code}")
     r = client.get(Api.ME, headers=H)
     check("有效 token /api/me 200", r.status_code == 200, r.text[:200])
+    # 面板刷新页面后用 /api/me 重新校验身份，同样靠 role
+    check("★ /api/me 含 role（面板刷新后靠它重新放行）",
+          r.json().get("role") in ("user", "admin"), r.text[:200])
 
     # 4. 权限隔离
     print("\n[4] 权限隔离")

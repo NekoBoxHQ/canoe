@@ -120,6 +120,8 @@ def login(body: LoginRequest, request: Request, db: DBSession = Depends(get_db))
         user=UserInfo(
             id=user.id,
             username=user.username,
+            # ★ 面板登录后要靠它判断能不能进 —— 漏了面板就永远进不去
+            role=user.role,
             status=user.status,
             expire_at=epoch(user.expire_at),
             # 客户端主界面要在点启航之前就显示节点名，所以登录时就得给
@@ -190,6 +192,8 @@ def me(user: User = Depends(get_current_user), db: DBSession = Depends(get_db)):
     return MeResponse(
         id=user.id,
         username=user.username,
+        # ★ 面板刷新页面后用这个重新校验身份，同样不能漏
+        role=user.role,
         status=user.status,
         expire_at=epoch(user.expire_at),
         node_name=node_name_for(db, user),
