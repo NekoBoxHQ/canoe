@@ -263,14 +263,16 @@ def main() -> int:
         #   Failed to load Python DLL '...python313.dll'
         # 单文件 exe 启动时会解压到 %TEMP%\_MEIxxxx 并清理上一次的同名目录，
         # 新的太早起来就会被对方清掉。所以必须先等旧进程真没了。
-        check("★ 先等旧进程消失，不是只等文件锁",
-              "tasklist" in script and ":wait_old" in script and "goto wait_old" in script)
-        # 别用 find —— 装了 Git 的机器上 PATH 里 MSYS 那个 find 会赢，
-        # 脚本当场报 "find: '1234': No such file or directory"（真踩过）
-        check("★ 用 findstr 而不是 find（find 会被 MSYS 的那份抢走）",
-              "findstr" in script and "| find " not in script)
-        check("★ 换完文件先等一会儿再启动（刚落盘的 exe 会被杀毒软件扫）",
-              "ping -n 4 127.0.0.1" in script, "没找到启动前的等待")
+        check("★ 重试有上限（换不动也要退出）", "lss 60 goto retry" in script)
+        check("★ 换完先等一会儿再启动（_MEI 清理竞争 + 杀毒扫描）",
+              "ping -n 5 127.0.0.1" in script, "没找到启动前的等待")
+        # 真机事故：那段 `tasklist | findstr` 轮询会**永久卡住** ——
+        # cmd 等 findstr，findstr 等一个永远不来的 EOF，更新挂死 18 分钟。
+        # 重试 move 本身就是"等旧进程退出"（进程在跑时文件锁着、move 必失败），
+        # 根本不需要再去问系统 pid 还在不在。
+        check("★ 不许有 tasklist|findstr 那种管道轮询（卡死过一次）",
+              "tasklist" not in update._BAT and "findstr" not in update._BAT,
+              "那段轮询把一次真实更新挂死了 18 分钟")
         check("脚本里带上了新程序路径", str(staged2) in script)
         check("脚本里带上了当前程序路径", str(fake_exe2) in script)
         check("失败会记日志（不然用户只看到'点完没反应'）",
@@ -325,12 +327,10 @@ def main() -> int:
         new.write_bytes(host_exe.read_bytes())       # 冒充"新程序"
         log = sand / "canoe-update.log"
         bat = sand / "canoe-update.bat"
-        # 用一个**已经死掉的 pid**，等待循环应当立刻放行
         bat.write_text(
             update._BAT.replace("{new}", str(new))
             .replace("{cur}", str(old))
-            .replace("{log}", str(log))
-            .replace("{pid}", "999999"),
+            .replace("{log}", str(log)),
             encoding="ascii",
         )
 
@@ -347,24 +347,51 @@ def main() -> int:
         check("★ 脚本里没有自删（自删会让 cmd 退出码变成 1）",
               'del "%~f0"' not in update._BAT)
 
-        # 旧进程还活着时会等 —— 拿当前进程的 pid 试，等一小会儿就该超时放行
-        old.write_bytes(where_exe.read_bytes())
-        new.write_bytes(host_exe.read_bytes())
-        bat.write_text(
-            update._BAT.replace("{new}", str(new))
+        # 重试循环得**有上限**：换不动也要退出，不能一直转。
+        # 真机上出过事：早先那版先 `tasklist | findstr` 轮询 pid，那条管道
+        # 永久卡住，把一个更新挂死了 18 分钟（cmd 等 findstr、findstr 等一个
+        # 永远不来的 EOF），桌面上只剩 Canoe.exe.new 和一个转不动的 .bat。
+        # 所以这里钉死两件事：上限还在，而且脚本里**不许**再有那种轮询。
+        fail_bat = sand / "fail.bat"
+        fail_bat.write_text(
+            update._BAT.replace("{new}", str(sand / "does-not-exist.exe"))
             .replace("{cur}", str(old))
             .replace("{log}", str(log))
-            .replace("{pid}", str(os.getpid())),
+            # 上限改成 3 次，等价逻辑但测试只要等几秒
+            .replace("lss 60 goto retry", "lss 3 goto retry"),
             encoding="ascii",
         )
         t0 = time.time()
-        subprocess.run(["cmd", "/c", str(bat)], cwd=str(sand),
-                       capture_output=True, text=True, timeout=180)
-        waited = time.time() - t0
-        check("★ 脚本会先等旧进程消失（这里等的是自己的 pid）",
-              waited > 5, f"只等了 {waited:.1f}s")
-        check("等超时之后照样把文件换掉了（不会卡死在那儿）",
-              old.read_bytes() == host_exe.read_bytes())
+        proc2 = subprocess.run(["cmd", "/c", str(fail_bat)], cwd=str(sand),
+                               capture_output=True, text=True, timeout=90)
+        took = time.time() - t0
+        check("★ 换不动时会放弃（重试有上限，不会一直转）",
+              took < 60, f"跑了 {took:.1f}s")
+        # 日志是 cmd 写的，用的是系统 ANSI 代码页（中文机器上是 GBK），
+        # 不是 UTF-8 —— 读它得容错，最后给用户看的时候也一样。
+        check("★ 放弃时留下失败日志（用户能知道出了什么事）",
+              log.is_file() and "could not replace" in log.read_bytes().decode("utf-8", "replace"),
+              f"log 存在={log.is_file()}")
+        # 顺带钉住那个读法：按 utf-8 硬读会 UnicodeDecodeError
+        import inspect as _ins  # noqa: PLC0415
+
+        src = _ins.getsource(update.last_update_log)
+        check("★ 读日志时容得下非 UTF-8（cmd 写的是 GBK）",
+              "gbk" in src or "mbcs" in src, "last_update_log 只按 utf-8 读会崩")
+        # 真拿一份 GBK 字节喂给它，确认不再崩。
+        # ⚠ 文件名必须是 canoe-update.log —— last_update_log() 是拿
+        #   _current_exe() 的**目录**再拼上这个名字去找的。
+        probe_dir = tmp / "gbklog"
+        probe_dir.mkdir(exist_ok=True)
+        real_cur = update._current_exe
+        try:
+            (probe_dir / "canoe-update.log").write_bytes("中文日志".encode("gbk"))
+            update._current_exe = lambda: probe_dir / "Canoe.exe"  # type: ignore[assignment]
+            check("★ 真喂一份 GBK 的日志也不崩", update.last_update_log() == "中文日志",
+                  "读法还是有问题")
+        finally:
+            update._current_exe = real_cur  # type: ignore[assignment]
+        log.unlink(missing_ok=True)
 
     # --- 6. 更新这条路不该走系统代理 ---
     # 用户报的："系统代理加 TUN 的时候无法下载更新客户端"。

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -318,52 +317,45 @@ def prepare_update(archive: Path) -> Path:
 #: 任何"我先退出、退出前自己替换"的写法都死在"退出之后没人干活"。
 #: 交给系统来做 —— cmd 等本进程真的没了（文件锁释放）再动手。
 #:
-#: 三个动作的顺序都是有原因的，别简化：
+#: 两件事，顺序都有原因：
 #:
-#:   1. **等旧进程真的消失**，不是等文件锁松开。单文件 exe 启动时会解压到
-#:      %TEMP%\_MEIxxxx，并且会顺手清理上一次留下的同名临时目录。新的
-#:      这时候要是已经起来了，它自己的目录会被对方清掉，然后弹：
+#:   1. **换文件，换不动就重试**。这个重试循环**本身就是"等旧进程退出"**：
+#:      旧进程在跑的时候那个 exe 是锁着的，move 一定失败；move 成功就说明
+#:      锁已经松了、进程已经没了。所以不需要再去问系统"那个 pid 还在不在"。
+#:
+#:      ⚠ 别再加那段 `tasklist ... | findstr ...` 的轮询。加过，出事了：
+#:        那个管道会**永久卡住**，实测把一个真实更新挂死了 18 分钟 ——
+#:        cmd 一直在等它的子进程 findstr，而 findstr 一直在等一个永远不
+#:        来的输入结束。用户那边的表现就是"点了更新，程序关了，然后
+#:        什么都没发生，桌面上留着 Canoe.exe.new 和这个 .bat"。
+#:
+#:   2. **换完再等四五秒才拉起来**。单文件 exe 启动时会解压到
+#:      %TEMP%\_MEIxxxx，并且会顺手清理上一次留下的同名临时目录；新进程
+#:      起太早，自己的目录会被对方清掉，然后弹
 #:          Failed to load Python DLL '...python313.dll'
-#:          LoadLibrary: 找不到指定的模块。
-#:      用户在真机上就是这么栽的（更新完第一次启动起不来，再点一次才行）。
-#:      tasklist 轮询能把这段窗口盖住。
-#:   2. 换文件，失败就重试（旧进程收尾慢）。
-#:   3. **换完再等三四秒才拉起来** —— 刚落盘的新 exe 会被杀毒软件实时扫描，
-#:      扫的过程中去跑它，同样会撞上面的错。
+#:      这段等待同时也盖住了杀毒软件对刚落盘的 exe 做实时扫描。
 _BAT = r"""@echo off
-rem Canoe self-update: wait for the old process to exit, swap the exe, restart.
+rem Canoe self-update: swap the exe once the old process lets go, then restart.
 setlocal
 cd /d "%~dp0"
 
-set /a waited=0
-:wait_old
-rem Wait for OUR OWN pid, not "any Canoe.exe" - otherwise a second instance
-rem the user happens to have open would stall this for the whole timeout.
-rem findstr, not find: "find" collides with the MSYS/Git-Bash one, which
-rem wins on PATH for anyone who has Git installed and then blows up with
-rem "find: '1234': No such file or directory". findstr has no such twin.
-tasklist /FI "PID eq {pid}" /NH /FO CSV 2>nul | findstr /C:"{pid}" >nul
-if errorlevel 1 goto swap
-set /a waited+=1
-if %waited% geq 15 goto swap
-rem ping is used as a sleep - "timeout" fails when stdin is redirected.
-ping -n 2 127.0.0.1 >nul
-goto wait_old
-
-:swap
+rem The retry loop IS the wait for the old process: its exe stays locked while
+rem it runs, so a successful move already means it is gone.
 set /a tries=0
 :retry
+rem ping is used as a sleep - "timeout" fails when stdin is redirected.
 ping -n 2 127.0.0.1 >nul
 move /y "{new}" "{cur}" >nul 2>&1
 if not errorlevel 1 goto ok
 set /a tries+=1
-if %tries% lss 40 goto retry
+if %tries% lss 60 goto retry
 echo [%date% %time%] could not replace "{cur}" > "{log}"
 exit /b 1
 
 :ok
-rem let antivirus finish scanning the freshly written exe before running it.
-ping -n 4 127.0.0.1 >nul
+rem Settle before launching: covers the %TEMP%\_MEI cleanup race and the
+rem antivirus scan of the freshly written exe. See _BAT's comment.
+ping -n 5 127.0.0.1 >nul
 start "" "{cur}"
 
 rem Deliberately NOT "del %~f0". Deleting the running batch file makes cmd
@@ -400,9 +392,6 @@ def install_and_restart(new_exe: Path | None = None) -> Path:
         _BAT.replace("{new}", str(new))
         .replace("{cur}", str(cur))
         .replace("{log}", str(log))
-        # 只等**我们自己这个 pid** 消失。写成"等任何 Canoe.exe" 的话，
-        # 用户正好开着第二个实例时这一等就是整整一个超时。
-        .replace("{pid}", str(os.getpid()))
     )
     try:
         bat.write_text(script, encoding="ascii")
@@ -449,10 +438,24 @@ def last_update_log() -> str:
     """上次更新失败留下的说明（没有就是空串）。"""
     try:
         path = _current_exe().with_name("canoe-update.log")
-        if path.is_file():
-            text = path.read_text(encoding="utf-8", errors="replace").strip()
-            path.unlink(missing_ok=True)
-            return text
+        if not path.is_file():
+            return ""
+        # ⚠ 这文件是 cmd 的 `echo ... > file` 写出来的，用的是**系统 ANSI
+        #   代码页**（中文机器上是 GBK），不是 UTF-8。按 utf-8 硬读会
+        #   UnicodeDecodeError，带 errors="replace" 又能读出满屏问号。
+        #   所以按顺序试，谁先成功算谁。
+        raw = path.read_bytes()
+        text = ""
+        for enc in ("utf-8", "mbcs", "gbk"):
+            try:
+                text = raw.decode(enc)
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+        else:
+            text = raw.decode("utf-8", "replace")
+        path.unlink(missing_ok=True)
+        return text.strip()
     except OSError:
         pass
     return ""
