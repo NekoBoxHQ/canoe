@@ -17,8 +17,33 @@
 -->
 <link rel="icon" href="logo.png">
 <link rel="stylesheet" href="style.css">
+<script>
+/* 有令牌就别让登录框露脸 —— 验令牌要一个网络来回，那段时间先显示
+   一枚加载条（见 #boot-screen 的说明）。放在这里、而不是 app.js 里，
+   是为了赶在浏览器第一次绘制之前把类打上：app.js 里做的话，
+   登录框已经画出来了，还是闪一下。 */
+try {
+  if (sessionStorage.getItem('canoe.panel.token')) {
+    document.documentElement.classList.add('booting');
+  }
+} catch (e) { /* 无痕模式禁 sessionStorage：那就照常显示登录框 */ }
+</script>
 </head>
 <body>
+
+<!--
+  ================= 启动 =================
+  有令牌时先显示这个，等 /api/me 验完再决定进后台还是回登录页。
+
+  没有它的话，刷新时会先闪一下登录框：HTML 里 #login-screen 默认就
+  是可见的，而验令牌要一个来回，那几十到几百毫秒里用户看到的是
+  "我掉线了？"，然后卡片才消失。
+-->
+<div id="boot-screen" class="screen">
+  <img class="boot-logo" src="logo.png" alt="">
+  <div class="boot-text">轻舟 · 正在验证登录状态</div>
+  <div class="boot-bar"></div>
+</div>
 
 <!-- ================= 登录 ================= -->
 <div id="login-screen" class="screen">

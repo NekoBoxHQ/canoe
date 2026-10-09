@@ -37,6 +37,39 @@ code, .mono { font-family: "Cascadia Mono", Consolas, monospace; }
 
 .screen { min-height: 100vh; }
 
+/* ---------------- 启动屏 ----------------
+ * 有令牌时先显示它，等 /api/me 验完再决定进后台还是回登录页。
+ *
+ * 它是**默认隐藏**的，只有 <html class="booting"> 时才出现。
+ * 那个类由 index.html 里的行内脚本打上 —— 必须赶在浏览器第一次绘制
+ * 之前，否则登录框已经画出来闪过了。
+ *
+ * ⚠ 这里不能用 hidden 属性：样式表上面那条 [hidden]{display:none!important}
+ *   带 !important，一旦挂上就再没有规则能把它显示回来（踩过一次）。
+ */
+#boot-screen { display: none; }
+html.booting #boot-screen {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 16px;
+}
+html.booting #login-screen { display: none; }
+
+.boot-logo { width: 56px; height: 56px; opacity: .85; }
+.boot-text { font-size: 13px; color: var(--dim); letter-spacing: 2px; }
+.boot-bar {
+  width: 128px; height: 2px; border-radius: 2px;
+  background: var(--line); overflow: hidden;
+}
+.boot-bar::after {
+  content: ''; display: block; width: 42%; height: 100%;
+  border-radius: 2px; background: var(--cyan);
+  animation: boot-slide 1.05s ease-in-out infinite;
+}
+@keyframes boot-slide {
+  from { transform: translateX(-110%); }
+  to   { transform: translateX(240%); }
+}
+
 /* ---------------- 登录 ---------------- */
 #login-screen {
   display: flex; align-items: center; justify-content: center; padding: 24px;

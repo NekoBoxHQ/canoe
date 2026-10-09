@@ -642,7 +642,12 @@ async function render() {
  * 登录流程
  * ========================================================================= */
 
+//: 收掉启动屏（index.html 里那个 booting 类）。
+//: showApp / showLogin 都要调 —— 谁先跑都不能让它挂在那儿。
+function endBoot() { document.documentElement.classList.remove('booting'); }
+
 function showLogin(message) {
+  endBoot();
   $('#app-screen').hidden = true;
   $('#login-screen').hidden = false;
   const err = $('#login-error');
@@ -664,6 +669,7 @@ function renderWhoami() {
 }
 
 async function showApp() {
+  endBoot();
   $('#login-screen').hidden = true;
   $('#app-screen').hidden = false;
   renderWhoami();
@@ -751,6 +757,9 @@ function init() {
     if (e.key === 'Escape' && !$('#modal-root').hidden) closeModal();
   });
 
+  // 没令牌的话启动屏压根不该出现（行内脚本没打 booting 类），
+  // 这里只是兜底：万一 sessionStorage 读到了空串之类的边界。
+  if (!state.token) endBoot();
   tryResume();
 }
 
