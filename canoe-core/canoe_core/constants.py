@@ -49,7 +49,7 @@ class Text:
     BTN_UPDATE = "🔄\n更新"
     BTN_TCPING = "📡\nTCping"
     BTN_URLTEST = "🔗\nURL测试"
-    LABEL_LOG = "📋  输出日志"
+    LABEL_RESULT = "📋  测试结果"
 
     # 日志面板首行
     LOG_READY = "准备就绪，等待操作…"

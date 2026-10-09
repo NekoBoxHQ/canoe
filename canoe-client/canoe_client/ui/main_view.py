@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+import re
+
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
@@ -34,8 +36,8 @@ from canoe_core import BRAND_CN, VERSION, Text
 from .. import sysproxy
 from ..config import config
 from ..kernel import kernel
-from ..logbus import TAG_ERROR, TAG_KERNEL, TAG_SYSTEM, TAG_TEST, bus
-from ..nettest import DEFAULT_URL, tcping, url_test
+from ..logbus import TAG_ERROR, TAG_RESULT, bus
+from ..nettest import tcping, url_test
 from ..options import (
     LABEL_SYSTEM_PROXY,
     LABEL_TUN,
@@ -52,13 +54,71 @@ from ..worker import Worker
 
 LOG_POLL_MS = 300
 
-# 日志里不同来源用不同颜色
+#: 结果框高度（px）。约 30mm，是原来日志面板的三分之一左右。
+RESULT_BOX_HEIGHT = 132
+
+#: 结果框最多保留几条。大字下 3 条正好铺满，不出现滚动条。
+RESULT_MAX_LINES = 3
+
+#: 结果默认绿色大字，失败用橙色
+RESULT_COLOR = "#3FD07A"
 TAG_COLORS = {
-    TAG_SYSTEM: "#7A8DA0",
-    TAG_KERNEL: "#5F7F9A",
-    TAG_TEST: "#2A7F8F",
-    TAG_ERROR: "#C2603C",
+    TAG_RESULT: RESULT_COLOR,
+    TAG_ERROR: "#E0803C",
 }
+
+
+def _result_line(result) -> str:
+    """把测试结果压成一行，格式固定：
+
+        TCP 延迟：38ms
+        URL 耗时：344ms
+
+    刻意不显示 target（那是 host:port，含节点域名）。
+    """
+    if isinstance(result, str):
+        return result
+
+    # PingResult
+    if hasattr(result, "times"):
+        if not result.times:
+            return f"TCP 延迟：{result.error or '超时'}"
+        avg = sum(result.times) / len(result.times)
+        text = f"TCP 延迟：{avg:.0f}ms"
+        if result.lost:
+            text += f"（丢包 {result.lost}/{result.total}）"
+        return text
+
+    # UrlResult
+    if hasattr(result, "elapsed_ms"):
+        if not result.ok:
+            return f"URL 耗时：{result.error or '失败'}"
+        return f"URL 耗时：{result.elapsed_ms:.0f}ms"
+
+    return str(result)
+
+
+def _mask_secrets(text: str) -> str:
+    """把可能出现的节点域名/地址遮掉。
+
+    结果行本身不含这些，但**错误信息**可能带（比如 requests 的报错里
+    会有完整 URL 和主机名）。宁可遮得狠一点，也不能让域名溜到界面上。
+    """
+    try:
+        host, _ = node_endpoint()
+    except Exception:  # noqa: BLE001
+        host = ""
+    if host and host in text:
+        text = text.replace(host, "节点")
+
+    # 再兜一层：任何 形如 xxx.yyy 的域名片段都打码
+    return _DOMAIN_RE.sub(lambda m: m.group(1) + "＊＊＊", text)
+
+
+#: 匹配 http(s)://host 或裸域名，保留前缀便于理解，主机部分打码
+_DOMAIN_RE = re.compile(
+    r"(https?://|\b)((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})"
+)
 
 
 class MainView(QWidget):
@@ -68,10 +128,10 @@ class MainView(QWidget):
         super().__init__()
         self.setObjectName("Root")
         self.setWindowTitle(BRAND_CN)
-        self.setFixedSize(440, 720)
+        self.setFixedSize(440, 502)
 
         self._opts = RunOptions.from_dict(config["options"])
-        self._log_seq = 0
+        self._result_seq = 0
 
         self._build()
         self._load_options_into_ui()
@@ -83,7 +143,7 @@ class MainView(QWidget):
         self._log_timer.timeout.connect(self._drain_log)
         self._log_timer.start(LOG_POLL_MS)
 
-        bus.system(Text.LOG_READY)
+        bus.system("界面就绪")
         self._drain_log()
 
     # ==================================================================
@@ -160,7 +220,8 @@ class MainView(QWidget):
         root.addSpacing(10)
 
         # --- 输出日志 ---
-        root.addWidget(self._log_card(), 1)
+        root.addWidget(self._result_card())
+        root.addStretch(1)
 
         root.addSpacing(8)
 
@@ -230,45 +291,57 @@ class MainView(QWidget):
         btn.clicked.connect(slot)
         return btn
 
-    def _log_card(self) -> QFrame:
+    def _result_card(self) -> QFrame:
+        """结果框：只显示 更新版本号 / TCping 毫秒 / URL 毫秒。
+
+        刻意做得小（约 30mm 高），字体用绿色大字，一眼能看完。
+
+        **绝不显示内核日志** —— 那里面带节点域名，显示出来就是泄漏。
+        详见 logbus.py 顶部的说明。
+        """
         card = QFrame()
         card.setObjectName("Card")
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(12, 9, 12, 11)
-        lay.setSpacing(7)
+        lay.setContentsMargins(12, 7, 12, 9)
+        lay.setSpacing(5)
 
-        title = QLabel(Text.LABEL_LOG)
+        title = QLabel(Text.LABEL_RESULT)
         title.setObjectName("LogTitle")
         lay.addWidget(title)
 
-        self.log_view = QPlainTextEdit()
-        self.log_view.setObjectName("LogView")
-        self.log_view.setReadOnly(True)
-        self.log_view.setMaximumBlockCount(800)
-        # 长行折行、不要横向滚动条 —— 否则底部会多出一条灰条，很碍眼
-        self.log_view.setLineWrapMode(QPlainTextEdit.WidgetWidth)
-        self.log_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        lay.addWidget(self.log_view, 1)
+        self.result_view = QPlainTextEdit()
+        self.result_view.setObjectName("ResultView")
+        self.result_view.setReadOnly(True)
+        # 只留最近 3 条 —— 大字下正好放得下，滚动条也就不用出现了
+        self.result_view.setMaximumBlockCount(RESULT_MAX_LINES)
+        self.result_view.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self.result_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 本来就没几行，不要右边的拖动条
+        self.result_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.result_view.setFixedHeight(RESULT_BOX_HEIGHT)   # 约 30mm
+        lay.addWidget(self.result_view)
         return card
 
     # ==================================================================
     # 日志
     # ==================================================================
     def _drain_log(self) -> None:
-        """把日志总线上新增的行追加到面板。"""
-        new = bus.since(self._log_seq)
+        """把总线上新增的**可显示**结果追加到结果框。
+
+        用的是 visible_since() 而不是 since() —— 内核日志会被挡在外面，
+        界面拿不到它，也就不可能显示出来。
+        """
+        new = bus.visible_since(self._result_seq)
         if not new:
             return
-        self._log_seq = new[-1].seq + 1
+        self._result_seq = new[-1].seq + 1
 
         for line in new:
-            color = TAG_COLORS.get(line.tag, TAG_SYSTEM)
-            self.log_view.appendHtml(
-                f'<span style="color:#4A5A6B">{line.time_text}</span> '
-                f'<span style="color:{color}">[{line.tag}]</span> '
-                f'<span style="color:#C9CDD3">{_escape(line.message)}</span>'
-            )
-        self.log_view.moveCursor(QTextCursor.End)
+            color = TAG_COLORS.get(line.tag, RESULT_COLOR)
+            # 结果行本身不含域名；错误行可能含，再过一道遮罩
+            text = _escape(_mask_secrets(line.message))
+            self.result_view.appendHtml(f'<span style="color:{color}">{text}</span>')
+        self.result_view.moveCursor(QTextCursor.End)
 
     # ==================================================================
     # 选项读写
@@ -413,15 +486,13 @@ class MainView(QWidget):
     # ==================================================================
     def _do_update(self) -> None:
         self.update_btn.setEnabled(False)
-        bus.test("检查客户端更新…")
         url = str(config["update_url"])
 
         def on_ok(info) -> None:
             self.update_btn.setEnabled(True)
             if info.is_newer:
-                bus.test(f"发现新版本 {info.latest}（当前 {info.current}）")
-                if info.notes:
-                    bus.test(f"更新说明：{info.notes}")
+                bus.result(f"更新：{info.current} → {info.latest}")
+                # 详细内容放弹窗，不塞进结果框（结果框只留一行）
                 detail = f"当前版本：{info.current}\n最新版本：{info.latest}"
                 if info.notes:
                     detail += f"\n\n更新说明：\n{info.notes}"
@@ -429,44 +500,43 @@ class MainView(QWidget):
                     detail += f"\n\n下载地址：\n{info.url}"
                 QMessageBox.information(self, "有新版本", detail)
             else:
-                bus.test(f"已是最新版本（{info.current}）")
+                bus.result(f"更新：{info.current} 最新")
 
         def on_err(code: str, message: str) -> None:
             self.update_btn.setEnabled(True)
-            bus.error(f"更新检查失败：{message}")
+            bus.error(f"更新：{message}")
 
         Worker(check_update, url, VERSION).run_with(on_ok, on_err)
 
     def _do_tcping(self) -> None:
         self.tcping_btn.setEnabled(False)
         host, port = node_endpoint()
-        bus.test(f"TCping {host}:{port} …")
 
         def on_ok(result) -> None:
             self.tcping_btn.setEnabled(True)
-            (bus.test if result.ok else bus.error)(result.summary())
+            (bus.result if result.ok else bus.error)(_result_line(result))
 
         def on_err(code: str, message: str) -> None:
             self.tcping_btn.setEnabled(True)
-            bus.error(f"TCping 失败：{message}")
+            bus.error(f"TCP 延迟：{message}")
 
         Worker(tcping, host, port).run_with(on_ok, on_err)
 
     def _do_urltest(self) -> None:
         if not session.sailing:
-            bus.error("URL 测试需要先启航（它要走本地代理）")
+            bus.error("URL 耗时：需要先启航")
             return
 
         self.urltest_btn.setEnabled(False)
-        bus.test(f"URL 测试 {DEFAULT_URL} …")
+        pass
 
         def on_ok(result) -> None:
             self.urltest_btn.setEnabled(True)
-            (bus.test if result.ok else bus.error)(result.summary())
+            (bus.result if result.ok else bus.error)(_result_line(result))
 
         def on_err(code: str, message: str) -> None:
             self.urltest_btn.setEnabled(True)
-            bus.error(f"URL 测试失败：{message}")
+            bus.error(f"URL 耗时：{message}")
 
         Worker(url_test, int(self._opts.mixed_port)).run_with(on_ok, on_err)
 

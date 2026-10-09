@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
 from canoe_client import localauth  # noqa: E402
@@ -270,16 +271,16 @@ def main() -> int:
           view.cb_system.isChecked() and not view.cb_tun.isChecked()
           and view.rb_split.isChecked())
 
-    # --- 5.5 工具按钮与日志面板 ---
-    print("\n[5.5] 工具按钮与输出日志")
+    # --- 5.5 工具按钮与结果框 ---
+    print("\n[5.5] 工具按钮与测试结果框")
     check("★ 有「更新」按钮", hasattr(view, "update_btn") and "更新" in view.update_btn.text(),
           getattr(view, "update_btn", None) and view.update_btn.text())
     check("★ 有「TCping」按钮", hasattr(view, "tcping_btn") and "TCping" in view.tcping_btn.text(),
           getattr(view, "tcping_btn", None) and view.tcping_btn.text())
     check("★ 有「URL测试」按钮", hasattr(view, "urltest_btn") and "URL测试" in view.urltest_btn.text(),
           getattr(view, "urltest_btn", None) and view.urltest_btn.text())
-    check("★ 有输出日志面板", hasattr(view, "log_view") and view.log_view is not None)
-    check("日志面板只读", view.log_view.isReadOnly())
+    check("★ 有测试结果框", hasattr(view, "result_view") and view.result_view is not None)
+    check("结果框只读", view.result_view.isReadOnly())
     check("★ 启航/靠岸带图标", "🚀" in view.launch_btn.text() and "🚢" in view.dock_btn.text(),
           f"{view.launch_btn.text()!r} {view.dock_btn.text()!r}")
 
@@ -288,19 +289,40 @@ def main() -> int:
     check("三个按钮样式名各不相同且正确",
           names == ["ToolUpdate", "ToolPing", "ToolUrl"], str(names))
 
-    # 日志：程序自己写的能进面板
+    # --- 结果框的可见性规则（这是安全要求，不只是 UI 偏好）---
     from canoe_client.logbus import bus as log_bus
-    log_bus.system("测试用日志行")
-    pump(app, 0.5)
-    check("★ 日志能显示到面板上",
-          "测试用日志行" in view.log_view.toPlainText(),
-          view.log_view.toPlainText()[-120:])
+    log_bus.result("TCP 延迟：65ms")
+    log_bus.system("这行是系统日志，不该显示")
+    log_bus.kernel("outbound/shadowsocks[proxy]: to one.leycc.com:443")
+    log_bus.error("URL测试  需要先启航")
+    pump(app, 0.6)
+
+    shown = view.result_view.toPlainText()
+    check("★ 结果行会显示", "TCP 延迟：65ms" in shown, shown[-160:])
+    check("★ 失败提示会显示", "先启航" in shown, shown[-160:])
+    check("★ 系统日志不显示", "这行是系统日志" not in shown, shown[-160:])
+    check("★ 内核日志不显示", "outbound" not in shown and "inbound" not in shown, shown[-160:])
+    check("★★ 结果框里不出现节点域名（防止泄漏）",
+          "leycc" not in shown and "one." not in shown, shown[-200:])
+
+    # 结果框很小、无滚动条、字很大
+    check("★ 结果框是小框（高度 <= 150px）", view.result_view.height() <= 150,
+          str(view.result_view.height()))
+    check("★ 结果框不允许出现滚动条",
+          view.result_view.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOff,
+          str(view.result_view.verticalScrollBarPolicy()))
+    check("★ 结果框没有可见的滚动条",
+          not view.result_view.verticalScrollBar().isVisible())
+    check("★ 结果只保留最近几条（不会挤到看不见）",
+          view.result_view.maximumBlockCount() <= 5,
+          str(view.result_view.maximumBlockCount()))
 
     # URL 测试在未启航时应当给出提示而不是崩
     view.urltest_btn.click()
     pump(app, 0.6)
     check("★ 未启航时点 URL 测试有提示且不崩",
-          "需要先启航" in view.log_view.toPlainText(), view.log_view.toPlainText()[-160:])
+          "先启航" in view.result_view.toPlainText(),
+          view.result_view.toPlainText()[-160:])
 
     # --- 6. 启航（真实） ---
     print("\n[6] 启航")

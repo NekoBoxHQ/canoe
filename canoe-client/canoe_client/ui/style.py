@@ -115,20 +115,22 @@ def qss() -> str:
         color: {P.DIM};
     }}
 
-    /* --- 输出日志 --- */
+    /* --- 测试结果框：小、绿色、大字 --- */
     QLabel#LogTitle {{
         color: {P.MUTED};
-        font-size: 12px;
+        font-size: 11px;
         letter-spacing: 1px;
     }}
-    QPlainTextEdit#LogView {{
+    QPlainTextEdit#ResultView {{
         background: {P.INK};
         border: 1px solid {P.LINE};
         border-radius: 8px;
-        padding: 6px 8px;
+        padding: 6px 10px;
         font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI", monospace;
-        font-size: 11px;
-        color: #C9CDD3;
+        /* 放大一倍的绿色大字 —— 结果就那几行，小字浪费空间 */
+        font-size: 28px;
+        font-weight: 700;
+        color: #3FD07A;
         selection-background-color: {P.DEEP_BLUE};
     }}
     QScrollBar:vertical {{

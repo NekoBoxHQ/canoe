@@ -66,7 +66,7 @@ outbound/direct[direct]:      outbound connection to www.baidu.com:443   ← 国
 | 「绕过局域网 + 绕过大陆」是一个模式，与「全局」并列 | ✅ 合并成 `profile`，第一排就是「分流 / 全局」 |
 | 不要「接管」「分流」两个标签 | ✅ 已去掉 |
 | 三个工具按钮（更新 / TCping / URL测试） | ✅ 见 `canoe-client/README.md` 的「工具按钮」 |
-| 输出日志面板 | ✅ 内核输出实时进面板，按来源分色 |
+| 测试结果框 | ✅ 只显示 更新版本号 / TCping 毫秒 / URL 毫秒（不显示内核日志，避免泄漏节点域名） |
 | TUN 要 IPv4 + IPv6 | ✅ 恒为双栈（`172.19.0.1/30` + `fdfe:dcba:9876::1/126`），不暴露开关 |
 
 ---|---|

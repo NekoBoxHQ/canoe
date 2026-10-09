@@ -88,6 +88,24 @@ def main() -> int:
         t.join()
     check("多线程并发写 1000 行不丢", len(bus2.since(0)) == 1000, str(len(bus2.since(0))))
 
+    # --- 1.5 可见性过滤：内核日志绝不能进界面 ---
+    print("\n[1.5] 界面可见性过滤（安全要求）")
+    b = LogBus()
+    b.result("TCP 延迟：65ms")
+    b.kernel("outbound/shadowsocks[proxy]: to one.leycc.com:443")
+    b.system("系统事件")
+    b.error("失败了")
+    b.test("过程")
+    vis = b.visible_since(0)
+    tags = [x.tag for x in vis]
+    check("★ 只有「结果」和「错误」会显示", tags == ["结果", "错误"], str(tags))
+    check("★ 内核日志被挡住", all(x.tag != "内核" for x in vis))
+    check("内核日志仍在总线里（只是不显示）",
+          any(x.tag == "内核" for x in b.since(0)))
+    check("visible_since 与 since 增量语义一致",
+          [x.message for x in b.visible_since(1)] == ["失败了"],
+          str([x.message for x in b.visible_since(1)]))
+
     # --- 2. 版本比较 ---
     print("\n[2] 版本比较")
     cases = [
