@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
@@ -10,16 +9,13 @@ from PySide6.QtWidgets import QApplication
 from canoe_core import BRAND_CN, SLOGAN_CN
 
 from . import sysproxy
-from .config import BIN_DIR, CONFIG_DIR, CONFIG_FILE, config
+from .config import ASSETS_DIR, BIN_DIR, CONFIG_DIR, CONFIG_FILE, config
 from .kernel import kernel
 from .options import RunOptions
 from .session import session
 from .ui.auth_view import AuthView
 from .ui.main_view import MainView
 from .ui.style import qss
-
-# 打包后 assets 在 _internal/assets 下
-ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 
 
 class CanoeApp:

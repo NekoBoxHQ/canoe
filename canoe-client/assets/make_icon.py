@@ -1,139 +1,140 @@
-"""生成轻舟图标：极简线条，一叶小舟 + 水波。
-
-配色：深蓝 / 墨青 / 白。冷淡风。
+"""从设计稿生成轻舟的 Logo 资源。
 
 用法：
-    python make_icon.py
+    python assets/make_icon.py
 
-产出 assets/canoe.png（512）和 assets/canoe.ico（多尺寸）。
-用 Pillow 直接绘制而不是用外部素材，好处是尺寸、粗细、配色都可复现可调。
+输入输出：
+
+    assets/logo-source.png   设计稿原图（圆形徽章，四周是深色底）
+            │
+            │  ① 量出徽章那个圆，把圆外的底色抠成透明
+            ▼
+    assets/canoe-logo.png    512×512，圆外透明  ← 界面里用的就是这个
+    assets/canoe.png         同上（兼容旧名字）
+    assets/canoe.ico         多尺寸，Windows 图标（任务栏 / 资源管理器 / Alt-Tab）
+
+设计稿换了只需要替换 logo-source.png 再跑一次，其余全自动。
+
+为什么要有这一步：设计稿是一张**不透明**的方图，深色底会在浅色背景上
+露出一块方形 —— 直接当图标用很难看。徽章本身是圆的，所以按圆抠。
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = Path(__file__).resolve().parent
+SOURCE = HERE / "logo-source.png"
+LOGO = HERE / "canoe-logo.png"
+PNG = HERE / "canoe.png"
+ICO = HERE / "canoe.ico"
 
-# 取自 canoe_core.Palette，这里不 import 是为了让本脚本能独立运行
-INK = (13, 22, 34)          # 墨底
-DEEP_BLUE = (29, 78, 137)   # 深蓝
-INK_CYAN = (42, 127, 143)   # 墨青
-WHITE = (242, 246, 250)     # 白
+SS = 4              # 超采样倍数，圆形边缘才平滑
+SIZE = 512          # 输出边长
+ICO_SIZES = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
 
-SS = 4          # 超采样倍数，为了边缘平滑
-SIZE = 512
-S = SIZE * SS
-
-
-def _round_rect_mask(size: int, radius_ratio: float = 0.22) -> Image.Image:
-    """圆角方形蒙版 —— Windows 图标常见形态。"""
-    mask = Image.new("L", (size, size), 0)
-    d = ImageDraw.Draw(mask)
-    d.rounded_rectangle([0, 0, size - 1, size - 1], radius=int(size * radius_ratio), fill=255)
-    return mask
+#: 底色大概是 (3,19,42)，亮环是 (2,132,227) 这种。取中间偏亮做阈值。
+BRIGHT_SUM = 300
 
 
-def _wave(d: ImageDraw.ImageDraw, x0: float, x1: float, y: float, amp: float,
-          width: int, color: tuple, cycles: float = 1.5, steps: int = 140) -> None:
-    """画一条正弦水波。极简线条里的"水"必须是弯的，直线不像水。"""
-    import math
+def find_badge_circle(im: Image.Image) -> tuple[float, float, float]:
+    """量出徽章那个圆的圆心和半径。
 
-    pts = []
-    for i in range(steps + 1):
-        t = i / steps
-        px = S * (x0 + (x1 - x0) * t)
-        py = S * y - S * amp * math.sin(t * cycles * 2 * math.pi)
-        pts.append((px, py))
-    d.line(pts, fill=color, width=width, joint="curve")
+    从画面**外缘往内**扫，第一个明显比底色亮的像素就是外圈亮环。
+    （反过来从中心往外扫会一头撞在白色的帆上。）
+    """
+    px = im.load()
+    w, h = im.size
+    cx0, cy0 = w // 2, h // 2
 
+    def bright(p) -> bool:
+        return (p[0] + p[1] + p[2]) > BRIGHT_SUM
 
-def draw_icon() -> Image.Image:
-    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
+    left = next((x for x in range(0, w) if bright(px[x, cy0])), 0)
+    right = next((x for x in range(w - 1, -1, -1) if bright(px[x, cy0])), w - 1)
+    top = next((y for y in range(0, h) if bright(px[cx0, y])), 0)
+    bottom = next((y for y in range(h - 1, -1, -1) if bright(px[cx0, y])), h - 1)
 
-    # --- 底：整块墨色圆角方块，不做渐变，保持冷淡干净 ---
-    d.rounded_rectangle([0, 0, S - 1, S - 1], radius=int(S * 0.22), fill=INK)
+    if right <= left or bottom <= top:
+        raise SystemExit(
+            "没量出圆形徽章。确认 logo-source.png 是那张圆形设计稿，"
+            "或者把 BRIGHT_SUM 调一调。"
+        )
 
-    line_w = int(S * 0.026)   # 船舷
-    thin_w = int(S * 0.018)   # 桅杆 / 水波
-
-    hull_top = 0.545
-
-    # --- 船身：平直船舷 + 弧形船底（半圆），合起来是一个干净的船形 ---
-    d.line(
-        [int(S * 0.175), int(S * hull_top), int(S * 0.825), int(S * hull_top)],
-        fill=WHITE, width=line_w,
-    )
-    # PIL 的 arc 从 3 点钟顺时针：0 -> 180 正好是下半圆
-    d.arc(
-        [int(S * 0.175), int(S * (hull_top - 0.135)), int(S * 0.825), int(S * (hull_top + 0.135))],
-        start=0, end=180, fill=WHITE, width=line_w,
+    print(f"    扫描: 左{left} 右{right} 上{top} 下{bottom}")
+    return (
+        (left + right) / 2,
+        (top + bottom) / 2,
+        max(right - left, bottom - top) / 2,
     )
 
-    # --- 桅杆 ---
-    mast_x = int(S * 0.455)
-    d.line([mast_x, int(S * hull_top), mast_x, int(S * 0.215)], fill=WHITE, width=thin_w)
 
-    # --- 帆：左直边贴着桅杆，底边收在船舷上，外缘向外鼓起 ---
-    sail_left = mast_x + int(S * 0.022)
-    sail_right = mast_x + int(S * 0.185)
-    sail_top = int(S * 0.290)
-    sail_bottom = int(S * (hull_top - 0.030))
+def cut_out_circle(im: Image.Image) -> Image.Image:
+    """把圆外的底色抠掉，裁成正方形。"""
+    cx, cy, radius = find_badge_circle(im)
+    print(f"    圆心 ({cx:.0f}, {cy:.0f})  半径 {radius:.0f}")
 
-    # 外缘用一条外凸的曲线，比直边更像被风吹满的帆
-    import math as _math
+    # 亮环外面还有一圈光晕，往外放一点再羽化，免得切出生硬的边
+    outer = radius * 1.045
+    half = outer * 1.12          # 四周留一点白，做成图标不贴边
 
-    a = (sail_left, sail_top)          # 顶点
-    c = (sail_right, sail_bottom)      # 右下的外角
-    dx, dy = c[0] - a[0], c[1] - a[1]
-    length = _math.hypot(dx, dy) or 1.0
-    # 指向右上方的法线
-    nx, ny = dy / length, -dx / length
-    bulge = S * 0.055
+    crop = im.crop(
+        (int(cx - half), int(cy - half), int(cx + half), int(cy + half))
+    ).convert("RGBA")
+    side = crop.width
 
-    leech = []
-    for i in range(41):
-        t = i / 40
-        px = a[0] + dx * t + nx * bulge * _math.sin(_math.pi * t)
-        py = a[1] + dy * t + ny * bulge * _math.sin(_math.pi * t)
-        leech.append((px, py))
-
-    d.polygon([a, (sail_left, sail_bottom), (sail_right, sail_bottom), *reversed(leech)],
-              fill=INK_CYAN)
-
-    # --- 水波：三条，长短与相位错开 ---
-    _wave(d, 0.185, 0.470, 0.735, 0.018, thin_w, WHITE + (255,))
-    _wave(d, 0.520, 0.815, 0.780, 0.018, thin_w, WHITE + (255,))
-    _wave(d, 0.235, 0.640, 0.838, 0.020, int(S * 0.014), INK_CYAN + (255,))
-
-    # --- 收尾：降采样 + 圆角蒙版 ---
-    img = img.resize((SIZE, SIZE), Image.LANCZOS)
-    img.putalpha(_round_rect_mask(SIZE))
-    return img
+    mask = Image.new("L", (side * SS, side * SS), 0)
+    ImageDraw.Draw(mask).ellipse(
+        [
+            side * SS / 2 - outer * SS,
+            side * SS / 2 - outer * SS,
+            side * SS / 2 + outer * SS,
+            side * SS / 2 + outer * SS,
+        ],
+        fill=255,
+    )
+    mask = mask.filter(ImageFilter.GaussianBlur(SS * 0.8)).resize(
+        (side, side), Image.LANCZOS
+    )
+    crop.putalpha(mask)
+    return crop
 
 
 def main() -> int:
-    img = draw_icon()
+    if not SOURCE.is_file():
+        raise SystemExit(
+            f"找不到设计稿 {SOURCE}\n"
+            f"把那张圆形 Logo 存成 logo-source.png 放进 assets/ 再跑一次。"
+        )
 
-    png_path = HERE / "canoe.png"
-    img.save(png_path)
-    print(f"[+] {png_path}")
+    print(f"[1/2] 读设计稿 {SOURCE.name}")
+    design = Image.open(SOURCE).convert("RGBA")
+    print(f"    {design.width}×{design.height}")
 
-    # Windows 图标：多尺寸打包，任务栏/资源管理器/Alt-Tab 各取所需
-    ico_path = HERE / "canoe.ico"
-    img.save(
-        ico_path,
-        format="ICO",
-        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
-    )
-    print(f"[+] {ico_path}")
+    badged = cut_out_circle(design)
+    out = badged.resize((SIZE, SIZE), Image.LANCZOS)
 
+    out.save(LOGO)
+    out.save(PNG)
+    print(f"[2/2] 写出 {LOGO.name} / {PNG.name} / {ICO.name}")
+
+    out.save(ICO, format="ICO", sizes=ICO_SIZES)
+
+    for path in (LOGO, PNG, ICO):
+        print(f"    {path.name:16} {path.stat().st_size:>8} 字节")
+
+    # 缩到最小几档自查一下，别做出一个一像素的糊团
+    for s in (16, 24, 32, 48):
+        alpha = out.resize((s, s), Image.LANCZOS).getchannel("A").getextrema()
+        if alpha == (0, 0):
+            print(f"    [!] {s}px 整张透明，抠圆参数可能不对")
+            return 1
+    print("    各尺寸透明度正常")
     return 0
 
 

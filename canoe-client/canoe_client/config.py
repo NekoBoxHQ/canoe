@@ -42,6 +42,9 @@ CONFIG_FILE = CONFIG_DIR / "client.json"
 # 打包后 bin/ 在 exe 同级（_internal/bin）；源码运行时是 canoe-client/bin/
 BIN_DIR = Path(__file__).resolve().parent.parent / "bin"
 
+# 同理：打包后在 _internal/assets，源码运行时是 canoe-client/assets
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+
 
 class ClientConfig:
     def __init__(self) -> None:

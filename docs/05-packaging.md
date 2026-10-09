@@ -17,7 +17,7 @@ build.bat
 |---|---|
 | Python | 3.10+（开发用 3.13 + sing-box 1.14.2 验证过） |
 | 依赖 | `build.bat` 会自动装 `pyinstaller` 和 `requirements.txt` |
-| 图标 | `assets/canoe.ico`（已有；`python assets/make_icon.py` 可重新生成） |
+| 图标 | `assets/canoe.ico`（已有；改了设计稿就跑 `python assets/make_icon.py` 重新生成，需要 Pillow） |
 | 内核 | `bin/sing-box.exe` —— **没有也能打包**，但用户跑不起来 |
 | 规则集 | `bin/ruleset/geosite-cn.srs`、`geoip-cn.srs` —— **漏了"绕过大陆"会失效** |
 | 驱动 | `bin/wintun.dll` —— 只有全局(TUN)模式需要 |
@@ -154,6 +154,7 @@ dist/Canoe/
 ├── Canoe.exe              ← 主程序（已嵌入 assets/canoe.ico 作为 exe 图标）
 ├── assets/
 │   ├── canoe.ico
+│   ├── canoe-logo.png     ← 界面里用的徽章（圆外透明）
 │   └── canoe.png
 ├── bin/
 │   ├── sing-box.exe       ← 内核（build.bat 拷贝过来的）

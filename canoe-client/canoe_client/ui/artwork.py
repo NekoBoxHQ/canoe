@@ -26,6 +26,8 @@ from PySide6.QtGui import (
 
 from canoe_core import Palette as P
 
+from ..config import ASSETS_DIR
+
 # --------------------------------------------------------------------------
 # 背景：夜色山水
 # --------------------------------------------------------------------------
@@ -241,17 +243,55 @@ def _boat_pixmap(size: int) -> QPixmap:
 
 
 _LOGO_CACHE: dict[int, QPixmap] = {}
+#: 设计稿文件优先。读不到就退回下面那套矢量画的帆船 —— 界面不能开天窗。
+_LOGO_FILE = "canoe-logo.png"
+_logo_source: QPixmap | None = None
+_logo_missing = False
+
+#: 小于这个尺寸就用矢量版：圆环徽章缩到十几像素会糊成一团，
+#: 简单的线条反而认得出来。
+_VECTOR_BELOW = 26
+
+
+def _load_logo_source() -> QPixmap | None:
+    global _logo_source, _logo_missing
+    if _logo_source is not None or _logo_missing:
+        return _logo_source
+    path = ASSETS_DIR / _LOGO_FILE
+    if path.is_file():
+        pm = QPixmap(str(path))
+        if not pm.isNull():
+            _logo_source = pm
+            return _logo_source
+    _logo_missing = True
+    return None
 
 
 def sailboat_logo(size: int = 84) -> QPixmap:
-    """轻舟的帆船徽标（带缓存，界面重建时不必重画）。"""
-    if size not in _LOGO_CACHE:
-        _LOGO_CACHE[size] = _boat_pixmap(size)
-    return _LOGO_CACHE[size]
+    """轻舟徽标。带缓存，界面重建时不必重画。
+
+    优先用**设计稿**（`assets/canoe-logo.png`，圆环 + 点阵地图 + 帆船 + 水波）；
+    文件不在、或者尺寸太小（< 26px）时，退回矢量画的那叶小舟。
+    """
+    if size in _LOGO_CACHE:
+        return _LOGO_CACHE[size]
+
+    pm: QPixmap | None = None
+    if size >= _VECTOR_BELOW:
+        source = _load_logo_source()
+        if source is not None:
+            pm = source.scaled(
+                size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+    if pm is None:
+        pm = _boat_pixmap(size)
+
+    _LOGO_CACHE[size] = pm
+    return pm
 
 
 def app_mark(size: int = 20) -> QPixmap:
-    """标题栏上的小徽标。"""
+    """标题栏上的小徽标（小尺寸会走矢量版，见 sailboat_logo）。"""
     return sailboat_logo(size)
 
 

@@ -35,11 +35,20 @@ if bin_root.is_dir():
             dest = f"bin/{path.parent.relative_to(bin_root).as_posix()}"
         bin_files.append((str(path), dest))
 
-datas = [
-    (str(BASE / "assets" / "canoe.ico"), "assets"),
-    (str(BASE / "assets" / "canoe.png"), "assets"),
-    *bin_files,
-]
+# 图标和 Logo 一并带上（不写死文件名 —— 以后加素材不用改这里）。
+asset_files: list[tuple[str, str]] = []
+assets_root = BASE / "assets"
+#: 只用于「重新生成 Logo」的源文件，不进发布包（省 1.5MB 死重量）
+ASSET_SKIP = {"logo-source.png"}
+if assets_root.is_dir():
+    for path in sorted(assets_root.iterdir()):
+        if not path.is_file() or path.suffix.lower() not in {".png", ".ico"}:
+            continue
+        if path.name in ASSET_SKIP:
+            continue
+        asset_files.append((str(path), "assets"))
+
+datas = [*asset_files, *bin_files]
 
 a = Analysis(
     ["run.py"],
