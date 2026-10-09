@@ -523,6 +523,19 @@ cmd_upgrade() {
         dim "手动把新代码放进去，然后再跑一次「升级」"
     fi
 
+    # 1.5) 把管理脚本自己刷新一遍
+    #
+    # 这一步必须有。`/usr/local/bin/canoe` 是安装那一次拷贝过去的快照，
+    # 升级只拉代码不会动它 —— 结果就是：仓库里已经有 `canoe release`
+    # 这个子命令了，敲下去却还提示"没有这一项"（真踩过：眼睁睁看着
+    # release 用不了，只能 bash .../deploy/canoe.sh release）。
+    # 用 -ef 比一下 inode，是同一个文件就说明本来就是从检出目录直接跑的，
+    # 不用自己拷自己。
+    if [[ -f "$SERVER_DIR/deploy/canoe.sh" && ! "$SERVER_DIR/deploy/canoe.sh" -ef "$SELF_DEST" ]]; then
+        install -m 755 "$SERVER_DIR/deploy/canoe.sh" "$SELF_DEST"
+        log "管理脚本已刷新：$SELF_DEST"
+    fi
+
     # 2) 重装依赖（canoe-core 可能有新依赖，比如 cryptography）
     log "更新依赖…"
     as_user "

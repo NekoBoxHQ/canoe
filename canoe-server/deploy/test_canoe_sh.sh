@@ -495,6 +495,15 @@ check "不给参数时打印用法" "$(grep -q 'canoe release' <<< "$OUT" && ech
 check "用法里说了怎么把包弄上机器" \
       "$(grep -q 'scp ' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
 
+# 升级时要把 /usr/local/bin/canoe 刷新一遍 —— 不刷的话，仓库里新加的
+# 子命令（比如 release）敲下去会提示"没有这一项"，用户只能去
+# bash .../deploy/canoe.sh 里绕。踩过：眼睁睁看着 release 用不了。
+UP="$(sed -n '/^cmd_upgrade()/,/^}/p' "$TARGET")"
+check "★ 升级会刷新装到 PATH 上的那个管理脚本" \
+      "$(grep -q 'install -m 755 .*SELF_DEST' <<< "$UP" && echo 0 || echo 1)"
+check "★ 刷新前先比 inode，避免自己拷自己（来源和目标是同一个文件时）" \
+      "$(grep -q -- '-ef' <<< "$UP" && echo 0 || echo 1)"
+
 printf '\n%s\n' "$(printf '=%.0s' {1..48})"
 printf '通过 %d 项，失败 %d 项\n' "$passed" "$failed"
 printf '%s\n\n' "$(printf '=%.0s' {1..48})"
