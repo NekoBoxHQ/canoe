@@ -767,6 +767,18 @@ def main() -> int:
           "轻舟窗口" in start_src or "重启" in start_src,
           "没找到给用户看的说明")
 
+    # --selftest 要把 TUN 现场一起报出来。TUN 出问题的时候，隔着屏幕靠
+    # 一轮轮问"你那儿网卡列表长什么样"太慢，用户也描述不准。
+    from canoe_client.tun import diagnostics
+
+    diag = diagnostics()
+    check("★ 自检能报出 TUN 现场（省掉一轮轮来回问）",
+          {"admin", "wintun_dll", "adapter_exists", "phantom_wintun",
+           "singbox_procs"} <= set(diag),
+          str(sorted(diag)))
+    check("自检里带上网卡名，方便对上",
+          diag.get("interface_name") == k_mod.TUN_INTERFACE_NAME, str(diag.get("interface_name")))
+
     pm = QPixmap(32, 32)
     pm.fill(QColor("#2E8BFF"))
     base = QIcon(pm)

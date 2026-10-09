@@ -162,6 +162,17 @@ def run_selftest() -> int:
         except (OSError, subprocess.SubprocessError) as exc:
             report["singbox_version"] = f"<失败: {exc}>"
 
+    # ---- TUN：把系统里的现场一起报出来 ----
+    # TUN 出问题（起不来 / 起了没网）的时候，隔着屏幕靠一轮轮问"你那儿
+    # 网卡列表长什么样"太慢，用户也描述不准。这里一次捞全：网卡在不在、
+    # 有没有 IP、有没有幽灵设备、有几个内核在跑。
+    try:
+        from .tun import diagnostics
+
+        report["tun"] = diagnostics()
+    except Exception as exc:  # noqa: BLE001 - 自检不能因为这一段崩
+        report["tun"] = {"error": f"{exc.__class__.__name__}: {exc}"}
+
     ruleset_dir = BIN_DIR / "ruleset"
     report["ruleset"] = (
         {p.name: p.stat().st_size for p in ruleset_dir.glob("*.srs")}

@@ -47,3 +47,58 @@ def check_tun_ready(bin_dir: Path | None = None) -> tuple[bool, str]:
     if not wintun_present(bin_dir):
         return False, "缺少 wintun.dll，请把它和 sing-box.exe 放在同一目录"
     return True, ""
+
+
+#: TUN 的现场快照。一条命令把"现在系统里是什么状况"全捞出来。
+#:
+#: 为什么要这个：TUN 出问题的时候（网卡起不来、起了没网），隔着屏幕靠
+#: 一轮轮问"你那儿网卡列表长什么样"太慢，而且用户描述不准。
+#: 打进 --selftest 的报告里，用户跑一条命令把结果发过来就够了。
+_DIAG_PS = r"""
+$ad  = Get-NetAdapter -Name 'canoe' -ErrorAction SilentlyContinue
+$ip  = if ($ad) { (Get-NetIPAddress -InterfaceAlias 'canoe' -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty IPAddress) } else { '' }
+$def = (Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+        Sort-Object RouteMetric | Select-Object -First 1 -ExpandProperty InterfaceAlias)
+$win = @(Get-PnpDevice -Class Net -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'SWD\WINTUN*' })
+[PSCustomObject]@{
+  adapter_exists = [bool]$ad
+  adapter_status = if ($ad) { [string]$ad.Status } else { '' }
+  adapter_ip     = $ip
+  default_route  = $def
+  wintun_devices = $win.Count
+  phantom_wintun = @($win | Where-Object { $_.Status -ne 'OK' }).Count
+  singbox_procs  = @(Get-CimInstance Win32_Process -Filter "Name='sing-box.exe'" -ErrorAction SilentlyContinue).Count
+} | ConvertTo-Json -Compress
+"""
+
+
+def diagnostics() -> dict:
+    """TUN 现场：网卡在不在、有没有 IP、有没有幽灵设备、有几个内核在跑。"""
+    import json
+    import subprocess
+
+    base: dict = {
+        "admin": is_admin(),
+        "wintun_dll": wintun_present(),
+        "interface_name": "canoe",
+    }
+    if os.name != "nt":
+        base["note"] = "非 Windows"
+        return base
+
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", _DIAG_PS],
+            capture_output=True, text=True, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        base["error"] = f"{exc.__class__.__name__}: {exc}"
+        return base
+
+    text = (proc.stdout or "").strip()
+    try:
+        base.update(json.loads(text))
+    except ValueError:
+        base["error"] = f"看不懂 PowerShell 的输出：{text[:200]}"
+    return base
