@@ -20,9 +20,18 @@ class Settings(BaseSettings):
     brand: str = BRAND_CN
     namespace: str = NAMESPACE_SERVER
 
+    # --- 监听 ---
+    # 默认 58588：客户端固定拿这个端口取更新和订阅（见 deploy/README.md）。
+    # 想换端口改 .env 的 PORT 即可，客户端那边改 client.json 的 update_url。
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 58588
     debug: bool = False
+
+    # --- TLS（直连模式）---
+    # 两个都填了，uvicorn 就直接用它们做 HTTPS，不需要 Nginx。
+    # 用 Nginx 终止 TLS 时留空即可（Nginx 反代到本机 127.0.0.1:PORT）。
+    tls_cert: str = ""
+    tls_key: str = ""
 
     database_url: str = f"sqlite:///{(DATA_DIR / 'canoe.db').as_posix()}"
 
@@ -34,6 +43,11 @@ class Settings(BaseSettings):
 
     ticket_secret: str = "CHANGE_ME_ticket_secret_before_production"
     entry_ticket_ttl: int = 300  # 入口凭证有效期（秒）
+
+    # --- Web 管理面板 ---
+    # 面板是纯静态的（HTML+CSS+JS，无构建步骤），挂在这个目录上。
+    panel_dir: str = str(BASE_DIR / "panel")
+    panel_path: str = "/panel"       # 面板的挂载路径
 
     # --- 客户端更新（安装包自托管）---
     # 对外可访问的站点根，用来拼安装包下载地址。

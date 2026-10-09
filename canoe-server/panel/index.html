@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>轻舟 · 管理面板</title>
+<!--
+  轻舟 / Canoe 管理面板
+
+  纯静态，无构建步骤，**不引任何外部 CDN** —— 一个代理服务的管理后台
+  不该在打开时去 ping 第三方，也免得离线/内网环境用不了。
+  所有资源都在这个目录里。
+
+  登录复用 /api/login，拿到的是同一个管理员令牌；
+  权限由服务端 /api/admin/* 二次校验，前端藏不藏都没用。
+-->
+<link rel="icon" href="logo.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ================= 登录 ================= -->
+<div id="login-screen" class="screen">
+  <form id="login-form" class="login-card" autocomplete="on">
+    <img class="login-logo" src="logo.png" alt="">
+    <h1>轻舟 <span>Canoe</span></h1>
+    <p class="login-sub">轻舟已过万重山 · 管理面板</p>
+
+    <label class="field">
+      <span>管理员账号</span>
+      <input id="login-user" name="username" type="text" autocomplete="username"
+             placeholder="admin" required>
+    </label>
+    <label class="field">
+      <span>密码</span>
+      <input id="login-pass" name="password" type="password"
+             autocomplete="current-password" placeholder="••••••••" required>
+    </label>
+
+    <div id="login-error" class="login-error" hidden></div>
+
+    <button class="btn btn-primary" type="submit" id="login-btn">登 录</button>
+    <p class="login-hint">只有 <code>role=admin</code> 的账号能进</p>
+  </form>
+</div>
+
+<!-- ================= 主界面 ================= -->
+<div id="app-screen" class="screen" hidden>
+  <aside class="sidebar">
+    <div class="brand">
+      <img src="logo.png" alt="">
+      <div>
+        <strong>轻舟</strong>
+        <small>Canoe Server</small>
+      </div>
+    </div>
+    <nav id="nav"></nav>
+    <div class="sidebar-foot">
+      <div id="whoami" class="whoami"></div>
+      <button class="btn btn-ghost btn-block" id="logout-btn">退出</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <h2 id="page-title">概览</h2>
+      <div class="topbar-right">
+        <span id="health-dot" class="dot" title="服务端状态"></span>
+        <button class="btn btn-ghost" id="refresh-btn">刷新</button>
+      </div>
+    </header>
+    <section id="page" class="page"></section>
+  </main>
+</div>
+
+<!-- 弹窗 / 提示 -->
+<div id="modal-root" class="modal-root" hidden>
+  <div class="modal-mask"></div>
+  <div class="modal" role="dialog" aria-modal="true">
+    <header class="modal-head">
+      <h3 id="modal-title"></h3>
+      <button class="btn-icon" id="modal-close" aria-label="关闭">✕</button>
+    </header>
+    <div id="modal-body" class="modal-body"></div>
+    <footer class="modal-foot">
+      <button class="btn btn-ghost" id="modal-cancel">取消</button>
+      <button class="btn btn-primary" id="modal-ok">确定</button>
+    </footer>
+  </div>
+</div>
+<div id="toasts" class="toasts"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

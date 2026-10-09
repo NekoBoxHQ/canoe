@@ -3,10 +3,12 @@
 # 安装：
 #   sudo cp deploy/canoe-api.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now canoe-api
+#
+# 端口、TLS 证书这些全在 .env 里，由 serve.py 读 —— 换端口/换证书只改 .env，
+# 不用碰这个文件、也不用 daemon-reload。
 
 [Unit]
 Description=Canoe Server (轻舟 服务端)
-Documentation=https://github.com/your-org/canoe
 After=network-online.target
 Wants=network-online.target
 
@@ -16,22 +18,17 @@ User=canoe
 Group=canoe
 WorkingDirectory=/opt/canoe/canoe-server
 
-# .env 里的配置由应用自己读（pydantic-settings）。
-# 这里额外把 PATH 指到 venv，方便运维手动 exec 进去排查。
+# .env 由应用自己读（pydantic-settings / serve.py）。
+# PATH 指到 venv，方便运维手动 exec 进去排查。
 EnvironmentFile=-/opt/canoe/canoe-server/.env
 Environment="PATH=/opt/canoe/canoe-server/.venv/bin:/usr/local/bin:/usr/bin:/bin"
 
-# ⚠ --workers 必须保持 1
-#    推送中心（/api/events）是进程内的内存结构。多 worker 时管理端的广播
-#    只会在它自己那个进程里扩散，挂在别的 worker 上的客户端永远收不到 ——
-#    表现是"推送时灵时不灵"。要多 worker 得先把 EventHub 换成 Redis 发布订阅。
-#    见 canoe_server/services/broadcast.py 顶部说明。
-ExecStart=/opt/canoe/canoe-server/.venv/bin/uvicorn canoe_server.app:app \
-    --host 127.0.0.1 \
-    --port 8000 \
-    --workers 1 \
-    --proxy-headers \
-    --forwarded-allow-ips=127.0.0.1
+# ⚠ serve.py 里写死了 --workers 1。
+#   推送中心（/api/events）是进程内的内存结构，多 worker 时管理端的广播
+#   只在它自己那个进程里扩散，挂在别的 worker 上的客户端永远收不到 ——
+#   表现是"推送时灵时不灵"。要多 worker 得先把 EventHub 换成 Redis 发布订阅。
+#   见 canoe_server/services/broadcast.py 顶部说明。
+ExecStart=/opt/canoe/canoe-server/.venv/bin/python /opt/canoe/canoe-server/serve.py
 
 Restart=always
 RestartSec=3
@@ -46,8 +43,9 @@ ProtectHome=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
-# 只放开数据目录和安装包目录
+# 只放开数据目录、安装包目录、证书目录
 ReadWritePaths=/opt/canoe/canoe-server/data /opt/canoe/canoe-server/releases
+ReadOnlyPaths=/etc/canoe
 
 [Install]
 WantedBy=multi-user.target

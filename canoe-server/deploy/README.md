@@ -31,8 +31,8 @@ uvicorn canoe_server.app:app --workers 1     # ← 必须
 | 系统 | Debian 12 / Ubuntu 22.04+ |
 | 配置 | 1 核 1G 起（API 本身很轻） |
 | Python | 3.11+（3.13 实测可用） |
-| 端口 | 80/443 对外，8000 只监听 127.0.0.1 |
-| 域名 | 例如 `api.canoe.example.com`，A 记录指向本机 |
+| 端口 | **默认对外 58588**（客户端固定拿它取更新和订阅），另有 80 留给 Let's Encrypt 签发与续期 |
+| 域名 | 例如 `canoe.s-ui.com`，A 记录指向本机 |
 
 > 服务端**不需要**大带宽 —— 流量走的是中转层那台机器，这里只传几百字节的配置。
 
@@ -41,19 +41,46 @@ uvicorn canoe_server.app:app --workers 1     # ← 必须
 ## 2. 一键装（推荐）
 
 ```bash
-sudo bash deploy/install.sh api.canoe.example.com
+sudo bash deploy/install.sh canoe.s-ui.com --port 58588 --https le
 ```
 
-脚本会：建 `canoe` 用户 → 放置代码到 `/opt/canoe` → 建 venv 装依赖 →
-生成 `.env`（含随机 `TICKET_SECRET`）→ 建库 + 种子 → 装 systemd 服务 →
-申请证书并配 Nginx。
+不带参数直接回车，会一项一项问你（域名 / 端口 / HTTPS 方式）。
+
+| 选项 | 说明 |
+|---|---|
+| `--port N` | 对外端口，默认 **58588** |
+| `--https le` | Let's Encrypt 证书（需要域名已解析到本机、80 端口空闲）。**推荐** |
+| `--https self` | 自签证书。浏览器会警告；先用着，之后换正式证书 |
+| `--https none` | 不加密（只建议放在别的反代后面） |
+
+脚本会：建 `canoe` 用户 → 放代码到 `/opt/canoe` → 建 venv 装依赖 →
+申请/生成证书 → 生成 `.env`（含随机 `TICKET_SECRET` 和管理员密码）→
+建库 + 种子 → 装 systemd → 自检。
+
+**默认是直连模式**：uvicorn 自己监听在指定端口上做 TLS，**不需要 Nginx**。
+（想用 Nginx 前置的话，装完把 `.env` 里的 `TLS_CERT`/`TLS_KEY` 清空，
+再按第 4 节配。）
 
 跑完检查：
 
 ```bash
 systemctl status canoe-api
-curl -s https://api.canoe.example.com/api/health
+curl -s https://canoe.s-ui.com:58588/api/health
 ```
+
+打开面板：`https://canoe.s-ui.com:58588/panel`（管理员密码在 `/opt/canoe/ADMIN_PASSWORD.txt`）。
+
+### 改端口 / 换证书
+
+**只改 `.env` 就行**，不用碰 systemd 也不用 daemon-reload：
+
+```bash
+sudo -e /opt/canoe/canoe-server/.env     # 改 PORT / TLS_CERT / TLS_KEY
+sudo systemctl restart canoe-api
+```
+
+`serve.py` 读 `.env` 决定监听什么。改完记得同步客户端那边的
+`update_url`（`%APPDATA%\Canoe\client.json`）。
 
 ---
 
@@ -90,13 +117,23 @@ sudo systemctl enable --now canoe-api
 
 ---
 
-## 4. Nginx
+## 4. Nginx（可选）
+
+默认的直连模式不需要它。只有下面这些情况才值得加一层 Nginx：
+
+- 想用 443 标准端口（客户端那边就得写 `https://域名/api/...`，不带端口）
+- 同一台机器上还要放别的服务
+- 想上 Cloudflare 之类的 CDN 回源
+
+装上之后，把 `.env` 里的 `TLS_CERT`/`TLS_KEY` **清空**（让 uvicorn 跑 HTTP），
+Nginx 负责终止 TLS：
 
 ```bash
 sudo cp deploy/nginx.canoe.conf /etc/nginx/sites-available/canoe
 sudo ln -sf /etc/nginx/sites-available/canoe /etc/nginx/sites-enabled/canoe
-sudo certbot --nginx -d api.canoe.example.com
+sudo certbot --nginx -d canoe.s-ui.com
 sudo nginx -t && sudo systemctl reload nginx
+sudo systemctl restart canoe-api
 ```
 
 `nginx.canoe.conf` 里有三处**不能省**：
@@ -105,7 +142,7 @@ sudo nginx -t && sudo systemctl reload nginx
 |---|---|
 | `/api/events` 的 `proxy_buffering off` | 不开的话 Nginx 会把推送攒在缓冲区，客户端收不到实时事件 |
 | `/api/events` 的 `proxy_read_timeout 3600s` | 默认 60s 会把长连接掐断 |
-| `/downloads/` 的 `client_max_body_size` | 不放宽的话上传大安装包会 413 |
+| `/api/` 与 `/downloads/` 的 `client_max_body_size` | 不放宽的话上传大安装包会 413 |
 
 ---
 

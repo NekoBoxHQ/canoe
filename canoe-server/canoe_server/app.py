@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from canoe_core import BRAND_CN, SLOGAN_CN, VERSION, Api
@@ -54,6 +55,24 @@ app.mount(
     StaticFiles(directory=str(release_dir())),
     name="downloads",
 )
+
+
+# 管理面板：纯静态（HTML+CSS+JS，无构建步骤），和 API 同一个端口。
+# 注意 —— 面板本身只是个前端，**权限由 /api/admin/* 服务端二次校验**，
+# 把 HTML 藏起来不算防护。见 docs/02-api.md 安全约定。
+_panel_dir = Path(settings.panel_dir)
+if _panel_dir.is_dir():
+    app.mount(
+        settings.panel_path,
+        StaticFiles(directory=str(_panel_dir), html=True),
+        name="panel",
+    )
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    """根路径直接进面板。Nginx 前置时这条一般用不上。"""
+    return RedirectResponse(settings.panel_path)
 
 
 # 路由挂在 /api 下；/api/health 由 client 路由提供

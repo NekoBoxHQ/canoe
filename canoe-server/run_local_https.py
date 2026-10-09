@@ -48,18 +48,11 @@ def main() -> int:
     port = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_PORT
     ensure_cert()
 
-    import uvicorn
+    # 直接复用 serve.py —— 端口/TLS 的处理只写一份，免得两边行为漂移
+    from serve import main as serve_main
 
-    print(f"[*] HTTPS 起在 https://localhost:{port}  (Ctrl+C 停)")
-    uvicorn.run(
-        "canoe_server.app:app",
-        host="127.0.0.1",
-        port=port,
-        ssl_certfile=str(CERT),
-        ssl_keyfile=str(KEY),
-        log_level="info",
-    )
-    return 0
+    return serve_main(["--host", "127.0.0.1", "--port", str(port),
+                       "--cert", str(CERT), "--key", str(KEY)])
 
 
 if __name__ == "__main__":

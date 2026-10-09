@@ -479,6 +479,43 @@ def main() -> int:
     check("推送统计进了 /api/admin/stats",
           "push" in client.get(Api.ADMIN_STATS, headers=admin_h).json())
 
+    # ======================================================================
+    # 17. Web 管理面板
+    # ======================================================================
+    print("\n[17] Web 管理面板")
+
+    r = client.get("/", follow_redirects=False)
+    check("根路径跳到面板", r.status_code in (301, 302, 307, 308), str(r.status_code))
+    check("跳转目标是 /panel", "/panel" in (r.headers.get("location") or ""),
+          str(r.headers.get("location")))
+
+    for path, what in (("/panel/", "面板首页"), ("/panel/index.html", "index.html"),
+                       ("/panel/app.js", "app.js"), ("/panel/style.css", "style.css"),
+                       ("/panel/logo.png", "logo.png")):
+        r = client.get(path)
+        check(f"{what} 可访问", r.status_code == 200, f"{path} -> {r.status_code}")
+
+    r = client.get("/panel/")
+    check("面板页面带品牌名", "轻舟" in r.text, r.text[:120])
+    check("面板引用了 app.js 和 style.css",
+          "app.js" in r.text and "style.css" in r.text)
+
+    # ★ 面板不该引用任何外部资源 —— 一个代理服务的后台不该去 ping 第三方
+    external = []
+    for path in ("/panel/", "/panel/app.js", "/panel/style.css"):
+        page = client.get(path).text
+        for token in ("http://", "https://", "//cdn", "//unpkg", "//fonts."):
+            for chunk in page.split(token)[1:]:
+                host = chunk.split("/")[0].split('"')[0].split("'")[0].split(")")[0]
+                if host and not host.startswith("127.0.0.1") and not host.startswith("localhost"):
+                    external.append(f"{path}: {token}{host}")
+    check("★ 面板不引用任何外部资源（无 CDN）", not external, str(external[:5]))
+
+    # 面板本身不需要令牌就能下载（它只是个前端），
+    # 真正的权限在 /api/admin/* —— 这一条确认"藏 HTML"不是我们的防护手段
+    check("★ 面板静态文件不需要登录（防护在 API 层，不是藏页面）",
+          client.get("/panel/app.js").status_code == 200)
+
     # 清理
     if release_id:
         client.delete(f"{Api.ADMIN_RELEASES}/{release_id}", params={"delete_file": "true"},

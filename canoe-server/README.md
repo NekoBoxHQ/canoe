@@ -16,11 +16,17 @@ python3 -m venv .venv
 cp .env.example .env          # 至少改掉 TICKET_SECRET
 .venv/bin/python seed.py      # 建库 + 管理员 + 示例节点 + 测试用户
 
-.venv/bin/python run.py                 # HTTP  :8000
-.venv/bin/python run_local_https.py     # HTTPS :8443（自签证书，自动生成）
+.venv/bin/python serve.py               # 按 .env 里的 PORT / TLS_CERT 起
+.venv/bin/python serve.py --port 8000 --no-tls    # 临时覆盖
 ```
 
-`run_local_https.py` 是为了让客户端能真的连上来 —— 客户端只在 HTTPS 下工作。
+默认端口 **58588**（客户端固定拿它取更新和订阅）。`.env` 里同时填了
+`TLS_CERT` 和 `TLS_KEY` 就直接跑 HTTPS，不需要 Nginx。
+
+管理面板在 <https://127.0.0.1:58588/panel>（自签证书浏览器会警告）。
+
+`run_local_https.py` 仍然可用 —— 它会自动生成一张自签证书，
+方便本地让客户端真的连上来（客户端只在 HTTPS 下工作）。
 
 接口文档：<http://127.0.0.1:8000/docs>（生产记得在 Nginx 上关掉）。
 
@@ -43,8 +49,36 @@ cp .env.example .env          # 至少改掉 TICKET_SECRET
 | **GET** | **`/api/events`** | **推送**：SSE 长连接 | **是** |
 | — | `/api/admin/*` | 管理端（用户 / 节点 / 会话 / 统计 / 中转层 / 发布） | admin |
 | — | `/downloads/*` | 安装包静态下载 | 否 |
+| — | `/panel` | **Web 管理面板**（纯静态前端） | 页面本身不需要，API 需要 |
+| — | `/` | 跳转到 `/panel` | 否 |
 
 完整约定见 [`../docs/02-api.md`](../docs/02-api.md)。
+
+---
+
+## Web 管理面板
+
+`/panel` 是一套**无构建步骤**的原生 HTML + CSS + JS，和 API 共用同一个端口。
+
+- **登录**复用 `/api/login`，拿到的是同一个管理员令牌；`role != admin` 会被拒。
+- 六个页签：概览 / 用户 / 节点 / 会话 / 发布 / 中转层。
+- **不引任何外部 CDN** —— 一个代理服务的后台不该在打开时去 ping 第三方，
+  何况离线/内网环境也得能用。所有资源都在 `panel/` 里。
+- 令牌放 `sessionStorage`（关标签页即失效），不放 cookie，省掉 CSRF 面。
+
+> ⚠ 面板只是前端。**权限完全由服务端 `/api/admin/*` 二次校验**，
+> 面板文件本身是不需要登录就能下载的 —— 把 HTML 藏起来不算防护。
+
+改面板：`panel/` 下直接改，刷新页面即可，**不需要重新打包或重启服务**
+（StaticFiles 每次读盘；生产环境浏览器可能有缓存，Ctrl+F5 一下）。
+
+面板的 DOM 冒烟测试（登录 + 六个页签渲染 + 弹窗构造，24 项）：
+
+```bash
+cd panel
+bun add -d linkedom      # 只为这条测试装个 JS 运行时
+bun run test_panel.mjs
+```
 
 ### 客户端「更新」按钮对接的就是这两条
 
@@ -130,13 +164,17 @@ canoe-server/
 │       ├── relay.py        中转层配置渲染
 │       ├── updates.py      ★客户端更新 + 订阅更新
 │       └── broadcast.py    ★SSE 推送中心
+├── panel/                  ★Web 管理面板（纯静态，无构建步骤）
+│   ├── index.html / app.js / style.css
+│   ├── logo.png
+│   └── test_panel.mjs      面板的 DOM 冒烟测试（需 bun + linkedom）
 ├── deploy/                 ★部署材料（systemd / Nginx / 一键脚本）
 ├── relay/                  中转层部署材料
 ├── releases/               上传的客户端安装包（不进仓库）
-├── data/                   SQLite 与生成的配置（不进仓库）
+├── data/                   SQLite 与证书（不进仓库）
+├── serve.py                ★统一启动器（读 .env 决定端口与 TLS）
 ├── seed.py                 建库 + 种子数据
-├── smoke_test.py           端到端冒烟测试（85 项）
-├── run.py                  HTTP 启动
+├── smoke_test.py           端到端冒烟测试（96 项）
 └── run_local_https.py      HTTPS 启动（自签证书，本地联调用）
 ```
 
