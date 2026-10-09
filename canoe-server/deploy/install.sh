@@ -32,6 +32,12 @@ REPO_URL=""
 REPO_TOKEN="${CANOE_TOKEN:-}"     # 环境变量也行，免得令牌出现在 ps 里
 DO_SEED=1
 
+#: 管理员账号。装的**时候**就问，不再自己随机生成塞进文件里 ——
+#: 之前那样用户装完满世界找密码，是真的难用。
+ADMIN_USER=""
+ADMIN_PASS=""
+ADMIN_GENERATED=0
+
 #: 项目的默认地址。不在检出目录里跑、又没给 --repo 时用它。
 DEFAULT_REPO="${CANOE_REPO:-https://github.com/NekoBoxHQ/canoe.git}"
 
@@ -95,6 +101,9 @@ usage() {
   --cert PATH           已有证书文件（fullchain，.pem/.crt）
   --key PATH            已有私钥文件（.key/.pem）
   --email ADDR          Let's Encrypt 注册邮箱（可选）
+  --admin-user NAME     管理员用户名（默认 admin；不问就回车）
+  --admin-pass PASS     管理员密码。不传会在向导里问你；
+                        都不给才随机生成一个（会打印出来）
   --repo URL            从哪个仓库拉代码（默认见下）
   --token TOKEN         GitHub 私有仓库用的访问令牌（PAT），只读权限即可。
                         只在克隆那一次用到，用完立刻从 remote 里擦掉。
@@ -137,6 +146,8 @@ while [[ $# -gt 0 ]]; do
         --email)                EMAIL="${2:-}"; shift 2 ;;
         --repo)                 REPO_URL="${2:-}"; shift 2 ;;
         --token)                REPO_TOKEN="${2:-}"; shift 2 ;;
+        --admin-user)           ADMIN_USER="${2:-}"; shift 2 ;;
+        --admin-pass)           ADMIN_PASS="${2:-}"; shift 2 ;;
         --no-seed)              DO_SEED=0; shift ;;
         -h|--help)              usage; exit 0 ;;
         -*) die "未知选项：$1（-h 看用法）" ;;
@@ -183,7 +194,7 @@ TXT
 
     if [[ -z "$PANEL_PORT" ]]; then
         cat <<'TXT'
-[2/3] 管理面板端口
+[2/4] 管理面板端口
       想只对自己开放的话，给面板另开一个口 —— 然后在防火墙/安全组里
       只放行你自己的 IP。那样客户端那个口就**不再响应 /panel**。
       两个口是同一个进程在听，推送照常互通。
@@ -191,9 +202,43 @@ TXT
         read -rp "      面板端口（回车 = 和客户端同口）: " PANEL_PORT || true
     fi
 
+    if [[ -z "$ADMIN_PASS" ]]; then
+        cat <<'TXT'
+[3/4] 管理员账号
+      登录管理面板用它。用户名留空就是 admin。
+TXT
+        read -rp "      管理员用户名 [admin]: " ADMIN_USER || true
+        ADMIN_USER="${ADMIN_USER:-admin}"
+
+        # 密码让用户自己设，不替他随机生成 —— 生成一堆乱码塞进文件里，
+        # 用户装完得满世界找，这是实打实的难用。
+        # 连问两遍，且不回显。真不想设（回车两次）才随机生成一个。
+        local pw1 pw2
+        while true; do
+            read -rsp "      管理员密码（至少 8 位，回车 = 随机生成）: " pw1 || true
+            printf '\n'
+            if [[ -z "$pw1" ]]; then
+                break
+            fi
+            if [[ ${#pw1} -lt 8 ]]; then
+                warn "太短了，至少 8 位"
+                continue
+            fi
+            read -rsp "      再输一遍: " pw2 || true
+            printf '\n'
+            if [[ "$pw1" != "$pw2" ]]; then
+                warn "两次输入不一致，重来"
+                continue
+            fi
+            ADMIN_PASS="$pw1"
+            break
+        done
+        unset pw1 pw2
+    fi
+
     if [[ -z "$CERT_MODE" ]]; then
         cat <<'TXT'
-[3/3] 证书
+[4/4] 证书
       1) Let's Encrypt 自动申请   推荐。要域名已解析到本机，且 80 端口空闲
       2) 自签证书                 自己用够了；浏览器会警告
       3) 我已有证书               你把证书和私钥文件给我
@@ -224,6 +269,13 @@ fi
 # 只有显式给 --port 才允许改（那是知道自己在干什么的人）。
 PORT="${PORT:-58588}"
 [[ "$PORT" =~ ^[0-9]+$ ]] || die "端口必须是数字：$PORT"
+
+# 管理员账号：非交互（给了 --admin-pass）时用户名也要有默认值
+ADMIN_USER="${ADMIN_USER:-admin}"
+if [[ -n "$ADMIN_PASS" && ${#ADMIN_PASS} -lt 8 ]]; then
+    die "管理员密码至少 8 位（现在 ${#ADMIN_PASS} 位）"
+fi
+[[ "$ADMIN_USER" =~ ^[A-Za-z0-9_-]{3,32}$ ]] || die "管理员用户名要是 3-32 位字母数字下划线：$ADMIN_USER"
 if [[ "$PORT" != "58588" ]]; then
     warn "客户端口不是默认的 58588 —— 已发出的客户端会连不上。"
     warn "确认你要这么干（换端口 = 重发一版客户端）。"
@@ -296,6 +348,15 @@ else
     PANEL_DESC="$SCHEME://$HOST_DISPLAY:$PANEL_PORT （客户端口不响应 $PANEL_PATH）"
 fi
 
+# 确认页只说"密码设过没有"，**绝不回显密码本身**。
+# （一开始用 ${PW:+A}${PW:-B} 拼，结果变量非空时 :- 回退到变量自己的值，
+#   把密码原样打到屏幕上了 —— 好在渲染一遍就看出来了。）
+if [[ -n "$ADMIN_PASS" ]]; then
+    ADMIN_DESC="$ADMIN_USER     ← 密码你刚设的（不回显）"
+else
+    ADMIN_DESC="$ADMIN_USER     ← 密码将随机生成并打印出来"
+fi
+
 cat <<EOF
 
   轻舟 / Canoe Server 安装
@@ -303,6 +364,7 @@ cat <<EOF
   域名         ${DOMAIN:-<无，用 IP 访问>}
   客户端口     $PORT          ← 更新 / 订阅 / API，对所有人开放（固定，客户端写死的）
   管理面板     $PANEL_DESC
+  管理员       $ADMIN_DESC
   证书         $CERT_DESC
 
 EOF
@@ -542,7 +604,13 @@ print(secrets.token_urlsafe(18))
 PY
     mapfile -t SECRETS < <(as_user "'$SERVER_DIR/.venv/bin/python' -c '$PY_CMD'")
     TICKET_SECRET="${SECRETS[0]}"
-    ADMIN_PASSWORD="${SECRETS[1]}"
+
+    # 管理员密码：用户在向导里设过就用他的；没设（一路回车）才生成，
+    # 而且会明明白白打印出来 —— 不会再有"密码藏在哪个文件里"这种事。
+    if [[ -z "$ADMIN_PASS" ]]; then
+        ADMIN_PASS="${SECRETS[1]}"
+        ADMIN_GENERATED=1
+    fi
     BASE="${SCHEME}://${DOMAIN:-127.0.0.1}"
     [[ "$PORT" != "443" && "$PORT" != "80" ]] && BASE="$BASE:$PORT"
 
@@ -568,8 +636,8 @@ ONLINE_TIMEOUT=90
 DEFAULT_EXPIRE_DAYS=30
 DEFAULT_MAX_DEVICES=3
 
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=$ADMIN_PASSWORD
+ADMIN_USERNAME=$ADMIN_USER
+ADMIN_PASSWORD=$ADMIN_PASS
 
 # 安装包下载地址靠它拼（客户端「更新」按钮指向这里）
 PUBLIC_BASE_URL=$BASE
@@ -589,17 +657,21 @@ RELAY_RELOAD_HOOK=
 EOF
     chown "$APP_USER:$APP_USER" "$ENV_FILE"; chmod 600 "$ENV_FILE"
 
-    cat > "$APP_DIR/ADMIN_PASSWORD.txt" <<EOF
-初始管理员账号（登录后立刻改掉，然后删掉这个文件）
+    # 只有"密码是随机生成的"才留文件 —— 用户自己设的密码他自己知道，
+    # 再往磁盘上写一份明文纯属多此一举。
+    if [[ "$ADMIN_GENERATED" == "1" ]]; then
+        cat > "$APP_DIR/ADMIN_PASSWORD.txt" <<EOF
+管理员密码是随机生成的（向导里那一步直接回车了）
 
   面板地址: $BASE/panel
-  用户名:   admin
-  密码:     $ADMIN_PASSWORD
+  用户名:   $ADMIN_USER
+  密码:     $ADMIN_PASS
 
-改密码：面板 -> 用户 -> 编辑，或调 PATCH /api/admin/users/1
+登录后请改掉并删掉这个文件。
+以后想改： sudo canoe config -> 改管理员密码
 EOF
-    chmod 600 "$APP_DIR/ADMIN_PASSWORD.txt"
-    warn "管理员密码写在 $APP_DIR/ADMIN_PASSWORD.txt —— 登录后请改掉并删除"
+        chmod 600 "$APP_DIR/ADMIN_PASSWORD.txt"
+    fi
 fi
 
 mkdir -p "$SERVER_DIR/data" "$SERVER_DIR/releases"
@@ -673,19 +745,33 @@ cat <<EOF
   健康检查       : $BASE_SHOWN/api/health
 
   管理脚本 : sudo canoe        （菜单：启动/停止/状态/配置/升级/卸载）
-  日志     : sudo canoe logs
   配置     : $SERVER_DIR/.env
-  管理员   : 见 $APP_DIR/ADMIN_PASSWORD.txt
+
+  登录面板 : $ADMIN_USER
+             密码就是你刚才设的那个
+             忘了的话：sudo canoe config -> 改管理员密码
 
   下一步：
-    1. 打开面板登录，改掉管理员密码（也可以 sudo canoe passwd）
-    2. 面板「用户」里给账号配**订阅** —— 点那行的「订阅」按钮，
+    1. 面板「用户」里给账号配**订阅** —— 点那行的「订阅」按钮，
        把节点链接一行一个贴进去（ss:// vmess:// vless:// trojan://）。
        清零 = 停止对该账号分发，客户端会就地销毁本地订阅。
-    3. 面板「发布」里上传客户端安装包 —— 客户端点「更新」就能看到。
+    2. 面板「发布」里上传客户端安装包 —— 客户端点「更新」就能看到。
        （客户端地址写死在 $BASE_SHOWN，不用在客户端配任何东西）
 
 EOF
+
+if [[ "$ADMIN_GENERATED" == "1" ]]; then
+cat <<EOF
+  ⚠ 管理员密码是随机生成的（向导里那步直接回车了）：
+
+       用户名  $ADMIN_USER
+       密码    $ADMIN_PASS
+
+     也写了一份在 $APP_DIR/ADMIN_PASSWORD.txt。
+     登录后请改掉并删掉那个文件。
+
+EOF
+fi
 
 if [[ -n "$PANEL_PORT" && "$PANEL_PORT" != "$PORT" ]]; then
 cat <<EOF

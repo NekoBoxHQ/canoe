@@ -325,6 +325,39 @@ else
     echo "  [跳过] 证书校验实测 —— 没有 openssl"
 fi
 
+# 管理员账号：装的时候就得问，不能自己随机一个塞进文件里让用户去找
+# （用户原话："我找到现在都不知道初始密码在什么地方"）。
+printf '\n[10] 管理员账号在安装时就要问\n'
+check "★ 向导里有管理员用户名的提问" \
+      "$(grep -q '管理员用户名' "$INSTALL" && echo 0 || echo 1)"
+check "★ 向导里有管理员密码的提问" \
+      "$(grep -q '管理员密码' "$INSTALL" && echo 0 || echo 1)"
+check "★ 密码是不回显读入的（read -s）" \
+      "$(grep -q 'read -rsp' "$INSTALL" && echo 0 || echo 1)"
+check "密码要输两遍（有二次确认）" \
+      "$(grep -q '再输一遍' "$INSTALL" && echo 0 || echo 1)"
+check "密码有长度下限校验" \
+      "$(grep -q '至少 8 位' "$INSTALL" && echo 0 || echo 1)"
+
+# 密码**绝不能**在确认页/结尾提示里回显。
+# 这里踩过：用 ${PW:+A}${PW:-B} 拼描述，变量非空时 :- 会回退到变量
+# 自己的值，于是密码被原样打到屏幕上。
+CONFIRM_BLOCK="$(sed -n '/确认页只说/,/^EOF$/p' "$INSTALL")"
+check "抠得出确认页那段" "$([[ -n "$CONFIRM_BLOCK" ]] && echo 0 || echo 1)"
+# 要防的是"把密码打进正文"。`if [[ -n "$ADMIN_PASS" ]]` 那种判空是
+# 正当用法，所以只看 heredoc 的**正文**部分。
+CONFIRM_BODY="$(sed -n '/^cat <<EOF$/,/^EOF$/p' <<< "$CONFIRM_BLOCK")"
+check "抠得出确认页 heredoc 正文" "$([[ -n "$CONFIRM_BODY" ]] && echo 0 || echo 1)"
+check "★ 不用 \$ADMIN_PASS 拼正文（那会把密码打到屏幕上）" \
+      "$(grep -q '\$ADMIN_PASS' <<< "$CONFIRM_BODY" && echo 1 || echo 0)" "$CONFIRM_BODY"
+check "确认页正文用的是不含密码的 \$ADMIN_DESC" \
+      "$(grep -q '\$ADMIN_DESC' <<< "$CONFIRM_BODY" && echo 0 || echo 1)"
+
+# 明文密码只在"随机生成"时才落盘。用户自己设的密码他自己知道，
+# 再写一份到磁盘上纯属多此一举，还多一处泄漏面。
+check "★ 写 ADMIN_PASSWORD.txt 有 ADMIN_GENERATED 守卫" \
+      "$(grep -B 1 'ADMIN_PASSWORD.txt' "$INSTALL" | grep -q 'ADMIN_GENERATED' && echo 0 || echo 1)"
+
 HELP_I="$(bash "$INSTALL" --help 2>&1)"
 check "--help 能跑" "$(grep -q "安装向导" <<< "$HELP_I" && echo 0 || echo 1)"
 check "帮助里说明了代码从哪来" "$(grep -q "代码从哪来" <<< "$HELP_I" && echo 0 || echo 1)"

@@ -95,25 +95,39 @@ sudo bash canoe-server/deploy/install.sh
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/install.sh)"
 ```
 
-向导会**一项一项问你三件事**：
+向导会**一项一项问你四件事**：
 
 ```
-[1/3] 域名
+[1/4] 域名
       用来申请证书、拼客户端下载地址（PUBLIC_BASE_URL）。
       没有域名就留空 —— 那样证书只能自签，客户端也得走 IP。
       域名: canoe.s-ui.com
 
-[2/3] 管理面板端口
+[2/4] 管理面板端口
       想只对自己开放的话，给面板另开一个口 —— 然后在防火墙/安全组里
       只放行你自己的 IP。那样客户端那个口就**不再响应 /panel**。
       面板端口（回车 = 和客户端同口）: 8899
 
-[3/3] 证书
+[3/4] 管理员账号
+      登录管理面板用它。用户名留空就是 admin。
+      管理员用户名 [admin]: admin
+      管理员密码（至少 8 位，回车 = 随机生成）:
+      再输一遍:
+
+[4/4] 证书
       1) Let's Encrypt 自动申请   推荐。要域名已解析到本机，且 80 端口空闲
       2) 自签证书                 自己用够了；浏览器会警告
       3) 我已有证书               你把证书和私钥文件给我
       4) 不加密                   前面已经有 HTTPS 反代了
       请选择 [1]:
+```
+
+**管理员密码就在这一步设**。不想现在想，一路回车也行 —— 那样会随机生成一个
+并**打印在屏幕上**（同时留一份在 `/opt/canoe/ADMIN_PASSWORD.txt`）。
+忘了密码随时可以改：
+
+```bash
+sudo canoe config      # -> 3 改管理员密码
 ```
 
 > **客户端口（58588）不问**：客户端把服务端地址写死在代码里了，
@@ -139,6 +153,8 @@ sudo bash deploy/install.sh --domain x.com --cert-mode existing \
 | `--cert-mode existing` | 用你已有的证书，配 `--cert` / `--key`。**不自动续期** |
 | `--cert-mode none` | 不加密（只建议放在别的反代后面） |
 | `--email ADDR` | Let's Encrypt 注册邮箱（可选） |
+| `--admin-user NAME` | 管理员用户名，默认 `admin` |
+| `--admin-pass PASS` | 管理员密码。不给会问；都不给才随机生成（并打印出来） |
 
 > `--https` 是 `--cert-mode` 的旧名字，仍然能用。
 
