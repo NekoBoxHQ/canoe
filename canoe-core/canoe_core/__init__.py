@@ -12,6 +12,7 @@ from .constants import (
     CLIENT_PROCESS,
     CONFIG_DIR_NAME,
     DOMAINS,
+    MAX_NODES_PER_USER,
     NAMESPACE_CLIENT,
     NAMESPACE_SERVER,
     PROTOCOL_VERSION,
@@ -55,7 +56,7 @@ from .version import VERSION, __version__
 
 __all__ = [
     "APP_ID", "BRAND_CN", "BRAND_EN", "CLIENT_EXE", "CLIENT_PROCESS",
-    "CONFIG_DIR_NAME", "DOMAINS",
+    "CONFIG_DIR_NAME", "DOMAINS", "MAX_NODES_PER_USER",
     "NAMESPACE_CLIENT", "NAMESPACE_SERVER", "PROTOCOL_VERSION",
     "SERVER_NAME", "SLOGAN_CN", "SLOGAN_EN",
     "VERSION", "__version__",

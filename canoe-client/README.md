@@ -200,11 +200,19 @@ outbound/shadowsocks[proxy]: outbound connection to one.leycc.com:443
 ## 打包
 
 ```bat
-build.bat
+build.bat                    :: -> dist\Canoe.exe
+python scripts\package_release.py   :: -> dist\Canoe-<版本>-win64.zip
 ```
 
-产物 `dist\Canoe\Canoe.exe`。整个 `dist\Canoe\` 打 zip 发给用户，目标机器不需要装 Python。
-详见 [`../docs/05-packaging.md`](../docs/05-packaging.md)。
+产物是**一个文件** `dist\Canoe.exe`（onefile）：用户下载解压出来就一个
+exe，双击即用，不会有一堆 dll 铺在桌面上。运行的时候 PyInstaller 把内容
+解到系统临时目录（`%TEMP%\_MEIxxxx`），进程退出就删掉。
+
+代价：每次启动多花一点解压时间（80 多 MB），个别杀软对 onefile 更敏感。
+换的是"发给普通用户只有一个文件"。
+
+打包好的 zip 里也只有 `Canoe.exe` 一个文件。详见
+[`../docs/05-packaging.md`](../docs/05-packaging.md)。
 
 ## 自检
 

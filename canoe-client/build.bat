@@ -1,7 +1,7 @@
 @echo off
 REM ============================================================
 REM  轻舟 / Canoe —— Windows 打包脚本
-REM  产物：dist\Canoe\Canoe.exe
+REM  产物：dist\Canoe.exe（单文件，解压出来就这一个）
 REM
 REM  用法：build.bat
 REM ============================================================
@@ -79,11 +79,11 @@ REM canoe.spec 已经把整个 bin\ 递归打包进去了（含 ruleset\ 子目�
 REM 所以这里不用再手工 copy。直接跑产物自检，确认内核和规则集都在。
 echo.
 echo [5/5] 自检打包产物...
-if not exist "dist\Canoe\Canoe.exe" (
+if not exist "dist\Canoe.exe" (
     echo       [错误] 没生成 Canoe.exe
     goto :err
 )
-"dist\Canoe\Canoe.exe" --selftest >nul 2>&1
+"dist\Canoe.exe" --selftest >nul 2>&1
 if errorlevel 2 (
     echo       [警告] 自检未通过 —— 通常是缺 sing-box.exe 或 wintun.dll
     echo              详情见 %%APPDATA%%\Canoe\selftest.txt
@@ -95,9 +95,9 @@ echo.
 echo ==========================================
 echo   完成
 echo ==========================================
-echo   产物:   dist\Canoe\Canoe.exe
+echo   产物:   dist\Canoe.exe   （就这一个文件）
 echo.
-echo   整个 dist\Canoe\ 目录一起打包成 zip 发给用户即可，
+echo   打包发布： python scripts\package_release.py
 echo   目标机器不需要装 Python。
 echo.
 goto :eof

@@ -29,7 +29,7 @@ import httpx
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from canoe_core import Api, Envelope  # noqa: E402
+from canoe_core import MAX_NODES_PER_USER, Api, Envelope  # noqa: E402
 
 def _admin_credentials() -> tuple[str, str]:
     """管理员账号密码。
@@ -461,6 +461,49 @@ def main() -> int:
     check("★ 取消分配后回空信封（客户端据此销毁本地订阅）",
           not (sub3.get("envelope") or {}).get("data"), str(sub3)[:200])
     check("★ 取消分配后指纹也跟着变", sub3.get("revision") != second_revision)
+
+    # 14.5 一个客户最多绑几个
+    # 客户端主界面底部就 MAX_NODES_PER_USER 盏灯，一个灯一个节点 ——
+    # 服务端放更多出去客户端也显示不出来，用户只会以为"绑丢了"。
+    print(f"\n[14.5] 一个客户最多 {MAX_NODES_PER_USER} 个节点")
+    # 多造一个：要有一个**真实存在**的第 7 个节点才测得出上限。
+    # 一开始拿"最后一个 id + 1"当第 7 个，那个 id 根本不存在，
+    # set_bound_nodes 会跳过它，于是请求照样 200 —— 测了个寂寞。
+    cap_ids = []
+    for i in range(MAX_NODES_PER_USER + 1):
+        rr = client.post(
+            Api.ADMIN_NODES, headers=admin_h,
+            json={"link": NODE_LINK, "remark": f"冒烟上限-{suffix}-{i}", "sort_order": 90 + i},
+        )
+        if rr.status_code == 201:
+            cap_ids.append(rr.json()["id"])
+
+    if len(cap_ids) == MAX_NODES_PER_USER + 1:
+        full, overflow = cap_ids[:MAX_NODES_PER_USER], cap_ids[-1]
+        r = client.put(f"{Api.ADMIN_USERS}/{sub_uid}/nodes", headers=admin_h,
+                       json={"node_ids": full})
+        check(f"绑满 {MAX_NODES_PER_USER} 个 200", r.status_code == 200, r.text[:200])
+
+        r = client.put(f"{Api.ADMIN_USERS}/{sub_uid}/nodes", headers=admin_h,
+                       json={"node_ids": full + [overflow]})
+        check(f"★ 第 {MAX_NODES_PER_USER + 1} 个被拒（422）", r.status_code == 422,
+              f"got {r.status_code} {r.text[:160]}")
+
+        # 被拒的那次不该动到已有的绑定。重发同一份 6 个仍然 200、内容一致 ——
+        # 绑定是整体替换，被拒的请求要是先删了再校验，这里就会看到空。
+        r = client.put(f"{Api.ADMIN_USERS}/{sub_uid}/nodes", headers=admin_h,
+                       json={"node_ids": full})
+        check("★ 超限那次被拒之后原来的绑定原封不动",
+              r.status_code == 200 and r.json().get("node_ids") == full, r.text[:200])
+
+        r = client.get(Api.ADMIN_NODES, headers=admin_h)
+        check("★ 节点列表里带着上限，面板不用写死",
+              r.json().get("max_nodes_per_user") == MAX_NODES_PER_USER, r.text[:200])
+
+    # 收尾：解绑 + 删掉这批临时节点
+    client.put(f"{Api.ADMIN_USERS}/{sub_uid}/nodes", headers=admin_h, json={"node_ids": []})
+    for nid in cap_ids:
+        client.delete(f"{Api.ADMIN_NODES}/{nid}", headers=admin_h)
 
     # ======================================================================
     # 15. 推送（SSE /api/events）

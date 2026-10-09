@@ -166,7 +166,8 @@ function confirmDo(question, run) {
 
 let modalSubmit = null;
 
-function openModal({ title, fields = [], values = {}, submitText = '确定', wide = false, onSubmit }) {
+function openModal({ title, fields = [], values = {}, submitText = '确定', wide = false, onSubmit,
+                    onMount }) {
   $('#modal-title').textContent = title;
   const body = clear($('#modal-body'));
   const inputs = {};
@@ -241,6 +242,10 @@ function openModal({ title, fields = [], values = {}, submitText = '确定', wid
   };
 
   $('#modal-root').hidden = false;
+  // 弹窗搭好之后的钩子：给调用方一个机会去接线（比如"勾满就不让再勾"）。
+  // 传的是 inputs 那份映射，跟 onSubmit 拿到的是同一个 key。
+  if (onMount) onMount(inputs);
+
   const first = body.querySelector('input, select, textarea');
   if (first) first.focus();
 }
@@ -406,14 +411,20 @@ function editUser(r) {
 }
 
 async function bindNodes(r) {
-  const nodes = (await api('/api/admin/nodes')).items || [];
+  const data = await api('/api/admin/nodes');
+  const nodes = data.items || [];
   if (!nodes.length) { toast('还没有节点 —— 先去「节点」页加一个', 'warn'); return; }
   const bound = new Set(r.node_ids || []);
+  // 上限服务端说了算（见 /api/admin/users 的 max_nodes_per_user）——
+  // 客户端底部就 6 个灯位，绑多了那边显示不出来。
+  const max = data.max_nodes_per_user || 6;
 
   openModal({
     title: `给 ${r.username} 分配节点`,
     fields: [
-      { type: 'group', label: '勾选这个客户能用哪些节点。一个都不勾 = 停止对他分发。' },
+      { type: 'group',
+        label: `勾选这个客户能用哪些节点，最多 ${max} 个（客户端底部就 ${max} 盏灯）。`
+             + '一个都不勾 = 停止对他分发。' },
       ...nodes.map((n) => ({
         key: 'node_' + n.id,
         label: `${n.remark || n.name}（#${n.id} · ${n.protocol || '?'} ${n.host || '?'}）${n.enabled ? '' : ' · 已停用'}`,
@@ -423,14 +434,27 @@ async function bindNodes(r) {
     // 回填当前绑定，不然每次打开都是全空的，看不出现在分的是哪几个
     values: Object.fromEntries(nodes.map((n) => ['node_' + n.id, bound.has(n.id)])),
     submitText: '保存',
+    // 勾满 max 个就把还没勾的置灰。只靠提交时报错的话，用户得点一次
+    // 「保存」才知道超了，不如当场就点不动。
     onSubmit: async (v) => {
       const ids = Object.entries(v)
         .filter(([k, on]) => k.startsWith('node_') && on)
         .map(([k]) => Number(k.slice(5)));
+      if (ids.length > max) { toast(`最多只能选 ${max} 个`, 'err'); return; }
       const res = await api(`/api/admin/users/${r.id}/nodes`, { method: 'PUT', body: { node_ids: ids } });
       toast(ids.length ? `已分配 ${ids.length} 个节点` : '已清空 —— 这个客户下次交互就会被收回订阅', 'ok');
       if (res.pushed) toast(`已推送给在线的 ${res.pushed} 条连接`, 'ok');
       closeModal(); render();
+    },
+    // 勾选到上限就把其余禁用
+    onMount: (inputs) => {
+      const boxes = Object.entries(inputs).filter(([k]) => k.startsWith('node_'));
+      const sync = () => {
+        const used = boxes.filter(([, el]) => el.checked).length;
+        for (const [, el] of boxes) el.disabled = !el.checked && used >= max;
+      };
+      for (const [, el] of boxes) el.addEventListener('change', sync);
+      sync();
     },
   });
 }

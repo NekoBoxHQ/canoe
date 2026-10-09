@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session as DBSession
 
-from canoe_core import Api
+from canoe_core import MAX_NODES_PER_USER, Api
 
 from ..config import settings
 from ..database import get_db
@@ -130,9 +130,14 @@ class UserUpdate(BaseModel):
 
 
 class BindUserNodes(BaseModel):
-    """把一个客户绑到哪些节点上。整体替换，不是追加。"""
+    """把一个客户绑到哪些节点上。整体替换，不是追加。
 
-    node_ids: list[int] = []
+    条数卡在 MAX_NODES_PER_USER —— 客户端底部就 6 个灯位，一个灯一个
+    节点。放更多出去客户端也显示不出来，用户只会以为"我绑了 8 个怎么
+    只亮 6 个"。超了直接 422，别静默截断。
+    """
+
+    node_ids: list[int] = Field(default_factory=list, max_length=MAX_NODES_PER_USER)
 
 
 # ==========================================================================
@@ -179,7 +184,13 @@ def list_users(
         stmt = stmt.where(or_(User.username.contains(q), User.remark.contains(q)))
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     users = db.scalars(stmt.order_by(User.id).offset((page - 1) * size).limit(size)).all()
-    return {"total": total, "page": page, "size": size, "items": [_user_view(db, u) for u in users]}
+    return {
+        "total": total, "page": page, "size": size,
+        "items": [_user_view(db, u) for u in users],
+        # 面板拿它来限制勾选（勾满就不让再勾了）。写死在前端的话，
+        # 这个数改了要改两处。
+        "max_nodes_per_user": MAX_NODES_PER_USER,
+    }
 
 
 @router.post(Api.ADMIN_USERS, status_code=status.HTTP_201_CREATED)
@@ -357,7 +368,8 @@ def _apply_node(node: Node, body: NodeUpsert) -> Node:
 @router.get(Api.ADMIN_NODES)
 def list_nodes(_: User = Depends(get_current_admin), db: DBSession = Depends(get_db)):
     nodes = db.scalars(select(Node).order_by(Node.sort_order, Node.id)).all()
-    return {"items": [to_node_view(n) for n in nodes]}
+    # 面板的「分配节点」弹窗要用这个数限制勾选，所以列表里一起带上。
+    return {"items": [to_node_view(n) for n in nodes], "max_nodes_per_user": MAX_NODES_PER_USER}
 
 
 @router.post(Api.ADMIN_NODES, status_code=status.HTTP_201_CREATED)
@@ -434,6 +446,17 @@ def bind_user_nodes(
     if user is None:
         raise HTTPException(404, {"code": "not_found", "detail": "用户不存在"})
 
+    # 再兜一道：模型层已经卡了长度，这里是防着别处（比如脚本直连库）
+    # 绕过接口塞进去更多。绑定是整体替换，超了就整批拒掉，不静默截断
+    # —— 静默截断的话用户以为绑上了，实际没有。
+    if len(set(body.node_ids)) > MAX_NODES_PER_USER:
+        raise HTTPException(
+            422,
+            {
+                "code": "too_many_nodes",
+                "detail": f"一个客户最多绑 {MAX_NODES_PER_USER} 个节点（多了客户端也显示不下）",
+            },
+        )
     set_bound_nodes(db, user, body.node_ids)
     db.add(
         AuditLog(

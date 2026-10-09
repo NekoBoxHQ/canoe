@@ -47,6 +47,7 @@ from canoe_client.ui import main_view as mv  # noqa: E402
 from canoe_client.ui import auth_view as av  # noqa: E402
 from canoe_client.ui.auth_view import AuthView, validate_credentials  # noqa: E402
 from canoe_client.ui.main_view import MainView  # noqa: E402
+from canoe_client.ui.nodelights import NodeLights  # noqa: E402
 from canoe_client.ui.style import qss  # noqa: E402
 
 passed = failed = 0
@@ -226,12 +227,24 @@ def main() -> int:
     mv.sysproxy = fake_proxy            # type: ignore[assignment]
     mv.api = fake_api                   # type: ignore[assignment]
     av.api = fake_api                   # type: ignore[assignment]
-    # 订阅里那条链接指向一台真实机器，本机连不上；这里换直连，
+    # 订阅里那条链接指向一台真实机器，本机连不上；这里把**出站换成直连**，
     # 好让"启航后真的能上网"那条断言还能测（内核会把 DNS 的 detour 去掉，
     # 见 kernel._dns_config）。链接怎么解析由 tests/test_links.py 覆盖。
-    mv.links.pick = lambda text: SimpleNamespace(
-        name="测试节点-甲", outbound={"type": "direct", "tag": "proxy"}
-    ) if text.strip() else None
+    #
+    # ⚠ 钩的是 `parse` 不是 `pick`。客户端原来每次现挑第一个（links.pick），
+    #   换成"留一份节点列表好切节点"之后就只走 parse 了 —— 还钩 pick 的话
+    #   这个替身根本不会被调用，真链接直接送进内核，报
+    #   "bad key length, required 16, got 3"（SS2022 的密钥是假的）。
+    #   名字和条数照旧用真解析出来的，只换出站。
+    _real_parse = mv.links.parse
+
+    def _fake_parse(text):
+        result = _real_parse(text)
+        for link in result.links:
+            link.outbound = {"type": "direct", "tag": "proxy"}
+        return result
+
+    mv.links.parse = _fake_parse
 
     # 用独立的配置文件，别污染真实用户数据
     tmp = Path(tempfile.mkdtemp(prefix="canoe-test-"))
@@ -443,6 +456,70 @@ def main() -> int:
     pump(app, 0.5)
     check("★ 未启航时点 URL 测试有提示且不崩",
           "先启航" in view.result_view.text(), view.result_view.text())
+
+    # --- 5.5 底部那排节点灯 ---
+    print("\n[5.5] 节点灯")
+    check("★ 主界面底部有那排灯", hasattr(view, "lights"))
+    check(f"★ 一共 {NodeLights.SLOTS} 个位置", NodeLights.SLOTS == 6)
+
+    def feed(n: int) -> None:
+        """喂 n 个节点进去，等价于服务端订阅里有 n 行能认出来的链接。"""
+        text = "\n".join(
+            f"ss://2022-blake3-aes-128-gcm:AAAA:BBBB@node{i}.example.com:33222#节点{i}"
+            for i in range(1, n + 1)
+        )
+        view._apply_subscription(text)
+        view._active = 0
+        view._sync_active()
+
+    feed(0)
+    check("一个节点都没有时全灭", view.lights.count() == 0)
+
+    feed(1)
+    check("★ 1 个节点 -> 亮 1 盏", view.lights.count() == 1)
+    check("节点名跟着显示出来", view.node_label.text() == "节点1", view.node_label.text())
+
+    feed(2)
+    check("★ 2 个节点 -> 亮 2 盏", view.lights.count() == 2)
+    check("当前在第 1 盏", view.lights.active() == 0)
+
+    # 点第二盏：切过去
+    view.lights.node_selected.emit(1)
+    pump(app, 0.1)
+    check("★ 点第 2 盏 -> 切到第 2 个节点",
+          view.lights.active() == 1 and view.node_label.text() == "节点2",
+          f"{view.lights.active()} / {view.node_label.text()}")
+    check("靠岸状态下切换不需要起内核", not mv.kernel.running)
+
+    # 点当前这盏 / 点暗着的：都不该有反应
+    view._switch_node(1)
+    check("点当前这盏不重复切", view.lights.active() == 1)
+    view._switch_node(4)
+    check("★ 点没点亮的格子不切（第 5 个本来是暗的）",
+          view.lights.active() == 1 and view.node_label.text() == "节点2")
+
+    feed(5)
+    check("★ 5 个节点 -> 亮 5 盏，只暗 1 个",
+          view.lights.count() == 5 and view.lights.count() < NodeLights.SLOTS)
+
+    feed(9)
+    check("★ 超过 6 个只点前 6 盏（位置就这么多）",
+          view.lights.count() == NodeLights.SLOTS, str(view.lights.count()))
+
+    # 订阅变短了，当前那盏不能指向不存在的格子
+    feed(1)
+    view._active = 0
+    view._sync_active()
+    view._switch_node(3)
+    check("★ 订阅变短后点空格子不越界", view.lights.active() == 0, str(view.lights.active()))
+
+    # 服务端停止分发 -> 灯全灭 + 节点名清空
+    view._apply_subscription("")
+    check("★ 订阅清空后灯全灭", view.lights.count() == 0, str(view.lights.count()))
+    check("订阅清空后节点名回到占位符", view.node_label.text() == "—", view.node_label.text())
+
+    feed(2)
+    check("恢复订阅后灯又亮起来", view.lights.count() == 2)
 
     # --- 6. 启航（真起内核）---
     print("\n[6] 启航")

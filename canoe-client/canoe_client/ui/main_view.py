@@ -51,6 +51,7 @@ from ..tun import check_tun_ready, relaunch_as_admin
 from ..worker import Worker
 from . import artwork as A
 from .controls import CheckBox, RadioButton
+from .nodelights import NodeLights
 from .window_base import FramelessWindow
 
 LOG_POLL_MS = 300
@@ -140,7 +141,12 @@ class MainView(FramelessWindow):
         #: 订阅明文（节点链接）。**只在内存里** —— 不落盘、不导出。
         #: 进程一退就没了，下次登舟重新拉。这也正是"服务端随时能收回"的前提。
         self._sub_text = ""
-        #: 当前选中的节点显示名。启航前为空，启航后是解析出来的第一个节点。
+        #: 订阅里解析出来的全部节点。留着整份是为了支持"在几个节点之间切"
+        #: —— 以前是每次用的时候 links.pick() 现挑第一个，切不了。
+        self._links: list = []
+        #: 当前用第几个。底部那排灯就是照它点亮的。
+        self._active = 0
+        #: 当前节点的显示名。启航前也可能有（登舟后就从订阅里解出来了）。
         self._node_name = ""
 
         self._build()
@@ -302,6 +308,14 @@ class MainView(FramelessWindow):
         logout_btn.clicked.connect(self._logout)
         bottom.addWidget(logout_btn)
         root.addLayout(bottom)
+
+        # --- 节点灯 ---
+        #   一个灯 = 订阅里一个能用的节点，亮着就是有。点一下切过去。
+        #   不写字：节点名上面那行大字已经有了，底下再标一遍又挤又重复。
+        root.addSpacing(10)
+        self.lights = NodeLights()
+        self.lights.node_selected.connect(self._switch_node)
+        root.addWidget(self.lights)
 
         # --- 底部水面 ---
         root.addSpacing(SCENE_BAND)
@@ -527,8 +541,11 @@ class MainView(FramelessWindow):
                 self._handle_tun_blocked(reason)
                 return
 
-        def on_ok(cfg) -> None:
-            # 节点名是刚从订阅里解出来的那个（见 _do_start_kernel）
+        def on_ok(payload) -> None:
+            cfg, found, index = payload
+            # 节点列表落到界面上（点亮底下那排灯）。放在这里而不是
+            # _do_start_kernel 里，是因为那边在工作线程，碰控件不安全。
+            self._apply_links(found, index)
             session.node_name = self._node_name
             self.refresh()
             self._set_state(STATE_SAILED)
@@ -564,8 +581,11 @@ class MainView(FramelessWindow):
         """
         self._sub_text = ""
         self._revision = ""
+        self._links = []
+        self._active = 0
         self._node_name = ""
         session.node_name = ""
+        self.lights.set_nodes([])
 
     def _reload_subscription(self) -> None:
         """重新拉订阅。收到推送或点「更新」时调用。
@@ -576,10 +596,9 @@ class MainView(FramelessWindow):
         Worker(self._refresh_after_login).run_with(self._on_reloaded, self._on_reload_failed)
 
     def _on_reloaded(self, payload) -> None:
-        revision, text, link = payload
+        revision, text = payload
         self._revision = revision
-        self._sub_text = text
-        if link is None:
+        if not self._apply_subscription(text):
             self._wipe_subscription()
             if session.sailing:
                 bus.error("订阅已停止分发，自动靠岸")
@@ -587,10 +606,18 @@ class MainView(FramelessWindow):
             else:
                 bus.result("订阅：已停止分发")
             return
-        self._node_name = link.name
-        session.node_name = link.name
-        self.refresh()
-        bus.result(f"订阅已更新：{link.name}")
+
+        link = self._active_link()
+        # 在航的时候订阅换了节点：把新节点用起来，别让界面显示的和实际
+        # 连着的对不上（管理员改了链接，这条路径会走到）。
+        if session.sailing and link is not None:
+            try:
+                kernel.stop()
+                kernel.start(link.outbound, self._opts)
+            except Exception as exc:                  # noqa: BLE001
+                self._set_state(STATE_STORM, f"重新启航失败：{exc}")
+                return
+        bus.result(f"订阅已更新：{link.name}" if link else "订阅已更新")
 
     def _on_reload_failed(self, code: str, message: str) -> None:
         if code in ("unauthorized", "banned", "expired"):
@@ -598,6 +625,83 @@ class MainView(FramelessWindow):
             if session.sailing:
                 self._dock()
             self.logged_out.emit()
+
+    # ------------------------------------------------------------------
+    # 节点：解析、点亮、切换
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _parse_subscription(text: str) -> list:
+        """订阅明文 -> 节点列表。**不碰界面**，所以能在工作线程里跑。"""
+        return links.parse(text).links if (text or "").strip() else []
+
+    def _apply_links(self, found: list, index: int | None = None) -> bool:
+        """把一份解析好的节点列表落到界面上（**只能在 GUI 线程调**）。
+
+        一个节点都没有时灯全灭 —— 用户一眼就看出来"服务端没给东西"，
+        不用去读结果框里那行字。
+        """
+        self._links = list(found)
+        if not self._links:
+            self._active = 0
+            self._node_name = ""
+            session.node_name = ""
+            self.lights.set_nodes([])
+            self.refresh()
+            return False
+        # 订阅变短了的话，别让 _active 指向不存在的那一盏
+        self._active = index if index is not None else self._active
+        if not (0 <= self._active < len(self._links)):
+            self._active = 0
+        self._sync_active()
+        return True
+
+    def _apply_subscription(self, text: str) -> bool:
+        """解析 + 落到界面。给 GUI 线程用的那条便捷路径。"""
+        self._sub_text = text
+        return self._apply_links(self._parse_subscription(text))
+
+    def _sync_active(self) -> None:
+        """把"当前第几个"同步到界面：节点名、这排灯、状态行。"""
+        link = self._active_link()
+        self._node_name = link.name if link else ""
+        session.node_name = self._node_name
+        self.lights.set_nodes([n.name for n in self._links], self._active)
+        self.refresh()
+
+    def _active_link(self):
+        """当前选中的那个节点（NodeLink），没有就 None。"""
+        if 0 <= self._active < len(self._links):
+            return self._links[self._active]
+        return None
+
+    def _switch_node(self, index: int) -> None:
+        """点了第 index 盏灯。
+
+        没在航的话只是换个选择，下次启航用它；在航的话当场重连 ——
+        停内核再用新节点起来。系统代理不用动（还是指本机那个口）。
+        """
+        if not (0 <= index < len(self._links)) or index == self._active:
+            return
+        self._active = index
+        self._sync_active()
+
+        link = self._active_link()
+        if link is None:
+            return
+        if not session.sailing:
+            bus.result(f"已选择：{link.name}")
+            return
+
+        was_tun = self._opts.use_tun
+        try:
+            kernel.stop()
+            kernel.start(link.outbound, self._opts)
+        except Exception as exc:                      # noqa: BLE001 - 要兜住任何启动失败
+            self._set_state(STATE_STORM, f"切到「{link.name}」失败：{exc}")
+            if was_tun:
+                bus.error(f"切换失败：{exc}")
+            return
+        bus.result(f"已切换到：{link.name}")
 
     def _fetch_subscription(self) -> str:
         """拉订阅并解密。结果只留在内存，返回明文（可能为空串）。
@@ -628,16 +732,21 @@ class MainView(FramelessWindow):
                 code="no_subscription",
             )
 
-        link = links.pick(text)
-        if link is None:
-            skipped = len(links.parse(text).skipped)
-            raise SubscriptionError(f"订阅里没有能用的节点（{skipped} 行认不出来）")
+        parsed = links.parse(text)
+        found = parsed.links
+        if not found:
+            raise SubscriptionError(f"订阅里没有能用的节点（{len(parsed.skipped)} 行认不出来）")
 
+        # ⚠ 这一段跑在工作线程里，**不能碰任何控件**（灯、标签都不行）。
+        #   解析结果原样回传给 on_ok，由它在 GUI 线程落到界面上。
+        index = self._active if 0 <= self._active < len(found) else 0
+        link = found[index]
         self._session_id = cfg.session_id
         self._node_name = link.name
         self._heartbeat_seconds = max(10, int(cfg.heartbeat_interval or 30))
+        import sys as _s; print('DBG 出站=', __import__('json').dumps(link.outbound, ensure_ascii=False), file=_s.stderr, flush=True)
         kernel.start(link.outbound, self._opts)
-        return cfg
+        return cfg, found, index
 
     # ------------------------------------------------------------------
     # 心跳
@@ -756,15 +865,18 @@ class MainView(FramelessWindow):
                     # 和启航走的是同一条路：重新证明身份 -> 解密订阅
                     sub, text = api.subscription_text()
                     revision = sub.revision
-                    link = links.pick(text)
-                    if link is None:
+                    names = [n.name for n in links.parse(text).links] if text.strip() else []
+                    if not names:
                         # 空的 / 认不出的 —— 服务端没给，本地那份必须销毁
                         wiped = True
                         parts.append("订阅：已停止分发")
-                    elif revision and revision == self._revision:
-                        parts.append(f"订阅：{link.name}（最新）")
                     else:
-                        parts.append(f"订阅：{link.name}")
+                        # 报**当前选中的**那个。以前报的是"第一个"，
+                        # 用户切到第二个之后这里就会对不上。
+                        here = names[min(self._active, len(names) - 1)]
+                        suffix = "（最新）" if revision and revision == self._revision else ""
+                        extra = f"，共 {len(names)} 个节点" if len(names) > 1 else ""
+                        parts.append(f"订阅：{here}{extra}{suffix}")
                 except CanoeApiError as exc:
                     parts.append(f"订阅：{exc.message}")
             return " · ".join(parts), newer, revision, wiped
@@ -779,6 +891,9 @@ class MainView(FramelessWindow):
                     self._dock()
             elif revision:
                 self._revision = revision
+                # 订阅可能变了（管理员加了/改了节点），把本地那份跟着刷新，
+                # 底下的灯也就跟着变。
+                self._reload_subscription()
             bus.result(text)
             if newer is not None:
                 # 详细内容放弹窗，不塞进结果框（结果框只留一行）
@@ -804,7 +919,9 @@ class MainView(FramelessWindow):
 
         def work():
             text = self._sub_text or self._fetch_subscription()
-            link = links.pick(text)
+            found = self._parse_subscription(text)
+            index = self._active if 0 <= self._active < len(found) else 0
+            link = found[index] if found else None
             if link is None:
                 raise SubscriptionError("当前没有可用节点")
             ob = link.outbound
@@ -898,28 +1015,26 @@ class MainView(FramelessWindow):
         self._session_id = ""
         self._revision = ""
         self._sub_text = ""
+        self._links = []
+        self._active = 0
         self._node_name = ""
+        self.lights.set_nodes([])
         self.refresh()
         Worker(self._refresh_after_login).run_with(
             self._on_subscription_ready, self._on_subscription_failed
         )
 
     def _refresh_after_login(self):
-        """登录后立刻拉一次订阅，把节点名显示出来。"""
+        """登录后立刻拉一次订阅，把节点名和那排灯显示出来。"""
         resp, text = api.subscription_text()
-        return resp.revision, text, links.pick(text)
+        return resp.revision, text
 
     def _on_subscription_ready(self, payload) -> None:
-        revision, text, link = payload
+        revision, text = payload
         self._revision = revision
-        self._sub_text = text
-        if link is None:
+        if not self._apply_subscription(text):
             self._wipe_subscription()
             bus.error("服务端没有下发订阅，请联系管理员")
-            return
-        self._node_name = link.name
-        session.node_name = link.name
-        self.refresh()
 
     def _on_subscription_failed(self, code: str, message: str) -> None:
         bus.error(f"订阅：{message}")

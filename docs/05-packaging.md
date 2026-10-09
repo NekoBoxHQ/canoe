@@ -69,20 +69,27 @@ dist\Canoe\Canoe.exe --selftest
 
 ## 3. canoe.spec 里的关键决定
 
-### 用 onedir 而不是 onefile
+### 用 onefile：产物就是一个 exe
 
 ```python
-COLLECT(exe, a.binaries, a.datas, name="Canoe")
+EXE(pyz, a.scripts, a.binaries, a.datas, [], exclude_binaries=False, name="Canoe")
+# 没有 COLLECT
 ```
 
 | | onedir | onefile |
 |---|---|---|
-| 启动速度 | 快 | 每次启动都要解压到临时目录 |
-| 杀软误报 | 少 | 多（自解压行为像恶意软件） |
+| 用户拿到 | 一个文件夹，一堆 dll | **一个 exe** |
+| 解压出来 | 文件夹（容易只拖走 exe 然后报"缺 _internal"） | 就一个文件 |
+| 启动速度 | 快 | 每次启动解压到 `%TEMP%\_MEIxxxx`，慢一点 |
+| 杀软误报 | 少 | 多一些（自解压行为像恶意软件） |
 | 换内核 | 直接替换 `bin\sing-box.exe` | 要重新打包 |
-| 分发 | 打成一个 zip | 单个 exe |
 
-代理工具的用户经常需要换 sing-box 版本，onedir 明显更合适。
+**选 onefile 是为了"发给普通用户只有一个文件"** —— 解压出来干干净净，
+不用解释"_internal 是什么"，也不会有人把 exe 单独拖出来。代价是启动慢
+一点、杀软更容易多看两眼，这两条认了。
+
+运行过程是干净的：解压到系统临时目录，进程退出就删掉，机器上不留东西
+（用户数据 `%APPDATA%\Canoe\` 除外，那是本来就该留的）。
 
 ### 关掉 UPX
 
@@ -150,21 +157,30 @@ console=False
 ## 4. 产物结构
 
 ```
-dist/Canoe/
-├── Canoe.exe              ← 主程序（已嵌入 assets/canoe.ico 作为 exe 图标）
-├── assets/
-│   ├── canoe.ico
-│   ├── canoe-logo.png     ← 界面里用的徽章（圆外透明）
-│   └── canoe.png
-├── bin/
-│   ├── sing-box.exe       ← 内核（build.bat 拷贝过来的）
-│   ├── wintun.dll         ← 全局模式需要
-│   └── README.md
-├── _internal/             ← Python 运行时与依赖
-└── ...
+dist/
+├── Canoe.exe                ← 就这一个
+└── Canoe-1.0.2-win64.zip    ← 发布包，里面也只有 Canoe.exe
 ```
 
-分发方式：把**整个 `dist/Canoe/` 目录**打成 zip 发给用户，解压即用。
+`Canoe.exe` 里塞着（运行时解到 `%TEMP%\_MEIxxxx`，退出即删）：
+
+```
+_MEIPASS/
+├── assets/            canoe.ico / canoe.png（徽章）
+├── bin/
+│   ├── sing-box.exe   内核
+│   ├── wintun.dll     全局(TUN)模式需要
+│   └── ruleset/       geoip-cn.srs / geosite-cn.srs
+└── （Python 运行时与依赖）
+```
+
+分发方式：`python scripts\package_release.py` 打出 zip，里面只有
+`Canoe.exe`。用户下载解压出来就一个文件，双击即用。
+
+> ⚠️ 临时目录的名字每次启动都不一样，**不要**在界面上或日志里写死它的
+> 路径（`--selftest` 里那份是运行时现取的实际路径，那个没问题）。
+> 另外进程被强杀时临时目录会残留，那是 onefile 的固有代价，
+> 系统清理 `%TEMP%` 时会一并收走。
 
 ---
 

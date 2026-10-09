@@ -4,11 +4,21 @@
 用法：
     pyinstaller canoe.spec --noconfirm --clean
 
-产物：dist/Canoe/Canoe.exe（onedir 模式，启动快、便于替换内核）
+产物：dist/Canoe.exe —— **就这一个文件**，发给用户双击即可。
 
-为什么用 onedir 而不是 onefile：
-    onefile 每次启动都要把整个程序解压到临时目录，杀软也更容易误报。
-    onedir 启动快，而且 bin/sing-box.exe 是明文放在旁边，方便用户替换内核版本。
+为什么用 onefile：
+    用户拿到的是一个 exe，解压出来不会有"_internal"那一大堆文件，
+    桌面上干干净净，也不会有人把 exe 单独拖走然后报"缺 _internal"。
+    运行的时候 PyInstaller 把内容解到临时目录（`sys._MEIPASS`），
+    进程退出就删掉，机器上不留东西。
+
+代价（认了）：
+    · 每次启动要多花一点时间解压（80 多 MB）；
+    · 个别杀软对 onefile 更敏感，可能报"可疑的自解压程序"。
+    这两条换"只有一个文件"，对一个要发给普通用户的客户端来说划算。
+
+内核还是塞在里面（bin/sing-box.exe、wintun.dll、规则集），
+所以 `config.find_singbox()` 找的是解压后的 `_MEIPASS/bin`。
 """
 from pathlib import Path
 
@@ -93,11 +103,14 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# onefile：binaries 和 datas 直接塞进 EXE，不再有 COLLECT 那一步。
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
+    exclude_binaries=False,
     name="Canoe",
     debug=False,
     bootloader_ignore_signals=False,
@@ -113,27 +126,6 @@ exe = EXE(
     version=None,        # 想加版本信息可指向一个 version_info 文件
 )
 
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name="Canoe",
-)
-
-# ---------------------------------------------------------------------------
-# 给用户看的说明，放到产物根目录，文件名用中文。
-#
-# 不塞进 datas 是因为 PyInstaller 会保留源文件名（SHIP_README.txt），
-# 而用户在解压出来的文件夹里第一眼要找的是「使用说明」。这里 COLLECT
-# 之后再复制一份改好名，两边都留一份，谁也不会找不到。
-# ---------------------------------------------------------------------------
-_ship = BASE / "SHIP_README.txt"
-if _ship.is_file():
-    import shutil as _shutil
-
-    _dest = BASE / "dist" / "Canoe"
-    if _dest.is_dir():
-        _shutil.copy2(_ship, _dest / "使用说明.txt")
+# 使用说明不再往产物目录塞 —— onefile 的产物就是一个 exe，旁边多出个
+# txt 反而破坏"只有一个文件"。说明改由 scripts/package_release.py
+# 决定放不放（默认跟 exe 一起打进 zip）。

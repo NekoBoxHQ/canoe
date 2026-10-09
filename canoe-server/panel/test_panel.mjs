@@ -57,16 +57,23 @@ const FIXTURES = [
     users_total: 12, users_active: 11, users_banned: 1, nodes_total: 3, nodes_enabled: 2,
     sessions_total: 40, sessions_online: 5, config_version: 7, push: { connections: 4, users: 2 },
   }],
-  [/\/api\/admin\/users\?/, { items: [
+  [/\/api\/admin\/users\?/, { max_nodes_per_user: 6, items: [
     { id: 1, username: 'admin', role: 'admin', status: 'active', online: true, expire_at: 0, max_devices: 3, remark: '主账号', last_login_at: 1790000000, subscription: '', subscription_lines: 0 },
     { id: 2, username: 'demo', role: 'user', status: 'banned', online: false, expire_at: 1799000000, max_devices: 3, remark: '', last_login_at: null,
       node_ids: [3], subscription: '', subscription_lines: 1 },
   ]}],
-  [/\/api\/admin\/nodes$/, { items: [
+  // 节点给 7 个：一个客户最多绑 6 个，第 7 个正好用来验"勾满就置灰"
+  [/\/api\/admin\/nodes$/, { max_nodes_per_user: 6, items: [
     { id: 3, name: '香港-01', remark: '香港家宽', enabled: true, sort_order: 10,
       link: 'ss://2022-blake3-aes-128-gcm:AAAA:BBBB@hk.example.com:33222#%E9%A6%99%E6%B8%AF-01',
       protocol: 'shadowsocks', host: 'hk.example.com', port: 33222, valid: true,
       created_at: 0, updated_at: 0 },
+    ...[4, 5, 6, 7, 8, 9].map((i) => ({
+      id: i, name: '节点-' + i, remark: '备用 ' + i, enabled: true, sort_order: i,
+      link: 'ss://2022-blake3-aes-128-gcm:AAAA:BBBB@n' + i + '.example.com:33222#n' + i,
+      protocol: 'shadowsocks', host: 'n' + i + '.example.com', port: 33222, valid: true,
+      created_at: 0, updated_at: 0,
+    })),
   ]}],
   [/\/api\/admin\/sessions/, { items: [
     { session_id: 'abcdef0123456789', user_id: 2, username: 'demo', node_name: '香港-01', device_id: 'dev-1', client_ip: '1.2.3.4', mode: 'system_proxy', online: true, revoked: false, created_at: 0, last_seen: 1790000000 },
@@ -223,6 +230,22 @@ check('★ 用勾选框而不是让管理员手打链接',
 check('★ 回填了当前已绑的节点（demo 绑了 #3）',
       !!bindModal.querySelector('input[type=checkbox]'),
       bindModal.textContent.slice(0, 120));
+
+// 一个客户最多 6 个（客户端底部就 6 盏灯）。勾满之后剩下的要点不动。
+const bindBoxes = [...bindModal.querySelectorAll('input[type=checkbox]')];
+check('弹窗里列了 7 个节点', bindBoxes.length === 7, String(bindBoxes.length));
+for (const b of bindBoxes.slice(0, 6)) {
+  b.checked = true;
+  b.dispatchEvent(new window.Event('change', { bubbles: true }));
+}
+check('★ 勾满 6 个之后，第 7 个被置灰点不动了', bindBoxes[6].disabled === true,
+      `disabled=${bindBoxes[6].disabled}`);
+check('★ 勾满之后已经选中的 6 个照样能取消', bindBoxes.slice(0, 6).every((b) => !b.disabled));
+
+bindBoxes[0].checked = false;
+bindBoxes[0].dispatchEvent(new window.Event('change', { bubbles: true }));
+check('★ 取消一个之后，第 7 个又可选了', bindBoxes[6].disabled === false);
+
 document.querySelector('#modal-close').dispatchEvent(new window.Event('click', { bubbles: true }));
 
 console.log('\n[8] 改用户名');
