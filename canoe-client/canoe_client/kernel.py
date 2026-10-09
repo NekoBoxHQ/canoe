@@ -122,25 +122,32 @@ Get-CimInstance Win32_Process -Filter "Name='sing-box.exe'" -ErrorAction Silentl
   }
 if ($killed -gt 0) { Start-Sleep -Milliseconds 700 }
 
+$removed = 0
+
+# 1) Phantom Wintun devices - Status is anything but OK, i.e. the process is
+#    long gone but the device instance is still registered. These CANNOT be
+#    in use, so they are always safe to remove, even while another instance
+#    is running. That asymmetry matters: this is the thing that actually
+#    blocks TUN, so it must not be skipped.
+Get-PnpDevice -Class Net -ErrorAction SilentlyContinue |
+  Where-Object { $_.InstanceId -like 'SWD\WINTUN*' -and $_.Status -ne 'OK' } |
+  ForEach-Object {
+    pnputil /remove-device "$($_.InstanceId)" | Out-Null
+    $removed++
+  }
+
+# 2) The adapter still named canoe. Could be ours from last time - but if any
+#    kernel is alive it might be in use, so only touch it when none is.
 $alive = @(Get-CimInstance Win32_Process -Filter "Name='sing-box.exe'" -ErrorAction SilentlyContinue).Count
 if ($alive -eq 0) {
-  $removed = 0
-
   $ad = Get-NetAdapter -Name 'canoe' -ErrorAction SilentlyContinue
   if ($ad -and $ad.PNPDeviceID) {
     pnputil /remove-device "$($ad.PNPDeviceID)" | Out-Null
     $removed++
   }
-
-  Get-PnpDevice -Class Net -ErrorAction SilentlyContinue |
-    Where-Object { $_.InstanceId -like 'SWD\WINTUN*' -and $_.Status -ne 'OK' } |
-    ForEach-Object {
-      pnputil /remove-device "$($_.InstanceId)" | Out-Null
-      $removed++
-    }
-
-  if ($removed -gt 0) { Start-Sleep -Milliseconds 700 }
 }
+
+if ($removed -gt 0) { Start-Sleep -Milliseconds 700 }
 $killed
 """
 
@@ -181,6 +188,27 @@ def _tun_unavailable(detail: str) -> bool:
     """内核这几行报错，是不是"网卡还占着"这一类？"""
     low = detail.lower()
     return ("already exists" in low) or ("take too much time" in low)
+
+
+def _live_kernel_count() -> int:
+    """现在还有几个 sing-box 在跑。
+
+    清理过残局之后 TUN 还是起不来，就该看看是不是**别人正占着** ——
+    最常见的场景是用户开了两个轻舟窗口。知道个数才好把话说清楚。
+    """
+    if os.name != "nt":
+        return 0
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "@(Get-CimInstance Win32_Process -Filter \"Name='sing-box.exe'\" "
+             "-ErrorAction SilentlyContinue).Count"],
+            capture_output=True, text=True, timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).stdout
+        return int((out or "0").strip().splitlines()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return 0
 
 
 def _ruleset_defs(opts: RunOptions) -> list[dict[str, Any]]:
@@ -371,6 +399,9 @@ class SingBoxKernel:
         self._config_path: Path | None = None
         self._cleaner: threading.Timer | None = None
         self._had_tun = False
+        #: 这个进程里**成功跑起来过**内核没有。用来区分"首次启航"和
+        #: "切换/重启"—— 后者要等一下系统的残局，前者不用白等。
+        self._ever_ran = False
         self._reader: threading.Thread | None = None
 
     @property
@@ -409,6 +440,16 @@ class SingBoxKernel:
             if cleared:
                 bus.system(f"启航前清掉了 {cleared} 个上次没退干净的内核进程")
         del cfg
+
+        # 起 TUN 之前再等一拍。
+        #
+        # 用户的原话是"靠岸、再启航就正常了" —— 差别只有中间那几秒。上一版
+        # 只在**停 TUN 之后**等（stop 里的 _had_tun），可切换这条路是
+        # "停一个没开 TUN 的内核 → 马上起 TUN"，那会儿根本没等过。
+        # 这里补上：这个进程里只要跑过内核，起 TUN 前就先让系统喘口气。
+        # 首次启航不受影响（没跑过内核），不白等。
+        if self._had_tun and self._ever_ran and not _healed:
+            time.sleep(TUN_TEARDOWN_GRACE)
 
         # 内核只能从文件读配置，所以写临时文件；读完立刻删
         fd, tmp_name = tempfile.mkstemp(prefix="canoe-", suffix=".json")
@@ -466,6 +507,22 @@ class SingBoxKernel:
                     bus.system(f"已清掉 {killed} 个上次没退干净的内核进程")
                 return self.start(proxy_outbound, opts, _healed=True)
 
+            # 清过一遍还是撞 —— 那就不是"残渣"，是**别人正占着**。
+            # 把那句 "Cannot create a file when that file already exists"
+            # 原样抛给用户等于没说，这里翻成人话并给出下一步。
+            if self._had_tun and _tun_unavailable(detail):
+                other = _live_kernel_count()
+                raise KernelError(
+                    "TUN 网卡被占着，起不来。\n"
+                    + (
+                        f"现在还有 {other} 个轻舟内核在跑 —— 多半是你开了两个轻舟窗口，"
+                        "把另一个关掉再试。\n"
+                        if other
+                        else "已经清理过残留还是不行，重启一次电脑就能好。\n"
+                    )
+                    + f"\n内核原话：{detail}"
+                )
+
             raise KernelError(
                 f"sing-box 启动后立即退出（退出码 {code}）。"
                 + (f"\n内核输出：\n{detail}" if detail else "通常是配置有问题或内核版本不匹配。")
@@ -474,6 +531,9 @@ class SingBoxKernel:
         self._cleaner = threading.Timer(CONFIG_CLEANUP_DELAY, self._remove_config)
         self._cleaner.daemon = True
         self._cleaner.start()
+
+        # 起来了才算数 —— 起失败的那些不该让下次启航白等
+        self._ever_ran = True
 
         # 把内核输出接进日志总线，界面上能看到它在干什么、为什么失败
         self._reader = threading.Thread(target=self._pump_output, args=(self._proc,), daemon=True)

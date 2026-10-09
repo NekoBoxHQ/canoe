@@ -742,8 +742,30 @@ def main() -> int:
     # sing-box 再建网卡就撞 "Cannot create a file when that file already exists"
     check("★ 会删掉 Status 不是 OK 的 Wintun 幽灵设备",
           "SWD\\WINTUN" in k_mod._HEAL_PS and "$_.Status -ne 'OK'" in k_mod._HEAL_PS)
-    check("★ 还有内核活着就一个设备都不动（别抽走正在用的网卡）",
+    # 幽灵设备**必须无条件清**，不能挂在那道"有没有实例在跑"的保险后面：
+    # 它 Status 不是 OK，按定义就不可能被谁用着，而它恰恰是卡住 TUN 的那个。
+    # 挂上去的话，只要用户开着任意一个轻舟（哪怕只是系统代理），
+    # 残留就永远清不掉 —— 又回到"怎么点都开不起来"。
+    check("★ 幽灵设备无条件清（不受「有没有实例在跑」那条保险影响）",
+          k_mod._HEAL_PS.index("Get-PnpDevice") < k_mod._HEAL_PS.index("$alive"),
+          "清幽灵设备那段排在了 $alive 后面")
+    check("★ 只有那张叫 canoe 的活网卡才看有没有实例在跑",
           "$alive -eq 0" in k_mod._HEAL_PS)
+
+    # 用户的原话："靠岸、再启航就正常了" —— 差别就在中间那几秒。
+    # 起 TUN 之前也要等一拍，不能只在停 TUN 之后等。
+    import inspect as _inspect
+
+    start_src = _inspect.getsource(k_mod.SingBoxKernel.start)
+    check("★ 起 TUN 之前会等一拍（切换那条路上补的）",
+          "_ever_ran" in start_src and "TUN_TEARDOWN_GRACE" in start_src,
+          "start() 里没找到起 TUN 前的等待")
+    check("首次启航不白等（没跑过内核就不睡）",
+          "self._had_tun and self._ever_ran" in start_src)
+    # 清过一遍还撞，说明是别人占着 —— 要给能照着做的话，不是内核原话
+    check("★ 起不来时给的是人话（能照着做），不是那句 Cannot create a file",
+          "轻舟窗口" in start_src or "重启" in start_src,
+          "没找到给用户看的说明")
 
     pm = QPixmap(32, 32)
     pm.fill(QColor("#2E8BFF"))
