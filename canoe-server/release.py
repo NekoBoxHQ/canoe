@@ -7,6 +7,20 @@
     python release.py https://example.com/Canoe-1.0.1-win64.zip
     python release.py --list
 
+★ 推荐走 GitHub Release，别再把 83MB 从开发机怼上来：
+
+    python release.py \
+        https://github.com/NekoBoxHQ/canoe/releases/download/v1.0.27/Canoe-1.0.27-win64.zip \
+        --sha256 5e6d2840c016fa2a8f728cb20c0d497afd3b0e62efc7096a9cd9e22a890e2a18
+
+  仓库是公开的，这条下载不需要任何凭据。开发机那边 `package_release.py`
+  已经把 zip 和 .sha256 都算好了，Release 资产就是那两份。
+
+  为什么不走"本地 SSH 上传"：那条路上真断过两次连接，/tmp 里留下 46MB 的
+  半截包，而 store_release_file 是按**落盘的字节**算摘要的 —— 残包自洽，
+  于是被当成合法版本发了出去。走 Release + `--sha256` 就没有这个缝：
+  摘要是发布者本地算的，跟传输过程无关。
+
 版本号默认从文件名里抠（`Canoe-1.0.1-win64.zip` -> `1.0.1`）；抠不出来
 就必须用 `--version` 显式给。
 
@@ -116,6 +130,10 @@ def main() -> int:
     ap.add_argument("--notes", default="", help="更新说明")
     ap.add_argument("--min-version", default="", help="低于这个版本强制升级")
     ap.add_argument("--file-name", default="", help="存到服务器上用什么文件名")
+    ap.add_argument(
+        "--sha256", default="",
+        help="发布者本地算好的摘要；下载到的东西核对不过就不发（防残包）",
+    )
     ap.add_argument("--list", action="store_true", help="列出已经发布的版本")
     args = ap.parse_args()
 
@@ -156,7 +174,8 @@ def main() -> int:
     try:
         with local.open("rb") as fh:
             dest, size, digest = store_release_file(
-                fh, filename, expected_size=before
+                fh, filename, expected_size=before,
+                expected_sha256=args.sha256.strip(),
             )
         after = local.stat().st_size
     except ReleaseTooLarge as exc:
