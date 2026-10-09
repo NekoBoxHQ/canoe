@@ -731,6 +731,20 @@ def main() -> int:
     check("别的报错不算网卡冲突（不然白清一次）",
           not k_mod._tun_unavailable("bad key length, required 16, got 3"))
 
+    # 清理残局用 pnputil，**不能用 Remove-NetAdapter**。
+    # 踩过：那台机器上 `Get-NetAdapter` 有、`Remove-NetAdapter` 根本没有，
+    # 而旧代码给它挂了 -ErrorAction SilentlyContinue —— 每次"清理"都一声
+    # 不吭地什么也没干，用户那边就是"TUN 怎么都开不起来"。
+    check("★ 清理残局用 pnputil（Remove-NetAdapter 在有些机器上不存在）",
+          "pnputil" in k_mod._HEAL_PS and "Remove-NetAdapter" not in k_mod._HEAL_PS,
+          "脚本里出现了 Remove-NetAdapter")
+    # 真正卡住 TUN 的是**幽灵 Wintun 设备**（进程没了、设备实例还挂着），
+    # sing-box 再建网卡就撞 "Cannot create a file when that file already exists"
+    check("★ 会删掉 Status 不是 OK 的 Wintun 幽灵设备",
+          "SWD\\WINTUN" in k_mod._HEAL_PS and "$_.Status -ne 'OK'" in k_mod._HEAL_PS)
+    check("★ 还有内核活着就一个设备都不动（别抽走正在用的网卡）",
+          "$alive -eq 0" in k_mod._HEAL_PS)
+
     pm = QPixmap(32, 32)
     pm.fill(QColor("#2E8BFF"))
     base = QIcon(pm)

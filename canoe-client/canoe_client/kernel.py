@@ -81,17 +81,29 @@ class KernelError(Exception):
 # --------------------------------------------------------------------------
 
 
-#: 收拾 TUN 残局用的 PowerShell。一次调用干完两件事：杀掉上次留下的**孤儿**
-#: sing-box、删掉还占着名字的虚拟网卡（先杀进程再删网卡 —— 网卡被进程
-#: 攥着的时候删不掉）。
+#: 收拾 TUN 残局用的 PowerShell。按顺序做三件事：杀掉上次留下的**孤儿**
+#: sing-box、删掉残留的名为 canoe 的网卡、删掉 Wintun 幽灵设备。
 #:
-#: ⚠ 两道保险，缺一不可：
+#: ⚠⚠ 用 pnputil，**不要用 Remove-NetAdapter**。踩过：那台机器上根本没有
+#:     `Remove-NetAdapter` 这个 cmdlet（`Get-NetAdapter` 有，`Remove-` 没
+#:    有），而我给它挂了 `-ErrorAction SilentlyContinue`，于是每次"清理"
+#:    都一声不吭地什么也没干 —— 用户那边表现就是"TUN 怎么都开不起来"。
+#:    pnputil 是系统自带的，按设备实例 ID 删，稳。
+#:
+#: ⚠ 三道保险：
 #:
 #:   1. **只杀孤儿**。进程必须是从 %TEMP%\_MEI*（打包解压出来的那份）或者
 #:      仓库 bin/ 目录起的，**而且父进程已经没了**。少了后半句就会误杀
 #:      另一个还在跑的轻舟实例的内核 —— 那是把人家正在用的代理掐了。
-#:   2. **网卡只认名字叫 canoe 的那张**。绝不能按"描述里带 Wintun"去挑，
-#:      那会连带删掉用户装的 WireGuard。
+#:   2. **还有内核活着就一个设备都不动**。不然会把正在跑的实例的网卡
+#:      从底下抽走。
+#:   3. 网卡和设备都只认自己的：网卡名字必须是 canoe，设备实例 ID 必须
+#:      以 SWD\WINTUN 开头。绝不能按"描述里带 Wintun"去挑 —— 那会连带
+#:      删掉用户装的 WireGuard。
+#:
+#: 真正的元凶是 **Status 不是 OK 的 Wintun 幽灵设备**：进程没了，设备实例
+#: 还挂在系统里，sing-box 再去建同名网卡就撞：
+#:     Failed to create TUN: Cannot create a file when that file already exists
 _HEAL_PS = r"""
 $killed = 0
 Get-CimInstance Win32_Process -Filter "Name='sing-box.exe'" -ErrorAction SilentlyContinue |
@@ -108,9 +120,27 @@ Get-CimInstance Win32_Process -Filter "Name='sing-box.exe'" -ErrorAction Silentl
       $killed++
     }
   }
-if ($killed -gt 0) { Start-Sleep -Milliseconds 600 }
-Get-NetAdapter -Name 'canoe' -ErrorAction SilentlyContinue |
-  Remove-NetAdapter -Confirm:$false -ErrorAction SilentlyContinue
+if ($killed -gt 0) { Start-Sleep -Milliseconds 700 }
+
+$alive = @(Get-CimInstance Win32_Process -Filter "Name='sing-box.exe'" -ErrorAction SilentlyContinue).Count
+if ($alive -eq 0) {
+  $removed = 0
+
+  $ad = Get-NetAdapter -Name 'canoe' -ErrorAction SilentlyContinue
+  if ($ad -and $ad.PNPDeviceID) {
+    pnputil /remove-device "$($ad.PNPDeviceID)" | Out-Null
+    $removed++
+  }
+
+  Get-PnpDevice -Class Net -ErrorAction SilentlyContinue |
+    Where-Object { $_.InstanceId -like 'SWD\WINTUN*' -and $_.Status -ne 'OK' } |
+    ForEach-Object {
+      pnputil /remove-device "$($_.InstanceId)" | Out-Null
+      $removed++
+    }
+
+  if ($removed -gt 0) { Start-Sleep -Milliseconds 700 }
+}
 $killed
 """
 
