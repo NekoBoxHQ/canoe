@@ -115,9 +115,15 @@ def main() -> int:
     try:
         check("★ 没打包运行时明确拒绝（不装作能更新）", update.can_self_update())
         staged = update.staging_path()
-        check("★ 新程序放在当前程序同一个目录（同卷改名，快且稳）",
-              staged.parent == fake_exe.parent and staged.name == "Canoe.exe.new",
+        # ★ 新程序**不放程序旁边** —— 程序旁边就是用户的桌面（我们的形态就是
+        #   "解压出一个 exe 拖到桌面"），放那儿会冒出 Canoe.exe.new/.old/.bat。
+        #   放 %LOCALAPPDATA%\Canoe\update：跟桌面同一个卷，换文件仍是一次改名。
+        check("★ 新程序放在中转目录，不放程序旁边（不放桌面）",
+              staged.parent == update.update_dir() and staged.name == "Canoe.exe.new"
+              and staged.parent != fake_exe.parent,
               str(staged))
+        check("★ 中转目录在用户目录下（跟桌面同卷，换文件不用拷 87MB）",
+              staged.drive.upper() == fake_exe.drive.upper(), str(staged))
 
         out = update.prepare_update(good)
         check("解出来的路径就是 staged", out == staged, str(out))
@@ -235,12 +241,21 @@ def main() -> int:
     print("\n[4] 替换脚本（.bat）")
     fake_exe2 = tmp / "Canoe2.exe"
     fake_exe2.write_bytes(b"MZ old")
-    staged2 = tmp / "Canoe2.exe.new"
+    # ★ 中转目录挪进沙箱：一是别往真实的 %LOCALAPPDATA%\Canoe\update 写东西，
+    #   二是要把"程序旁边"和"中转目录"摆成两个地方来验 ——
+    #   程序旁边就是用户的桌面，那儿一个交班文件都不许出现。
+    staged_dir = tmp / "staging"
+    staged_dir.mkdir(exist_ok=True)
+    staged2 = staged_dir / "Canoe.exe.new"
     staged2.write_bytes(b"MZ new")
+    handover_old = staged_dir / "Canoe.exe.old"
+    handover_bad = staged_dir / "Canoe.exe.bad"
 
     launched: list = []
     real_popen = update.subprocess.Popen
+    real_update_dir = update.update_dir
     update.subprocess.Popen = lambda *a, **k: launched.append((a, k)) or object()
+    update.update_dir = lambda: staged_dir
     sys.frozen = True
     sys.executable = str(fake_exe2)
     try:
@@ -250,24 +265,40 @@ def main() -> int:
         args, kwargs = launched[0]
         check("★ 起的是 cmd /c 那个脚本",
               args[0][:2] == ["cmd", "/c"] and args[0][2] == str(bat), str(args[0][:3]))
-        check("★ 新进程脱离控制台、另起进程组（要能活过我们退出）",
-              kwargs.get("creationflags") == 0x00000008 | 0x00000200,
-              str(kwargs.get("creationflags")))
+        # 用户原话："就是弹 CMD … 这个要根治 要静默"。
+        # 实测（父进程用 pythonw 冒充"没有控制台的 GUI 程序"）：
+        #   DETACHED_PROCESS | NEW_PROCESS_GROUP -> 弹 1 个可见控制台窗口
+        #   CREATE_NO_WINDOW | NEW_PROCESS_GROUP -> 0 个
+        # 所以这里钉死 CREATE_NO_WINDOW，且**不许**再掺 DETACHED_PROCESS
+        # （MSDN：两者同时给时 CREATE_NO_WINDOW 会被忽略）。
+        check("★ 用 CREATE_NO_WINDOW 起 cmd（DETACHED_PROCESS 会弹黑框）",
+              kwargs.get("creationflags") == 0x08000000 | 0x00000200,
+              f"creationflags={kwargs.get('creationflags'):#x}")
 
         script = bat.read_text(encoding="ascii")   # 不是纯 ASCII 这里就抛
         check("★ 脚本是纯 ASCII（批处理按控制台代码页读，中文会乱码）", True)
         check("★ 等文件锁释放后再替换（ping 当 sleep）", "ping -n 2 127.0.0.1" in script)
         check("★ 替换失败会重试，不是试一次就算了", "goto swap" in script)
-        # ★ 换文件必须**先改名挪开旧的**。正在运行的 exe 删不掉（WinError 5），
-        #   所以 `move /y new cur` 在旧进程还活着时永远失败 —— 用户那边就是
-        #   "更新一直 ping 个没停"、而且压根没装上。改名对运行中的 exe 是允许的。
-        # ren 的第二个参数必须是**名字**不是路径，所以脚本里用的是裸文件名。
-        # 这里正好也钉死这一点 —— 写成完整路径会静默失败（第一版就是）。
-        check("★ 先改名挪开旧的（运行中的 exe 删不掉、但能改名）",
-              f'ren "{fake_exe2.name}" "{fake_exe2.name}.old"' in script,
-              "没看到 ren ...old；这样旧进程一活着 move 就永远失败")
-        check("★ ren 用的是裸名字（第二个参数给路径会静默失败）",
+        # ★ 换文件必须**先把旧的挪开**。正在运行的 exe 删不掉、也覆盖不了
+        #   （WinError 5），所以 `move /y new cur` 在旧进程还活着时永远失败 ——
+        #   用户那边就是"更新一直 ping 个没停"、而且压根没装上。
+        #   实测：**运行中的 exe 可以 move 到同卷的另一个目录**（p.exe 挪走之后
+        #   照样在跑），所以这里是把它整个挪进中转目录，而不是在桌面原地改名
+        #   —— 原地改名会在用户桌面上留下一个 Canoe.exe.old。
+        check("★ 先把旧的整个 move 进中转目录（跑着的 exe 也能挪，实测过）",
+              f'move /y "{fake_exe2}" "{handover_old}"' in script,
+              "没看到把旧程序挪走；这样旧进程一活着 move 就永远失败")
+        check("★ 不在程序旁边留 .old（那地方就是用户的桌面）",
               f'"{fake_exe2}.old"' not in script)
+        # 用户原话："和哪些文件在桌面跑，这样客户反感"。
+        beside = sorted(p.name for p in tmp.iterdir())
+        check("★ 程序旁边（桌面）一个交班文件都不留",
+              not any((tmp / n).exists() for n in
+                      ("Canoe.exe.new", "Canoe.exe.old", "Canoe.exe.bad",
+                       "canoe-update.bat", "canoe-update.log")),
+              str(beside))
+        check("★ 交班脚本也写在中转目录里，不写桌面",
+              bat.parent == staged_dir, str(bat))
         check("★ 替换成功后把新程序拉起来", f'start "" "{fake_exe2}"' in script)
         # 用户在真机上撞到过：更新完第一次启动弹
         #   Failed to load Python DLL '...\_MEI000005842\python313.dll'.
@@ -322,8 +353,8 @@ def main() -> int:
         #   （"Failed to load Python DLL"），而旧程序还躺在 .old 里 ——
         #   宁可退回去用旧版本，也不能让人手里是个打不开的程序。
         check("★ 起不来要把旧版本换回去（不能留个打不开的程序）",
-              f'ren "{fake_exe2.name}" "{fake_exe2.name}.bad"' in script
-              and f'ren "{fake_exe2.name}.old" "{fake_exe2.name}"' in script,
+              f'move /y "{fake_exe2}" "{handover_bad}"' in script
+              and f'move /y "{handover_old}" "{fake_exe2}"' in script,
               "没看到回滚")
         check("★ 回滚之后要把它拉起来", script.rstrip().endswith('start "" "{}"'.format(fake_exe2))
               or f'start "" "{fake_exe2}"' in script)
@@ -366,6 +397,7 @@ def main() -> int:
               not bat.exists() and not leftover.exists())
     finally:
         update.subprocess.Popen = real_popen
+        update.update_dir = real_update_dir
         sys.executable = real_exec
 
     # --- 5. 真的把 .bat 跑一遍 ---
@@ -382,18 +414,28 @@ def main() -> int:
     if not (where_exe.is_file() and host_exe.is_file()):
         skip("真跑 .bat", "这台机器上没有 where.exe / hostname.exe 当替身")
     else:
-        old = sand / "Canoe.exe"
-        new = sand / "Canoe.exe.new"
-        old.write_bytes(where_exe.read_bytes())      # 冒充"当前程序"
+        # 沙箱摆成两个地方：desk 冒充"用户的桌面"（程序就在这儿），up 是
+        # 中转目录。**desk 里只许有 Canoe.exe 一个文件**，这就是用户要的
+        # "桌面不要跑出文件来"。
+        desk = sand / "desk"
+        up = sand / "up"
+        desk.mkdir(exist_ok=True)
+        up.mkdir(exist_ok=True)
+        cur = desk / "Canoe.exe"
+        new = up / "Canoe.exe.new"
+        old_copy = up / "Canoe.exe.old"
+        bad_copy = up / "Canoe.exe.bad"
+        cur.write_bytes(where_exe.read_bytes())      # 冒充"当前程序"
         new.write_bytes(host_exe.read_bytes())       # 冒充"新程序"
-        log = sand / "canoe-update.log"
+        log = up / "canoe-update.log"
         marker = sand / "started.txt"
-        bat = sand / "canoe-update.bat"
+        bat = up / "canoe-update.bat"
         bat.write_text(
-            update._BAT.replace("{old_name}", old.name + ".old")
-            .replace("{cur_name}", old.name)
+            update._BAT.replace("{cur_name}", cur.name)
+            .replace("{old}", str(old_copy))
+            .replace("{bad}", str(bad_copy))
             .replace("{new}", str(new))
-            .replace("{cur}", str(old))
+            .replace("{cur}", str(cur))
             .replace("{log}", str(log))
             .replace("{marker}", str(marker)),
             encoding="ascii",
@@ -416,18 +458,21 @@ def main() -> int:
         toucher = threading.Thread(target=touch_loop, daemon=True)
         toucher.start()
         try:
-            proc = subprocess.run(["cmd", "/c", str(bat)], cwd=str(sand),
+            proc = subprocess.run(["cmd", "/c", str(bat)], cwd=str(up),
                                   capture_output=True, text=True, timeout=120)
         finally:
             stop_touch.set()
             toucher.join(timeout=5)
         check("脚本跑完退出码 0", proc.returncode == 0, f"{proc.returncode} {proc.stderr[:200]}")
-        check("★ 文件真的被换掉了", old.read_bytes() == host_exe.read_bytes(),
-              f"{old.stat().st_size} 字节")
+        check("★ 文件真的被换掉了", cur.read_bytes() == host_exe.read_bytes(),
+              f"{cur.stat().st_size} 字节")
         check("换完之后 .new 没了（是 move 不是 copy）", not new.exists())
-        check("换完之后 .old 也被收掉了（旧进程早退了，del 删得掉）",
-              not (sand / "Canoe.exe.old").exists())
+        check("换完之后 .old 也被收掉了（旧进程早退了，删得掉）",
+              not old_copy.exists())
         check("没有失败日志（说明没走到失败分支）", not log.exists())
+        check("★ 桌面自始至终只有 Canoe.exe 一个文件（不许冒出别的）",
+              sorted(p.name for p in desk.iterdir()) == ["Canoe.exe"],
+              str(sorted(p.name for p in desk.iterdir())))
         # .bat 特意**不**自删：删掉正在执行的批处理，cmd 读不到下一行，
         # 会退回 1 并喷一句"找不到批处理文件"。留着不影响什么 ——
         # 下次启动 cleanup_leftovers() 会清掉它（[4] 里验过那个函数）。
@@ -439,12 +484,13 @@ def main() -> int:
         # 永久卡住，把一个更新挂死了 18 分钟（cmd 等 findstr、findstr 等一个
         # 永远不来的 EOF），桌面上只剩 Canoe.exe.new 和一个转不动的 .bat。
         # 所以这里钉死两件事：上限还在，而且脚本里**不许**再有那种轮询。
-        fail_bat = sand / "fail.bat"
+        fail_bat = up / "fail.bat"
         fail_bat.write_text(
-            update._BAT.replace("{old_name}", old.name + ".old")
-            .replace("{cur_name}", old.name)
-            .replace("{new}", str(sand / "does-not-exist.exe"))
-            .replace("{cur}", str(old))
+            update._BAT.replace("{cur_name}", cur.name)
+            .replace("{old}", str(old_copy))
+            .replace("{bad}", str(bad_copy))
+            .replace("{new}", str(up / "does-not-exist.exe"))
+            .replace("{cur}", str(cur))
             .replace("{log}", str(log))
             .replace("{marker}", str(marker))
             # 上限改成 2 次，等价逻辑但测试只要等几秒
@@ -453,7 +499,7 @@ def main() -> int:
             encoding="ascii",
         )
         t0 = time.time()
-        proc2 = subprocess.run(["cmd", "/c", str(fail_bat)], cwd=str(sand),
+        proc2 = subprocess.run(["cmd", "/c", str(fail_bat)], cwd=str(up),
                                capture_output=True, text=True, timeout=90)
         took = time.time() - t0
         check("★ 换不动时会放弃（重试有上限，不会一直转）",
