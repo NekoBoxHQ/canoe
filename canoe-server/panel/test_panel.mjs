@@ -157,6 +157,12 @@ check('★ 页面上不出现 undefined', !/undefined/.test(page.textContent),
       page.textContent.slice(0, 300));
 
 console.log('\n[4] 逐个标签页渲染');
+// 「加载中…」占位已删 —— 它 append 上去之后一直没删，每次切页都在内容
+// 上面挂一行字（用户看到的）。这条盯着它别回来。
+check('★ 页面上没有「加载中」占位',
+      !document.querySelector('#page').textContent.includes('加载中'),
+      document.querySelector('#page').textContent.slice(0, 120));
+
 const navItems = [...document.querySelectorAll('#nav .nav-item')];
 const names = ['用户', '节点', '会话', '发布'];
 for (let i = 0; i < navItems.length; i++) {
@@ -165,6 +171,7 @@ for (let i = 0; i < navItems.length; i++) {
   const body = document.querySelector('#page').textContent;
   check(`${names[i]} 页渲染出来了`, body.length > 10 && !body.includes('加载失败'),
         body.slice(0, 160));
+  check(`★ ${names[i]} 页没有「加载中」`, !body.includes('加载中'), body.slice(0, 120));
 }
 
 console.log('\n[5] 表格内容');

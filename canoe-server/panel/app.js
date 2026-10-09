@@ -641,12 +641,16 @@ function buildNav() {
   }
 }
 
+// 渲染当前页。
+//
+// 这里**不放「加载中…」占位**：那个占位 append 上去之后一直没删，
+// 结果每次切页都在内容上面挂一行"加载中…"（用户看到的）。而且它本来
+// 也只是一闪而过的字，不如干脆等数据回来直接出内容 —— 接口都是本机
+// 或自家服务端，慢不到哪去。
 async function render() {
   const meta = PAGES.find((p) => p.key === state.page) || PAGES[0];
   $('#page-title').textContent = meta.title;
   const root = clear($('#page'));
-  const loading = h('div', { class: 'empty', text: '加载中…' });
-  root.append(loading);
   try {
     await meta.render(root);
   } catch (err) {
