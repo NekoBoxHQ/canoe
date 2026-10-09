@@ -421,7 +421,9 @@ async function bindNodes(r) {
              + '一个都不勾 = 停止对他分发。' },
       ...nodes.map((n) => ({
         key: 'node_' + n.id,
-        label: `${n.remark || n.name}（#${n.id} · ${n.protocol || '?'} ${n.host || '?'}）${n.enabled ? '' : ' · 已停用'}`,
+        // 地址一律只写 host:port（跟节点表那一列一个规矩），
+        // 前面挂协议名会让每一行的"从哪儿开始是地址"都不一样
+        label: `${n.remark || n.name}（#${n.id} · ${n.host || '?'}:${n.port || '?'}）${n.enabled ? '' : ' · 已停用'}`,
         type: 'checkbox',
       })),
     ],
@@ -501,8 +503,13 @@ async function pageNodes(root) {
     { title: '名称', render: (r) => h('span', {},
         h('strong', { text: r.remark || r.name }),
         r.remark && r.name !== r.remark ? h('span', { class: 'muted', text: '  ' + r.name }) : '') },
-    { title: '节点', render: (r) => r.valid
-        ? h('span', { class: 'mono', text: `${r.protocol} ${r.host}:${r.port}` })
+    // 协议和地址分两列。原来挤在一格里（"shadowsocks one.leycc.com:33222"），
+    // 协议名长短不一，"one." 和 "h." 就对不齐 —— 协议越多越花。
+    // 拆开之后地址那列左边缘永远在同一个位置，什么协议都齐。
+    { title: '协议', render: (r) => r.protocol
+        ? tag(r.protocol) : h('span', { class: 'muted', text: '—' }) },
+    { title: '地址', render: (r) => r.valid
+        ? h('span', { class: 'mono', text: `${r.host}:${r.port}` })
         : tag('链接认不出', 'bad') },
     { title: '状态', render: (r) => r.enabled ? tag('启用', 'ok') : tag('停用') },
     { title: '排序', key: 'sort_order' },

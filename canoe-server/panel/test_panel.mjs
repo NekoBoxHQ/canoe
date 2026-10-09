@@ -208,6 +208,23 @@ check('★ 节点页显示解析出来的主机端口',
 check('★ 节点页显示协议', nodesTxt.includes('shadowsocks'), nodesTxt.slice(0, 200));
 check('节点页没有"入口 / 真实节点"那两列了',
       !nodesTxt.includes('真实节点') && !nodesTxt.includes('入口'), nodesTxt.slice(0, 200));
+// 地址那一格只能有 host:port，前面不许挂协议名。
+// 协议名长短不一（shadowsocks / vless / trojan），挤在同一格里
+// "从哪儿开始是地址"就每行都不一样，一列看下来是花的。
+//
+// ⚠ 别拿整页 textContent 做 includes 判断：相邻单元格之间**没有分隔符**，
+//   协议格和地址格会粘成 "shadowsockshk.example.com"（就这样误报过一次）。
+//   要按格子看。
+{
+  const cells = [...document.querySelectorAll('#page td')];
+  const addr = cells.find((c) => c.textContent.includes('hk.example.com:33222'));
+  check('★ 地址格里只有 host:port（协议另起一列，地址才会对齐）',
+        !!addr && addr.textContent.trim() === 'hk.example.com:33222',
+        addr ? `实际 "${addr.textContent.trim()}"` : '没找到地址格');
+  check('★ 协议单独占一列（不是拼在地址前面）',
+        cells.some((c) => c.textContent.trim() === 'shadowsocks'),
+        cells.slice(0, 8).map((c) => c.textContent.trim().slice(0, 20)).join(' | '));
+}
 
 console.log('\n[6] 弹窗能构造出来');
 navItems[3].dispatchEvent(new window.Event("click", { bubbles: true }));   // 发布页
