@@ -274,8 +274,11 @@ def main() -> int:
         # 单文件 exe 启动时会解压到 %TEMP%\_MEIxxxx 并清理上一次的同名目录，
         # 新的太早起来就会被对方清掉。所以必须先等旧进程真没了。
         check("★ 重试有上限（换不动也要退出）", "lss 30 goto swap" in script)
-        check("★ 拉新的之前先等旧进程退干净（删得掉 .old 才算退了）",
-              'del "{old_name}"' in update._BAT and ":waitold" in update._BAT)
+        # ★ 这里**故意没有**"等旧进程退出"那一段。以前靠"能不能删掉 .old"来判，
+        #   但 .old 正是回滚要用的那份 —— 先删了它，更新失败就没得退了。
+        #   三次重试本来就覆盖了"旧进程还在"（它会撞一次单实例锁，下一次就好）。
+        check("★ 不许提前删 .old（它是回滚的底本）",
+              ":waitold" not in update._BAT)
         check("★ 换完先等一会儿再启动（杀毒扫描刚落盘的 exe）",
               "ping -n 5 127.0.0.1" in script, "没找到启动前的等待")
         # 用户在真机上撞到过：更新后重启弹引导器的原生框
@@ -284,7 +287,7 @@ def main() -> int:
         # 既然重开能好，脚本就得自己重开，并且要有依据知道"到底起来没有"：
         # 光看进程在不在不行，引导器失败时也会留个挂在错误框上的进程。
         check("★ 启动后要确认它真的起来了（光看进程不算数）",
-              "if exist" in script and "goto launch" in script,
+              "if exist" in script and "goto relaunch" in script,
               "重启之后没有确认步骤")
         check("★ 判断依据是程序自己写的启动脚印", "started.txt" in script
               and "{marker}" not in script, "脚本没去看 started.txt / 占位符没替换")

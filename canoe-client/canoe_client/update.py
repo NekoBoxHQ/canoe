@@ -565,7 +565,8 @@ start "" "{cur}"
 exit /b 0
 
 :done
-rem 新版本确认起来了 —— 备份的旧程序可以扔了（扔不掉也无所谓，下次启动会收）
+rem The new build is confirmed up, so the rollback copy can go (if it will not
+rem delete, fine - cleanup_leftovers() collects it next start).
 del "{old_name}" >nul 2>&1
 
 rem Deliberately NOT "del %~f0". Deleting the running batch file makes cmd
