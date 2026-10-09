@@ -135,6 +135,35 @@ function toast(message, kind = '') {
   setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 250); }, 3600);
 }
 
+/* -------------------------------------------------------------------------
+ * 一按就干的动作（封禁 / 解封 / 删除 / 踢下线 / 撤版本……）
+ *
+ * 这两个函数**必须存在**：列表里那些按钮都直接调它们。曾经在重构里
+ * 把定义删掉了、调用点留着 —— 表现是点「封禁」「删除」毫无反应，
+ * 连报错都没有（按钮的 onclick 里抛 ReferenceError，浏览器只写进
+ * 控制台，页面上什么都没有）。DOM 测试当时只渲染表格、不点按钮，
+ * 所以一路绿灯放过去了。
+ * ------------------------------------------------------------------------- */
+
+/** 调一个接口 -> 提示 -> 重画当前页。失败就把原因弹出来，不静默吞掉。 */
+async function simple(path, method, okText) {
+  try {
+    await api(path, { method });
+  } catch (err) {
+    toast(err.message || '操作失败', 'err');
+    return false;
+  }
+  toast(okText, 'ok');
+  await render();
+  return true;
+}
+
+/** 动手前先问一句。用在删东西这种收不回来的操作上。 */
+function confirmDo(question, run) {
+  if (!window.confirm(question)) return false;
+  return run();
+}
+
 let modalSubmit = null;
 
 function openModal({ title, fields = [], values = {}, submitText = '确定', wide = false, onSubmit }) {

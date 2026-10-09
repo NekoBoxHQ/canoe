@@ -98,6 +98,8 @@ run(window, document, Node, storage, storage, globalThis.navigator, globalThis.f
     globalThis.setTimeout, console);
 
 const tick = () => new Promise((r) => queueMicrotask(r));
+//: render() 要连着 await 好几次（接口 -> 建 DOM），一个 tick 不够。
+const settle = async (n = 8) => { for (let i = 0; i < n; i++) await tick(); };
 
 console.log('\n== 面板 DOM 冒烟测试 ==\n');
 console.log('[1] 启动');
@@ -244,6 +246,52 @@ check('没填密码就不发 password（不会把密码清空）',
 check('★ 管理员改自己的名字后，侧边栏跟着换（不是登出前的旧快照）',
       document.querySelector('#whoami').textContent.includes('captain'),
       document.querySelector('#whoami').textContent);
+
+console.log('\n[9] 行操作按钮真的能干成活');
+// 踩过：`simple` / `confirmDo` 这两个助手函数在重构里被删掉了，
+// 调用点却留着 —— 点「封禁」「删除」「踢下线」毫无反应，页面上连个
+// 错都不显示（onclick 里抛 ReferenceError，只有控制台看得见）。
+// 原来那套测试只渲染表格、从不点按钮，于是一路绿灯。
+navItems[1].dispatchEvent(new window.Event('click', { bubbles: true }));   // 用户页
+await tick(); await tick(); await tick();
+
+const rowBtn = (label) => [...document.querySelector('#page').querySelectorAll('button')]
+  .find((b) => b.textContent.trim() === label);
+
+calls.length = 0;
+bodies.length = 0;
+rowBtn('封禁').dispatchEvent(new window.Event('click', { bubbles: true }));
+await settle();
+check('★ 点「封禁」真的发了请求',
+      calls.some((c) => /^POST \/api\/admin\/users\/\d+\/ban$/.test(c)), JSON.stringify(calls));
+
+calls.length = 0;
+window.confirm = () => true;      // 删除会先问一句
+rowBtn('删除').dispatchEvent(new window.Event('click', { bubbles: true }));
+await settle();
+check('★ 点「删除」真的发了 DELETE',
+      calls.some((c) => /^DELETE \/api\/admin\/users\/\d+$/.test(c)), JSON.stringify(calls));
+
+// 取消确认时不能动手
+window.confirm = () => false;
+calls.length = 0;
+rowBtn('删除').dispatchEvent(new window.Event('click', { bubbles: true }));
+await settle();
+check('★ 确认框点取消就不发请求',
+      !calls.some((c) => c.startsWith('DELETE')), JSON.stringify(calls));
+window.confirm = () => true;
+
+// 结构性兜底：onclick 里调的每个函数都得真有定义。
+// 上面两条是行为测试，只覆盖点到的按钮；这条把整个文件的按钮都扫一遍。
+const handlerFns = new Set();
+for (const m of src.matchAll(/onclick:\s*\(\)\s*=>\s*([A-Za-z_$][\w$]*)\s*\(/g)) {
+  handlerFns.add(m[1]);
+}
+check('扫到了一批按钮处理函数', handlerFns.size >= 5, [...handlerFns].join(','));
+for (const name of [...handlerFns].sort()) {
+  const defined = new RegExp(`(?:^|\\n)\\s*(?:async\\s+)?function\\s+${name}\\s*\\(|(?:const|let|var)\\s+${name}\\s*=`).test(src);
+  check(`★ onclick 里用到的 ${name}() 有定义`, defined);
+}
 
 console.log(`\n${'='.repeat(48)}\n通过 ${pass} 项，失败 ${fail} 项\n${'='.repeat(48)}\n`);
 process.exit(fail ? 1 : 0);
