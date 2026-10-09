@@ -29,7 +29,11 @@ CERT_FILE=""
 KEY_FILE=""
 EMAIL=""
 REPO_URL=""
+REPO_TOKEN="${CANOE_TOKEN:-}"     # 环境变量也行，免得令牌出现在 ps 里
 DO_SEED=1
+
+#: 项目的默认地址。不在检出目录里跑、又没给 --repo 时用它。
+DEFAULT_REPO="${CANOE_REPO:-https://github.com/NekoBoxHQ/canoe.git}"
 
 log()  { printf '\033[1;36m[*]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
@@ -63,11 +67,31 @@ usage() {
   --cert PATH           已有证书文件（fullchain，.pem/.crt）
   --key PATH            已有私钥文件（.key/.pem）
   --email ADDR          Let's Encrypt 注册邮箱（可选）
-  --repo URL            从 git 拉代码（默认用脚本所在的这份代码）
+  --repo URL            从哪个仓库拉代码（默认见下）
+  --token TOKEN         GitHub 私有仓库用的访问令牌（PAT），只读权限即可。
+                        只在克隆那一次用到，用完立刻从 remote 里擦掉。
   --no-seed             跳过种子数据
   -h, --help            看这个
 
   --https 是 --cert-mode 的旧名字，仍然能用。
+
+代码从哪来
+------------------------------------------------------------------
+  1) 在检出目录里跑（最常见）—— 直接把当前这份代码同步到 /opt/canoe
+         sudo bash canoe-server/deploy/install.sh
+
+  2) 不在检出目录里跑 —— 脚本自己去仓库拉
+         sudo bash install.sh --repo https://github.com/NekoBoxHQ/canoe.git
+
+  私有仓库有两条路（二选一，都是只读）：
+    · Deploy Key（推荐，一次配好，以后 `canoe upgrade` 直接能拉）
+        ssh-keygen -t ed25519 -f ~/.ssh/canoe -N ""
+        # 把 ~/.ssh/canoe.pub 加到仓库 Settings -> Deploy keys（不要勾写入）
+        sudo bash install.sh --repo git@github.com:NekoBoxHQ/canoe.git
+    · PAT（临时用，方便）
+        sudo bash install.sh --token <你的PAT>
+      注意：令牌用完会被擦掉，所以之后 `canoe upgrade` 拉不动，
+      得重新给一次。想一劳永逸就用上面的 Deploy Key。
 EOF
 }
 
@@ -84,6 +108,7 @@ while [[ $# -gt 0 ]]; do
         --key)                  KEY_FILE="${2:-}"; shift 2 ;;
         --email)                EMAIL="${2:-}"; shift 2 ;;
         --repo)                 REPO_URL="${2:-}"; shift 2 ;;
+        --token)                REPO_TOKEN="${2:-}"; shift 2 ;;
         --no-seed)              DO_SEED=0; shift ;;
         -h|--help)              usage; exit 0 ;;
         -*) die "未知选项：$1（-h 看用法）" ;;
@@ -251,11 +276,65 @@ if ! id -u "$APP_USER" >/dev/null 2>&1; then
 fi
 mkdir -p "$APP_DIR"; chown "$APP_USER:$APP_USER" "$APP_DIR"
 
+# 是不是在检出目录里跑？（脚本自己在 canoe-server/deploy/ 下）
+IN_CHECKOUT=0
+[[ -f "$REPO_ROOT/canoe-server/canoe_server/__init__.py" ]] && IN_CHECKOUT=1
+
+# 不在检出目录里、又没指名仓库 —— 那就自己去项目上拉。
+# 这就是「脚本自己在服务器上把代码拉下来」那条路：
+# 你只需要把 install.sh 弄到服务器上，别的它自己搞定。
+if [[ -z "$REPO_URL" && "$IN_CHECKOUT" == "0" ]]; then
+    REPO_URL="$DEFAULT_REPO"
+    log "不在检出目录里，改从项目拉代码"
+fi
+
 if [[ -n "$REPO_URL" ]]; then
+    CLONE_URL="$REPO_URL"
+
+    # root 去操作一个属于 canoe 用户的仓库时，新版 git 会以
+    # "detected dubious ownership" 直接拒绝。这里显式声明一次，
+    # 之后 install 和 `canoe upgrade`（也是 root）都能正常拉。
+    git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+
+    # 私有仓库 + 令牌：只在克隆这一下把令牌塞进 URL，用完立刻从
+    # remote 里擦掉。留着的话它会明文躺在 /opt/canoe/.git/config 里 ——
+    # 那是任何能读该目录的人都拿得到的东西。
+    if [[ -n "$REPO_TOKEN" ]]; then
+        case "$REPO_URL" in
+            https://*) CLONE_URL="https://${REPO_TOKEN}@${REPO_URL#https://}" ;;
+            *) die "--token 只能配 https:// 的仓库地址（现在给的是 $REPO_URL）。
+     要用 SSH（Deploy Key）就别传 --token。" ;;
+        esac
+    fi
+
     if [[ -d "$APP_DIR/.git" ]]; then
-        log "拉取最新代码"; sudo -u "$APP_USER" git -C "$APP_DIR" pull --ff-only
+        log "拉取最新代码（$REPO_URL）"
+        git -C "$APP_DIR" remote set-url origin "$CLONE_URL"
+        if ! git -C "$APP_DIR" pull --ff-only; then
+            git -C "$APP_DIR" remote set-url origin "$REPO_URL"
+            die "拉取失败。私有仓库拉不动通常是凭据问题：
+      · Deploy Key：确认 ~/.ssh/ 里的私钥在，且公钥已加到仓库
+        （Settings -> Deploy keys，只读即可）
+      · PAT：sudo bash install.sh --token <新的PAT>
+      · 本地有改动？git -C $APP_DIR status 看看"
+        fi
+        git -C "$APP_DIR" remote set-url origin "$REPO_URL"
     else
-        log "克隆仓库"; sudo -u "$APP_USER" git clone "$REPO_URL" "$APP_DIR"
+        log "克隆仓库：$REPO_URL"
+        # 用 root 克隆而不是 sudo -u canoe：Deploy Key 和 git 凭据都在
+        # root 的 HOME 下，canoe 用户根本看不到它们。克隆完再 chown 过去。
+        if ! git clone "$CLONE_URL" "$APP_DIR"; then
+            die "克隆失败。
+     私有仓库要先把凭据准备好，二选一：
+       Deploy Key（推荐）：
+         ssh-keygen -t ed25519 -f ~/.ssh/canoe -N \"\"
+         # 把 ~/.ssh/canoe.pub 加到仓库 Settings -> Deploy keys
+         sudo bash install.sh --repo git@github.com:NekoBoxHQ/canoe.git
+       PAT（临时）：
+         sudo bash install.sh --token <你的PAT>
+     仓库是公开的话这条不该失败，检查一下域名拼写。"
+        fi
+        [[ -n "$REPO_TOKEN" ]] && git -C "$APP_DIR" remote set-url origin "$REPO_URL"
     fi
 else
     log "从 $REPO_ROOT 同步代码到 $APP_DIR"

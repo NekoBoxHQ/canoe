@@ -10,6 +10,12 @@ from canoe_core import BRAND_CN, NAMESPACE_SERVER, SERVER_NAME
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 
+#: 管理员密码的内置默认值。
+#: ⚠️ 它不是"默认密码"，而是"还没设过"的标记：仓库公开，这个字符串
+#:    任何人都能从 GitHub 上搜到。seed.py 见到它就随机生成一把并打印出来，
+#:    绝不会拿它当真密码。install.sh 本来就直接生成随机的。
+DEFAULT_ADMIN_PASSWORD = "canoe-admin-123"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -91,7 +97,10 @@ class Settings(BaseSettings):
 
     # --- seed ---
     admin_username: str = "admin"
-    admin_password: str = "canoe-admin-123"
+    #: 内置默认值。**这个值在仓库里是公开的**，所以 seed.py 见到它就会
+    #: 换成随机密码 —— 否则照着文档手动部署的人，会在公网上开一个
+    #: 密码人尽皆知的管理面板。见 DEFAULT_ADMIN_PASSWORD。
+    admin_password: str = DEFAULT_ADMIN_PASSWORD
 
     @property
     def is_sqlite(self) -> bool:

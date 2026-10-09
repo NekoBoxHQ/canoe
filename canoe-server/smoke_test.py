@@ -17,6 +17,7 @@ import hashlib
 import io
 import json
 import os
+from pathlib import Path
 import sys
 import threading
 import time
@@ -29,6 +30,31 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from canoe_core import ENTRY_FIELDS, Api, ConfigResponse, EntryPayload, Envelope  # noqa: E402
+
+def _admin_credentials() -> tuple[str, str]:
+    """管理员账号密码。
+
+    不写死 —— 换个环境（.env 里设了别的）就登不进去了。
+    顺序：环境变量 -> 服务端的 .env -> 内置默认值。
+    """
+    user = os.environ.get("ADMIN_USERNAME", "")
+    password = os.environ.get("ADMIN_PASSWORD", "")
+
+    env_file = Path(__file__).resolve().parent / ".env"
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip()
+            if key == "ADMIN_USERNAME" and not user:
+                user = value
+            elif key == "ADMIN_PASSWORD" and not password:
+                password = value
+
+    return user or "admin", password or "canoe-admin-123"
+
 
 #: 冒烟用的样例订阅（一行 SS2022 链接）
 SAMPLE_SUB = (
@@ -162,9 +188,10 @@ def main() -> int:
 
     # 5. 管理员建节点
     print("\n[5] 管理员配置节点")
+    admin_user, admin_pass = _admin_credentials()
     r = client.post(
         Api.LOGIN,
-        json={"username": "admin", "password": "canoe-admin-123", "device_id": "canoe-admin-dev"},
+        json={"username": admin_user, "password": admin_pass, "device_id": "canoe-admin-dev"},
     )
     check("管理员登录 200", r.status_code == 200, r.text[:250])
     if r.status_code != 200:

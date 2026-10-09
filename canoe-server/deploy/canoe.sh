@@ -422,9 +422,13 @@ cmd_upgrade() {
     if [[ -d "$APP_DIR/.git" ]]; then
         log "拉取最新代码…"
         if ! git -C "$APP_DIR" pull --ff-only; then
-            warn "git pull 失败（有本地改动？或者不是快进合并）"
-            dim "详见：git -C $APP_DIR status"
-            printf '  跳过拉代码，只重装依赖并重启？[y/N] '
+            err "拉取失败。按顺序排查："
+            dim "1) 本地有没有改动：  git -C $APP_DIR status"
+            dim "2) 私有仓库的凭据还在不在（最常见）："
+            dim "   Deploy Key：确认 ~/.ssh/ 里的私钥在、公钥还在仓库的 Deploy keys 里"
+            dim "   用的是 PAT：令牌会被擦掉，得重新给一次 ——"
+            dim "              sudo bash $SERVER_DIR/deploy/install.sh --token <新PAT>"
+            printf '\n  跳过拉代码，只重装依赖并重启？[y/N] '
             local a; read -r a
             [[ "$a" =~ ^[Yy]$ ]] || { log "已取消"; return 0; }
         fi

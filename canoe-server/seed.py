@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import secrets
 import sys
 from datetime import timedelta
 
@@ -18,7 +19,7 @@ if hasattr(sys.stdout, "reconfigure"):
 from sqlalchemy import select
 
 from canoe_core import BRAND_CN, SLOGAN_CN
-from canoe_server.config import settings
+from canoe_server.config import DEFAULT_ADMIN_PASSWORD, settings
 from canoe_server.database import SessionLocal, engine, init_db
 from canoe_server.models import Node, User, utcnow
 from canoe_server.security import gen_entry_uuid, hash_password
@@ -55,9 +56,18 @@ def main() -> None:
         # --- 管理员 ---
         admin = db.scalars(select(User).where(User.username == settings.admin_username)).first()
         if admin is None:
+            # 还是内置默认值 -> 换一把随机的。
+            # 仓库是公开的，canoe-admin-123 这个字符串谁都能从 GitHub 上搜到；
+            # 照着文档手动部署的人要是真用了它，等于在公网上开了一个
+            # 密码人尽皆知的管理面板。宁可随机生成再打印一次。
+            password = settings.admin_password
+            generated = password == DEFAULT_ADMIN_PASSWORD
+            if generated:
+                password = secrets.token_urlsafe(18)
+
             admin = User(
                 username=settings.admin_username,
-                password_hash=hash_password(settings.admin_password),
+                password_hash=hash_password(password),
                 role="admin",
                 status="active",
                 max_devices=99,
@@ -65,8 +75,14 @@ def main() -> None:
             )
             db.add(admin)
             db.commit()
-            print(f"[+] 管理员: {settings.admin_username} / {settings.admin_password}")
-            print("    ⚠ 请立刻改掉（.env 的 ADMIN_PASSWORD，或后台改）")
+            if generated:
+                print(f"[+] 管理员: {settings.admin_username}")
+                print(f"    密码  : {password}")
+                print("    （没配 ADMIN_PASSWORD，所以现生成了一把随机的。")
+                print("      存好它，或者去 .env 里设一个再重跑。后台也能改。）")
+            else:
+                print(f"[+] 管理员: {settings.admin_username} / {password}")
+                print("    ⚠ 请立刻改掉（.env 的 ADMIN_PASSWORD，或后台改）")
         else:
             print(f"[=] 管理员已存在: {settings.admin_username}")
 

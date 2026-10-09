@@ -141,6 +141,49 @@ check "改客户端口会警告写死的事" \
 printf '\n[7] 语法\n'
 check "bash -n 通过" "$(bash -n "$TARGET" 2>/dev/null && echo 0 || echo 1)"
 
+# ---------------------------------------------------------------------------
+# install.sh 的「自己去项目拉代码」这条路。
+#
+# ⚠ 这里只做静态检查 + 跑 --help：install.sh 一执行就要 apt-get / useradd /
+#   systemd / certbot，在开发机上跑会真的改系统。真正的验收得在 Debian 上做。
+# ---------------------------------------------------------------------------
+printf '\n[8] install.sh 取代码\n'
+INSTALL="$HERE/install.sh"
+
+check "install.sh 存在" "$([[ -f "$INSTALL" ]] && echo 0 || echo 1)"
+check "install.sh 语法通过" "$(bash -n "$INSTALL" 2>/dev/null && echo 0 || echo 1)"
+
+check "内置了默认仓库地址" "$(grep -q '^DEFAULT_REPO=' "$INSTALL" && echo 0 || echo 1)"
+check "默认地址指向本项目" \
+      "$(grep -q 'DEFAULT_REPO=.*NekoBoxHQ/canoe' "$INSTALL" && echo 0 || echo 1)"
+
+# 不在检出目录里跑 -> 应该自动改用 DEFAULT_REPO 去拉
+check "不在检出目录时自动回落到项目地址" \
+      "$(grep -q 'IN_CHECKOUT' "$INSTALL" && grep -q 'REPO_URL="\$DEFAULT_REPO"' "$INSTALL" && echo 0 || echo 1)"
+check "能识别出「在不在检出目录里」" \
+      "$(grep -q 'canoe-server/canoe_server/__init__.py' "$INSTALL" && echo 0 || echo 1)"
+
+# 令牌处理：这是最容易写错、也最容易被忽略的一处
+check "支持 --token" "$(grep -qE '^\s*--token\)' "$INSTALL" && echo 0 || echo 1)"
+check "也认 CANOE_TOKEN 环境变量" \
+      "$(grep -q 'CANOE_TOKEN' "$INSTALL" && echo 0 || echo 1)"
+check "★ 令牌用完从 remote 里擦掉（不留明文）" \
+      "$(grep -q 'remote set-url origin "\$REPO_URL"' "$INSTALL" && echo 0 || echo 1)"
+check "★ 日志里只打印不带令牌的地址" \
+      "$(grep -q '克隆仓库：\$REPO_URL' "$INSTALL" && echo 0 || echo 1)"
+check "--token 配非 https 地址会明确报错" \
+      "$(grep -q '只能配 https://' "$INSTALL" && echo 0 || echo 1)"
+
+# root 操作 canoe 用户的仓库会被 git 拒（dubious ownership）
+check "★ 声明了 safe.directory（否则 pull 会被 git 拒）" \
+      "$(grep -q 'safe.directory' "$INSTALL" && echo 0 || echo 1)"
+
+HELP_I="$(bash "$INSTALL" --help 2>&1)"
+check "--help 能跑" "$(grep -q "安装向导" <<< "$HELP_I" && echo 0 || echo 1)"
+check "帮助里说明了代码从哪来" "$(grep -q "代码从哪来" <<< "$HELP_I" && echo 0 || echo 1)"
+check "帮助里有 Deploy Key 的走法" "$(grep -q "Deploy keys" <<< "$HELP_I" && echo 0 || echo 1)"
+check "帮助里有 --token" "$(grep -q -- "--token" <<< "$HELP_I" && echo 0 || echo 1)"
+
 printf '\n%s\n' "$(printf '=%.0s' {1..48})"
 printf '通过 %d 项，失败 %d 项\n' "$passed" "$failed"
 printf '%s\n\n' "$(printf '=%.0s' {1..48})"

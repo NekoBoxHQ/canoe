@@ -40,6 +40,24 @@ BASE = os.environ.get("CANOE_SERVER_URL", "").rstrip("/")
 _CA = (os.environ.get("CANOE_CA_BUNDLE") or "").strip()
 VERIFY: str | bool = _CA if _CA and Path(_CA).is_file() else True
 
+
+def admin_credentials() -> tuple[str, str]:
+    """管理员账号密码，从服务端的 .env 里读。
+
+    不写死 —— .env 里换了密码（install.sh 是随机生成的），写死就登不进去。
+    """
+    user = os.environ.get("ADMIN_USERNAME") or "admin"
+    password = os.environ.get("ADMIN_PASSWORD") or ""
+
+    env_file = Path(__file__).resolve().parent.parent.parent / "canoe-server" / ".env"
+    if env_file.is_file() and not password:
+        for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            key, _, value = line.strip().partition("=")
+            if key.strip() == "ADMIN_PASSWORD":
+                password = value.strip()
+                break
+    return user, password or "canoe-admin-123"
+
 #: 样例订阅 —— 用户给的那种 SS2022 链接
 SUB_ONE = (
     "ss://2022-blake3-aes-128-gcm:hlKPbKuiXS9LaEmUOq5HYA%3D%3D"
@@ -94,8 +112,9 @@ def main() -> int:
     check("config.server_url 用的是环境变量覆盖", config.server_url == BASE, config.server_url)
 
     # 管理员：直接走 HTTP，不经客户端 api（免得共用 token 状态）
+    admin_user, admin_pass = admin_credentials()
     admin = requests.post(f"{BASE}/api/login", json={
-        "username": "admin", "password": "canoe-admin-123",
+        "username": admin_user, "password": admin_pass,
         "device_id": "itest-admin-0001", "device_name": "itest",
     }, timeout=10, verify=VERIFY)
     if admin.status_code != 200:
