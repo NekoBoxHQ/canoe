@@ -22,6 +22,9 @@ WorkingDirectory=/opt/canoe/canoe-server
 # PATH 指到 venv，方便运维手动 exec 进去排查。
 EnvironmentFile=-/opt/canoe/canoe-server/.env
 Environment="PATH=/opt/canoe/canoe-server/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+# ProtectSystem=strict 下代码目录是只读的，写 .pyc 会失败。
+# Python 不会因此崩（它只是不缓存），但每次启动都要重新编译一遍，没必要。
+Environment="PYTHONDONTWRITEBYTECODE=1"
 
 # ⚠ serve.py 里写死了 --workers 1。
 #   推送中心（/api/events）是进程内的内存结构，多 worker 时管理端的广播

@@ -38,28 +38,61 @@ uvicorn canoe_server.app:app --workers 1     # ← 必须
 
 ---
 
-## 2. 一键装（推荐）
+## 2. 安装向导（推荐）
 
 ```bash
-sudo bash deploy/install.sh canoe.s-ui.com --port 58588 --https le
+sudo bash canoe-server/deploy/install.sh
 ```
 
-不带参数直接回车，会一项一项问你（域名 / 端口 / HTTPS 方式）。
+不带参数会**一项一项问你三件事**：
+
+```
+[1/3] 域名
+      用来申请证书、拼客户端下载地址。没有域名就留空（证书只能自签）。
+      域名: canoe.s-ui.com
+
+[2/3] Web 端口
+      管理面板和 API 共用这一个端口，客户端也用它取更新和订阅。
+      Web 端口 [58588]:
+
+[3/3] 证书
+      1) Let's Encrypt 自动申请   推荐。要域名已解析到本机，且 80 端口空闲
+      2) 自签证书                 自己用够了；浏览器会警告
+      3) 我已有证书               你把证书和私钥文件给我
+      4) 不加密                   前面已经有 HTTPS 反代了
+      请选择 [1]:
+```
+
+也可以全用参数跳过问答（适合脚本化）：
+
+```bash
+sudo bash deploy/install.sh --domain canoe.s-ui.com --port 58588 --cert-mode le
+sudo bash deploy/install.sh --domain x.com --cert-mode existing \
+     --cert /root/ssl/fullchain.pem --key /root/ssl/privkey.pem
+```
 
 | 选项 | 说明 |
 |---|---|
-| `--port N` | 对外端口，默认 **58588** |
-| `--https le` | Let's Encrypt 证书（需要域名已解析到本机、80 端口空闲）。**推荐** |
-| `--https self` | 自签证书。浏览器会警告；先用着，之后换正式证书 |
-| `--https none` | 不加密（只建议放在别的反代后面） |
+| `--domain NAME` | 域名。留空则用 IP 访问，证书只能自签 |
+| `--port N` | **Web 端口**，面板与 API 共用，默认 **58588** |
+| `--cert-mode le` | Let's Encrypt 自动申请（需域名已解析、80 端口空闲）。**推荐** |
+| `--cert-mode self` | 自签证书。浏览器会警告 |
+| `--cert-mode existing` | 用你已有的证书，配 `--cert` / `--key`。**不自动续期** |
+| `--cert-mode none` | 不加密（只建议放在别的反代后面） |
+| `--email ADDR` | Let's Encrypt 注册邮箱（可选） |
+
+> `--https` 是 `--cert-mode` 的旧名字，仍然能用。
+
+选 **3 已有证书** 时会先替你验一遍：文件在不在、是不是合法 X.509、
+**证书和私钥是不是同一套**（modulus 比对），对不上直接报错，
+不会等到服务起不来才发现。
 
 脚本会：建 `canoe` 用户 → 放代码到 `/opt/canoe` → 建 venv 装依赖 →
-申请/生成证书 → 生成 `.env`（含随机 `TICKET_SECRET` 和管理员密码）→
+准备证书 → 生成 `.env`（含随机 `TICKET_SECRET` 和管理员密码）→
 建库 + 种子 → 装 systemd → 自检。
 
 **默认是直连模式**：uvicorn 自己监听在指定端口上做 TLS，**不需要 Nginx**。
-（想用 Nginx 前置的话，装完把 `.env` 里的 `TLS_CERT`/`TLS_KEY` 清空，
-再按第 4 节配。）
+（想用 Nginx 前置的话证书方式选 4，再按第 4 节配。）
 
 跑完检查：
 
@@ -69,6 +102,24 @@ curl -s https://canoe.s-ui.com:58588/api/health
 ```
 
 打开面板：`https://canoe.s-ui.com:58588/panel`（管理员密码在 `/opt/canoe/ADMIN_PASSWORD.txt`）。
+
+### 证书放在哪
+
+服务以 `canoe` 用户跑，**读不了 root-only 的私钥**。所以不管哪种方式，
+证书最后都归拢到 `/etc/canoe/live/`（属主 `root:canoe`、权限 640）：
+
+```
+/etc/canoe/live/fullchain.pem
+/etc/canoe/live/privkey.pem
+```
+
+`.env` 里指的就是这两个。certbot 签出来的
+`/etc/letsencrypt/live/<域名>/privkey.pem` 默认是 `0600 root:root`，
+直接写进 `.env` 服务会起不来 —— 这是踩过的坑。
+
+Let's Encrypt 续期后会由 `/etc/letsencrypt/renewal-hooks/deploy/canoe.sh`
+自动重发布证书并重启服务，不用你管。**已有证书模式不会自动续期**，
+到期前自己换掉再重跑脚本。
 
 ### 改端口 / 换证书
 
