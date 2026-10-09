@@ -103,28 +103,14 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
-# ★ 2026-10-10：从 onefile 改成 **onedir**（exe + 同目录的 _internal/）。
-#
-#   为什么改：onefile 每次启动都要把约 80MB 解压到 `%TEMP%\_MEIxxxx`，然后再去
-#   那个目录里加载 `python313.dll`。用户在这台机器上反复撞到
-#
-#       Failed to load Python DLL '...\_MEI00003ae42\python313.dll'.
-#       LoadLibrary: 找不到指定的模块。
-#
-#   —— 更新完重启起不来，手动再点一次又好了。猜了一整晚（杀软在翻刚落盘的
-#   二进制、临时目录被 pid 撞名、引导器继承了父进程的 _PYI_* 环境变量……）
-#   都**没能钉死**。于是按用户的意见换成"根本不解压"的形态：
-#   文件一直在磁盘上，进程直接加载。没有解压这一步，就没有这一步能出的错。
-#   顺带启动快一大截（不用每次解压 80MB）。
-#
-#   代价：产物不再是一个文件，而是一个文件夹（Canoe.exe + _internal/）。
-#   安装 = 把 zip 解压到 C:\ 得到 C:\Canoe\；更新 = 整体换文件夹。
-#   这是用户拍的取舍 —— 稳定性优先于"只有一个文件"。
+# onefile：binaries 和 datas 直接塞进 EXE，不再有 COLLECT 那一步。
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,   # 依赖不进 exe，交给下面的 COLLECT 摊进文件夹
+    exclude_binaries=False,
     name="Canoe",
     debug=False,
     bootloader_ignore_signals=False,
@@ -137,15 +123,9 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=str(BASE / "assets" / "canoe.ico"),
-    version=None,
+    version=None,        # 想加版本信息可指向一个 version_info 文件
 )
 
-# 产物目录名就是安装目录名：dist/Canoe/  ->  解压到 C:\ 得到 C:\Canoe\
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    name="Canoe",
-)
+# 使用说明不再往产物目录塞 —— onefile 的产物就是一个 exe，旁边多出个
+# txt 反而破坏"只有一个文件"。说明改由 scripts/package_release.py
+# 决定放不放（默认跟 exe 一起打进 zip）。

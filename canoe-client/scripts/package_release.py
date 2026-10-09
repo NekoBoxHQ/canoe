@@ -26,10 +26,8 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 DIST = BASE / "dist"
-#: onedir 的产物是这个**目录**（见 canoe.spec）。里面是 Canoe.exe + _internal/，
-#: 还有 bin/ 和 assets/。装的时候整份解压到 C:\ 得到 C:\Canoe\。
-APP_DIR = DIST / "Canoe"
-APP = APP_DIR / "Canoe.exe"
+#: onefile 的产物就是这个文件（见 canoe.spec）
+APP = DIST / "Canoe.exe"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -59,7 +57,7 @@ def verify_app() -> bool:
       cryptography 的动态库能不能加载），不看网络 —— 拿它当"这个 exe 是不是
       完整的"这道闸正合适，离线也照跑。
     """
-    print(f"[*] 自检 {APP.name} …")
+    print(f"[*] 自检 {APP.name} …（要解压约 80MB，等十几秒）")
     try:
         proc = subprocess.Popen(
             [str(APP), "--selftest"],
@@ -94,24 +92,22 @@ def verify_app() -> bool:
 
 def main() -> int:
     if not APP.is_file():
-        print("[x] 没找到 dist/Canoe/Canoe.exe —— 先跑 build.bat 或 PyInstaller")
+        print("[x] 没找到 dist/Canoe.exe —— 先跑 build.bat 或 PyInstaller")
         return 1
 
     if not verify_app():
-        print("[x] 没出包 —— 先把这份产物修好再发。")
+        print("[x] 没出包 —— 先把这个 exe 修好再发。")
         return 1
 
     ver = version()
     out = DIST / f"Canoe-{ver}-win64.zip"
 
-    files = sorted(p for p in APP_DIR.rglob("*") if p.is_file())
-    total = sum(p.stat().st_size for p in files)
-    print(f"[*] 打包整个 Canoe/ 目录（{len(files)} 个文件，{total / 1024 / 1024:.1f} MB）-> {out.name}")
+    # 打包 —— 就一个文件，平铺在 zip 根下，别套目录
+    size_mb = APP.stat().st_size / 1024 / 1024
+    print(f"[*] 打包 Canoe.exe（{size_mb:.1f} MB）-> {out.name}")
 
-    # zip 里第一层就是 Canoe/，用户解压到 C:\ 得到 C:\Canoe\
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
-        for path in files:
-            z.write(path, arcname="Canoe/" + path.relative_to(APP_DIR).as_posix())
+        z.write(APP, arcname="Canoe.exe")
 
     digest = hashlib.sha256(out.read_bytes()).hexdigest()
     (DIST / f"{out.name}.sha256").write_text(f"{digest}  {out.name}\n", encoding="utf-8")
@@ -121,7 +117,7 @@ def main() -> int:
     print(f"  版本    {ver}")
     print(f"  产物    {out}")
     print(f"  大小    {out.stat().st_size / 1024 / 1024:.1f} MB")
-    print(f"  内含    Canoe/ 整个目录（解压到 C:\\ 得到 C:\\Canoe\\）")
+    print(f"  内含    Canoe.exe（单文件，解压出来就这一个）")
     print(f"  sha256  {digest}")
     print("=" * 56)
     print()

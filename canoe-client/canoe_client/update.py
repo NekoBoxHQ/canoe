@@ -29,7 +29,6 @@ import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NoReturn
 
 import requests
 
@@ -258,93 +257,60 @@ def _current_exe() -> Path:
     return Path(sys.executable).resolve()
 
 
-def install_dir() -> Path:
-    """程序自己所在的目录。
+def staging_path() -> Path:
+    """新程序先放哪儿。
 
-    onedir 形态下这儿就是**安装目录**（比如 `C:\\Canoe`）—— exe 和它要用的
-    东西（`_internal/`、`bin/`、`assets/`）都摊在里面，启动时**不需要解压**。
-    更新就是整体换掉这个目录。
+    放**当前程序同一个目录**：替换时是同卷改名，一步到位，不用跨盘拷贝。
+    也顺带把"这个目录能不能写"这件事提前问出来了 —— 写在 Program Files
+    下面就当场失败，而不是等我们退了它才失败。
     """
-    return _current_exe().parent
-
-
-def staging_dir() -> Path:
-    """新版本先解压到哪儿。
-
-    放在安装目录**旁边**（同一个盘）：换的时候是同卷改名，一步到位，不用跨盘
-    拷贝几万个文件。也顺带把"这个位置能不能写"提前问出来 —— 写在
-    Program Files 下面就当场失败，而不是等我们退了它才失败。
-    """
-    base = install_dir()
-    return base.parent / (base.name + ".update")
+    return _current_exe().with_name("Canoe.exe.new")
 
 
 def prepare_update(archive: Path) -> Path:
-    """把发布包解压到安装目录旁边的暂存目录，返回那个目录。
-
-    发布包是个 zip，里面第一层就是 `Canoe/`（用户解压到 `C:\\` 得到
-    `C:\\Canoe\\`）。这里把那一层剥掉，让暂存目录直接长成"应用目录"的样子，
-    换的时候 `move` 一下就行。
-    """
+    """从发布包里取出 Canoe.exe，放到当前程序旁边待用。返回它的路径。"""
     if not can_self_update():
         raise UpdateError("当前不是以安装包方式运行的，没法自动更新", code="not_frozen")
 
     archive = Path(archive)
+    dest = staging_path()
     if not archive.is_file():
         raise UpdateError("安装包不见了，请重新下载", code="no_archive")
 
-    stage = staging_dir()
-
-    def bail(code: str, message: str, cause: BaseException | None = None) -> NoReturn:
-        # 半成品绝不留着 —— 下次进来会把它当成"下好了"
-        shutil.rmtree(stage, ignore_errors=True)
-        exc = UpdateError(message, code=code)
-        raise exc from cause
-
     try:
-        shutil.rmtree(stage, ignore_errors=True)
-        stage.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(archive) as z:
-            names = [n for n in z.namelist() if n and not n.endswith("/")]
-            # 包里第一层正常就叫 Canoe/；万一没有这一层也照样能解（prefix 留空）
-            prefix = "Canoe/" if names and all(n.startswith("Canoe/") for n in names) else ""
-            members = [(n, n[len(prefix):]) for n in names]
-            if not any(rel.lower() == "canoe.exe" for _n, rel in members):
-                bail("bad_archive", "安装包里没有 Canoe.exe")
-            for name, rel in members:
-                if not rel:
-                    continue
-                dest = stage / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                with z.open(name) as src, open(dest, "wb") as out:
-                    shutil.copyfileobj(src, out, 1 << 20)
-    except UpdateError:
-        raise
+            names = [n for n in z.namelist() if not n.endswith("/")]
+            # 包里正常就一个 Canoe.exe；万一换了名字，取第一个 exe
+            member = next((n for n in names if n.lower().endswith(".exe")), None)
+            if member is None:
+                raise UpdateError("安装包里没有 exe", code="bad_archive")
+            with z.open(member) as src, open(dest, "wb") as out:
+                shutil.copyfileobj(src, out, 1 << 20)
     except zipfile.BadZipFile as exc:
-        bail("bad_archive", "安装包损坏（解不开）", exc)
+        raise UpdateError("安装包损坏（解不开）", code="bad_archive") from exc
     except PermissionError as exc:
-        bail(
-            "no_permission",
-            f"没有权限在 {stage.parent} 下写。\n"
-            "把轻舟装到自己的目录（比如 C:\\Canoe）再更新，或者手动解压覆盖。",
-            exc,
-        )
+        dest.unlink(missing_ok=True)
+        raise UpdateError(
+            f"没有权限在 {dest.parent} 下写入。\n"
+            "把轻舟换到桌面或其它自己的目录再更新，或者手动解压覆盖。",
+            code="no_permission",
+        ) from exc
     except OSError as exc:
-        bail("io_error", f"解压新版本失败：{exc}", exc)
+        dest.unlink(missing_ok=True)
+        raise UpdateError(f"写入新程序失败：{exc}", code="io_error") from exc
 
-    exe = stage / "Canoe.exe"
-    if not exe.is_file() or exe.stat().st_size < (1 << 20):
-        bail("bad_archive", "程序太小，包可能是坏的")
-    # ⚠ 头两个字节要单独读出来、**出了 with 再判**。在 with 里面删会撞上
-    #   WinError 32（文件还开着），删不掉，还会把 PermissionError 原样抛给
-    #   用户 —— 明明该说的是"这不是个 Windows 程序"。
-    with open(exe, "rb") as fh:
+    if dest.stat().st_size < (1 << 20):
+        dest.unlink(missing_ok=True)
+        raise UpdateError("取出来的程序太小，包可能是坏的", code="bad_archive")
+    # ⚠ 头两个字节要单独读出来、**出了 with 再删**。在 with 里面 unlink
+    #   会撞上 WinError 32（文件还开着），删不掉，还会把 PermissionError
+    #   原样抛给用户 —— 明明该说的是"这不是个 Windows 程序"。
+    with open(dest, "rb") as fh:
         magic = fh.read(2)
     if magic != b"MZ":
-        bail("bad_archive", "取出来的不是 Windows 程序")
-    if not (stage / "_internal").is_dir():
-        bail("bad_archive", "安装包不完整（缺 _internal 目录）")
-    return stage
+        dest.unlink(missing_ok=True)
+        raise UpdateError("取出来的不是 Windows 程序", code="bad_archive")
+    return dest
 
 
 def start_marker() -> Path:
@@ -484,71 +450,93 @@ def _write_bat(path: Path, script: str) -> None:
 
 #: 替换脚本。**通篇 ASCII** —— 批处理按控制台代码页读文件，掺中文会变乱码。
 #:
-#: 为什么非得绕这一圈：Windows 上正在运行的程序，它所在的**目录改不了名**
-#: （里面的 exe 被占着）。任何"我先退出、退出前自己换"的写法都死在
-#: "退出之后没人干活"。交给系统来做 —— 写个 .bat，让 cmd 去换。
+#: 为什么非得绕这一圈：Windows 上正在运行的 exe 删不掉，也覆盖不了。
+#: 任何"我先退出、退出前自己替换"的写法都死在"退出之后没人干活"。
+#: 交给系统来做 —— 写个 .bat，让 cmd 去换。
 #:
-#: 两件事，顺序都有原因：
+#: 三件事，顺序都有原因：
 #:
-#:   1. **换目录：先把旧的改名挪开，再把新的搬进来**。
+#:   1. **换文件：先把旧的改名挪开，再把新的放进去**。
 #:
-#:      ★ 这里是 2026-10-10 从"换单个 exe"改成"换整个目录"的。原因是
-#:        onefile 每次启动都要把 80MB 解压到 `%TEMP%\_MEIxxxx` 再加载
-#:        python313.dll，用户反复撞到
-#:            Failed to load Python DLL '...\_MEI00003ae42\python313.dll'.
-#:        而猜了一整晚（杀软、临时目录撞 pid 名、引导器继承 _PYI_* 环境变量）
-#:        都没能钉死。于是换成 onedir：**根本不解压**，文件一直在磁盘上。
-#:
-#:      重试循环**本身就是"等旧进程退出"**：目录里有正在运行的 exe 时
-#:      `ren` 一定失败，成功就说明它没了。
+#:      ★ 2026-10-10 改的，旧写法真出事了。原来是 `move /y new cur` 加重试
+#:        循环 —— 而 move 要覆盖就得先删掉 cur，偏偏**正在运行的 exe 删不掉**
+#:        （改名可以：实测改名成功、删除 WinError 5 拒绝访问）。于是旧进程
+#:        多活一会儿，move 就一次都成功不了，那个循环得 ping 满一分钟才认输。
+#:        用户的原话是"更新一直 ping 个没停"，而且更新**压根没装上**
+#:        （桌面上还是旧版本）。`ren cur cur.old` 之后再 move 就没有这个坎，
+#:        新版本立刻到位。
 #:
 #:      ⚠ 别再加那段 `tasklist ... | findstr ...` 的轮询。加过，出事了：
 #:        那个管道会**永久卡住**，实测把一个真实更新挂死了 18 分钟 ——
 #:        cmd 一直在等它的子进程 findstr，而 findstr 一直在等一个永远不
-#:        来的输入结束。
+#:        来的输入结束。用户那边的表现就是"点了更新，程序关了，然后
+#:        什么都没发生，桌面上留着 Canoe.exe.new 和这个 .bat"。
 #:
-#:   2. **拉起来之后确认它真的起来了，没起来就重开**。
+#:   2. **等旧进程真的退干净，再拉新的**。旧 exe 改名成了 .old，但仍然被旧
+#:      进程占着、删不掉 —— **删得掉就说明它退了**，拿这个当判据，不用去问
+#:      系统"那个 pid 还在不在"。不等到就拉起新的，新实例会撞上单实例锁、
+#:      白起一次。等不到就写日志收摊：文件已经换好了，下次打开就是新版本。
 #:
-#:      真出过事：用户报"更新后重启报错，找不到模块"。既然手动再开一次能好，
-#:      就让脚本自己重开。依据是程序起来后会写的那个 started.txt
-#:      （见 mark_started）；连试三次都不行才写日志认输，日志会在下次
+#:   3. **拉起来之后确认它真的起来了，没起来就重开**。
+#:
+#:      ★ 这一条是真出过事才加的。用户报"更新后重启报错，找不到模块"，
+#:        截图是引导器的原生框：
+#:            Failed to load Python DLL '...\\_MEI00003ae42\\python313.dll'.
+#:            LoadLibrary: 找不到指定的模块。
+#:        但**手动再开一次就好了** —— 说明 exe 本身没坏，是这一次解压/加载
+#:        偶发失败（杀软正在翻一个刚写出来的二进制）。既然重开一次能好，
+#:        就让脚本自己重开。依据是程序起来后会写的那个 started.txt
+#:        （见 mark_started）；连试三次都不行才写日志认输，日志会在下次
 #:        启动时弹给用户看。
 _BAT = r"""@echo off
-rem Canoe self-update: swap the whole app folder once the old process lets go,
-rem then start the new one and confirm it came up.
+rem Canoe self-update: swap the exe once the old process lets go, start the new
+rem one, and restart it until it really comes up.
 setlocal
-cd /d "{parent}"
+cd /d "%~dp0"
 
-rem --- 1) swap the folder ---------------------------------------------------
-rem Renaming a folder that has a running exe inside FAILS, so this retry loop
-rem IS the wait for the old process to exit - no need to ask the OS about pids.
+rem --- 1) swap -------------------------------------------------------------
+rem Rename the old exe aside FIRST. Renaming a running exe works; deleting one
+rem does not. So a plain "move /y" onto it can NEVER succeed while the old
+rem process is alive - the retry loop just pings for a minute, which is exactly
+rem what a user saw ("the update keeps pinging and never stops", with the new
+rem version not installed at all).
+rem NOTE: ren's second argument is a NAME, not a path - passing a full path
+rem silently fails. We cd'd to the exe's folder above, so bare names are what
+rem we use here. Getting this wrong is invisible: ren fails, move then fails
+rem too, and you only notice it because nothing ever updates.
 set /a tries=0
 :swap
-if exist "{old_dir}" rmdir /s /q "{old_dir}" >nul 2>&1
-ren "{name}" "{old_name}" >nul 2>&1
-if not exist "{old_name}" goto unswap
-move "{stage}" "{name}" >nul 2>&1
-if exist "{name}\Canoe.exe" goto swapped
+if exist "{cur}" del "{old_name}" >nul 2>&1
+if exist "{cur}" ren "{cur_name}" "{old_name}" >nul 2>&1
+move /y "{new}" "{cur}" >nul 2>&1
+if not exist "{cur}" goto unswap
+if exist "{new}" goto unswap
+goto swapped
 :unswap
-rem Did not land. Put the old folder back - a failed update must never leave
-rem the user with no program at all (the old one is sitting there as .old).
-if not exist "{name}" ren "{old_name}" "{name}" >nul 2>&1
+rem Did not land. Put the old one back - a failed update must never leave the
+rem user with no exe at all (the old one is sitting there as .old).
+if not exist "{cur}" ren "{old_name}" "{cur_name}" >nul 2>&1
 rem ping is used as a sleep - "timeout" fails when stdin is redirected.
 ping -n 2 127.0.0.1 >nul
 set /a tries+=1
-if %tries% lss 60 goto swap
-echo [%date% %time%] could not replace "{install}" > "{log}"
+if %tries% lss 30 goto swap
+echo [%date% %time%] could not replace "{cur}" > "{log}"
 exit /b 1
 :swapped
 
 rem --- 2) start, then confirm -----------------------------------------------
-rem The new build touches {marker} once its window is up - nothing else proves
-rem it. Three shots, then give up loudly; the log is shown on the next start.
+rem NOTE: deliberately NO "wait for the old process" step here. We used to
+rem delete the .old copy to detect its exit - but .old is ALSO the rollback
+rem source (see step 3), and deleting it first meant a failed update had
+rem nothing to go back to. The three attempts below already absorb a lingering
+rem old process: it just trips the single-instance guard once, and the next
+rem attempt goes through.
 set /a boots=0
 :relaunch
 del "{marker}" >nul 2>&1
+rem Settle first, so we do not race the antivirus scan of the fresh exe.
 ping -n 5 127.0.0.1 >nul
-start "" "{install}\Canoe.exe"
+start "" "{cur}"
 set /a waited=0
 :waitup
 ping -n 3 127.0.0.1 >nul
@@ -557,13 +545,28 @@ set /a waited+=1
 if %waited% lss 12 goto waitup
 set /a boots+=1
 if %boots% lss 3 goto relaunch
-echo [%date% %time%] started "{install}\Canoe.exe" but it never came up > "{log}"
+
+rem --- 4) all three shots failed: roll back ---------------------------------
+rem Reaching here means the NEW exe cannot start in this environment (a real
+rem user hit "Failed to load Python DLL" here and we could not reproduce it).
+rem The previous program is still sitting there as .old - go back to it. A user
+rem stuck on an older version is far better than a user with a program that
+rem will not open.
+rem Move the broken one aside first (it may still be holding the name behind a
+rem native error box), then give .old its name back and start it.
+echo [%date% %time%] the new version did not come up; rolled back to the previous one > "{log}"
+if not exist "{old_name}" exit /b 0
+ren "{cur_name}" "{bad_name}" >nul 2>&1
+ren "{old_name}" "{cur_name}" >nul 2>&1
+if not exist "{cur}" exit /b 0
+del "{marker}" >nul 2>&1
+ping -n 5 127.0.0.1 >nul
+start "" "{cur}"
 exit /b 0
 
 :done
-rem Best effort only: drop the old folder. If something is somehow still
-rem holding it, it just stays - cleanup_leftovers() collects it next start.
-rmdir /s /q "{old_dir}" >nul 2>&1
+rem 新版本确认起来了 —— 备份的旧程序可以扔了（扔不掉也无所谓，下次启动会收）
+del "{old_name}" >nul 2>&1
 
 rem Deliberately NOT "del %~f0". Deleting the running batch file makes cmd
 rem fail to read its next line and exit 1 with "The batch file cannot be
@@ -572,40 +575,39 @@ rem cleanup_leftovers() on the next startup, which we run anyway.
 """
 
 
-def install_and_restart(staged: Path | None = None) -> Path:
-    """安排好换目录与重启，返回那个 .bat 的路径。**调用方下一步就该退出程序。**
+def install_and_restart(new_exe: Path | None = None) -> Path:
+    """安排好替换与重启，返回那个 .bat 的路径。**调用方下一步就该退出程序。**
 
-    ★ 为什么不能自己动手：Windows 上正在运行的程序，它所在的**目录**改不了名
-      （里面的 exe 被占着）。写一个 .bat 交给系统，等本进程退出后由它来
-      「旧目录改名挪开 → 新的搬进来 → 拉起来」，这是这件事的标准解法。
+    ★ 为什么不能自己动手：Windows 上正在运行的 exe 删不掉也覆盖不了。
+      写一个 .bat 交给系统，等本进程退出（文件锁释放）后由它来
+      `move /y` + `start`，这是这件事的标准解法。
 
     ⚠ 这个 .bat 是**本程序唯一会生成、而且之后会被执行的东西**，所以内容
-      写死在上面；变量都来自 sys.executable / 配置目录 / 自己算出来的路径 ——
-      不掺任何外部输入（URL、版本号、服务端给的字符串都不进）。
+      写死在上面，只有三个路径是变量，且都来自 sys.executable / 配置目录 /
+      自己算出来的文件名 —— 不掺任何外部输入（URL、版本号、服务端给的
+      字符串都不进）。
     """
     if not can_self_update():
         raise UpdateError("当前不是以安装包方式运行的，没法自动更新", code="not_frozen")
 
-    inst = install_dir()
-    stage = Path(staged).resolve() if staged else staging_dir()
-    if not (stage / "Canoe.exe").is_file():
-        raise UpdateError("还没准备好新版本", code="no_staged")
-    if stage == inst:
-        raise UpdateError("新版本跟当前程序是同一个目录", code="same_dir")
+    cur = _current_exe()
+    new = Path(new_exe).resolve() if new_exe else staging_path()
+    if not new.is_file():
+        raise UpdateError("还没准备好新程序", code="no_staged")
+    if new == cur:
+        raise UpdateError("新程序跟当前程序是同一个文件", code="same_file")
 
-    parent = inst.parent
-    # ⚠ .bat 放在安装目录**外面** —— 待会儿整个安装目录会被改名挪走，
-    #   放在里面等于自己把自己端了。
-    bat = parent / "canoe-update.bat"
-    log = CONFIG_DIR / "canoe-update.log"
-    # ⚠ 顺序：长的占位符排在前面，免得 `{name}` 先把 `{old_name}` 咬掉一块。
+    bat = cur.with_name("canoe-update.bat")
+    log = cur.with_name("canoe-update.log")
+    # ⚠ 顺序：`{cur_name}` / `{old_name}` 必须排在 `{cur}` **前面** ——
+    #   `{cur}` 是它们的前缀，先替换 `{cur}` 会把 `{cur_name}` 拆成
+    #   `<路径>_name`。ren 只认名字不认路径，错了会静默失败（见 _BAT 里的注释）。
     script = (
-        _BAT.replace("{old_dir}", str(parent / (inst.name + ".old")))
-        .replace("{old_name}", inst.name + ".old")
-        .replace("{parent}", str(parent))
-        .replace("{stage}", str(stage))
-        .replace("{install}", str(inst))
-        .replace("{name}", inst.name)
+        _BAT.replace("{old_name}", cur.name + ".old")
+        .replace("{bad_name}", cur.name + ".bad")
+        .replace("{cur_name}", cur.name)
+        .replace("{new}", str(new))
+        .replace("{cur}", str(cur))
         .replace("{log}", str(log))
         .replace("{marker}", str(start_marker()))
     )
@@ -619,7 +621,7 @@ def install_and_restart(staged: Path | None = None) -> Path:
     try:
         subprocess.Popen(
             ["cmd", "/c", str(bat)],
-            cwd=str(parent),
+            cwd=str(cur.parent),
             creationflags=detached,
             close_fds=True,
             stdin=subprocess.DEVNULL,
@@ -634,41 +636,28 @@ def install_and_restart(staged: Path | None = None) -> Path:
 def cleanup_leftovers() -> None:
     """收拾上次更新留下的残渣。启动时叫一次。
 
-    正常情况下 .bat 跑完会自己删掉，但万一没删成（断电、被杀、正在运行的
-    目录删不掉），下次启动顺手清一清 —— 也把上次失败的日志读出来报给用户。
+    正常情况下 .bat 跑完会自己删掉，但万一没删成（断电、被杀），
+    下次启动顺手清一清 —— 也把上次失败的日志读出来报给用户。
     """
     if not getattr(sys, "frozen", False):
         return
     try:
-        inst = install_dir()
-        parent = inst.parent
+        base = _current_exe().parent
     except OSError:
         return
-
-    # 交班脚本在安装目录**外面**（见 install_and_restart）；日志在配置目录。
-    for path in (parent / "canoe-update.bat", CONFIG_DIR / "canoe-update.log"):
+    # Canoe.exe.old 是交班时被改名挪开的旧程序（见 _BAT：改名是唯一能对
+    # 运行中的 exe 做的事）。旧进程退出前它删不掉，所以留到这次启动来收。
+    for name in ("canoe-update.bat", "Canoe.exe.new", "Canoe.exe.old", "Canoe.exe.bad"):
         try:
-            path.unlink(missing_ok=True)
+            (base / name).unlink(missing_ok=True)
         except OSError:
             pass
-    # 上一版那个目录（交班时改名成 .old）。旧进程真退干净了才删得掉，
-    # 所以多半留到这次启动来收。
-    try:
-        shutil.rmtree(parent / (inst.name + ".old"), ignore_errors=True)
-    except OSError:
-        pass
-    # 上次解压了一半的暂存目录
-    try:
-        shutil.rmtree(staging_dir(), ignore_errors=True)
-    except OSError:
-        pass
 
 
 def last_update_log() -> str:
     """上次更新失败留下的说明（没有就是空串）。"""
     try:
-        # 日志在配置目录：安装目录整个会被改名挪走，放里面就找不到了
-        path = CONFIG_DIR / "canoe-update.log"
+        path = _current_exe().with_name("canoe-update.log")
         if not path.is_file():
             return ""
         # ⚠ 这文件是 cmd 的 `echo ... > file` 写出来的，用的是**系统 ANSI
