@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import requests
@@ -39,6 +40,10 @@ from canoe_core import (
 from .config import config
 
 DEFAULT_TIMEOUT = 15
+
+#: 连接断了重试几次、每次等多久（秒）。服务端重启的那一两秒要靠它盖过去。
+_RETRIES = 2
+_RETRY_WAIT = 0.8
 
 
 class CanoeApiError(Exception):
@@ -82,16 +87,42 @@ class CanoeApi:
         # 默认真校验 TLS；只有联调自签证书时才用 CANOE_CA_BUNDLE 指一张 CA
         kwargs.setdefault("verify", config.ca_bundle)
 
-        try:
-            resp = self._http.request(
-                method, f"{self.base}{path}", headers=headers, timeout=DEFAULT_TIMEOUT, **kwargs
-            )
-        except requests.exceptions.SSLError as exc:
-            raise CanoeApiError(ErrorCode.TLS, f"TLS 握手失败：{exc}") from exc
-        except requests.exceptions.ConnectionError as exc:
-            raise CanoeApiError(ErrorCode.NETWORK, f"连不上渡口 {self.base}") from exc
-        except requests.exceptions.Timeout as exc:
-            raise CanoeApiError(ErrorCode.TIMEOUT, "渡口响应超时") from exc
+        # 连接层面抖一下就重试。**不是**为了掩盖问题，是因为服务端重启
+        # 的那一两秒里，连接会在握手阶段被掐断，用户看到的是
+        # "TLS 握手失败" —— 看着像证书坏了，其实只是服务端在重启
+        # （`canoe upgrade` 每次都会重启一次）。重试两次盖住那一下。
+        #
+        # ⚠ SSLError 是 ConnectionError 的子类，顺序不能反，否则永远
+        #   走不到 SSLError 那条分支。
+        last_exc: Exception | None = None
+        for attempt in range(_RETRIES + 1):
+            try:
+                resp = self._http.request(
+                    method, f"{self.base}{path}", headers=headers,
+                    timeout=DEFAULT_TIMEOUT, **kwargs,
+                )
+                break
+            except requests.exceptions.SSLError as exc:
+                last_exc = exc
+                if attempt < _RETRIES:
+                    time.sleep(_RETRY_WAIT * (attempt + 1))
+                    continue
+                raise CanoeApiError(
+                    ErrorCode.TLS,
+                    f"TLS 握手失败：{exc}\n"
+                    "（证书本身没问题的话，多半是服务端正在重启 —— 稍后再试一次）",
+                ) from exc
+            except requests.exceptions.ConnectionError as exc:
+                last_exc = exc
+                if attempt < _RETRIES:
+                    time.sleep(_RETRY_WAIT * (attempt + 1))
+                    continue
+                raise CanoeApiError(ErrorCode.NETWORK, f"连不上渡口 {self.base}") from exc
+            except requests.exceptions.Timeout as exc:
+                # 超时不重试 —— 那多半是真的慢，再等两轮只会更难受
+                raise CanoeApiError(ErrorCode.TIMEOUT, "渡口响应超时") from exc
+        else:                                     # pragma: no cover - 兜底
+            raise CanoeApiError(ErrorCode.NETWORK, f"连不上渡口 {self.base}") from last_exc
 
         if resp.status_code >= 400:
             code, message = ErrorCode.INTERNAL, f"HTTP {resp.status_code}"

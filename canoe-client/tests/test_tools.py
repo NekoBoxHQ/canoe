@@ -207,6 +207,66 @@ def main() -> int:
         check("未启航时 URL 测试失败但有说明",
               not r2.ok and bool(r2.error), r2.summary())
 
+    # --- 6. 接口层的重试 ---
+    # 服务端重启的那一两秒里，连接会在握手阶段被掐断，用户看到的是
+    # "TLS 握手失败"（看着像证书坏了，其实只是服务端在重启 ——
+    # `canoe upgrade` 每次都会重启一次）。这里盯的是它真的会重试。
+    print("\n[6] 连接断了会重试")
+    import requests as _rq
+
+    from canoe_client.api import CanoeApi, CanoeApiError
+
+    class _Ok:
+        status_code = 200
+        text = "{}"
+        content = b"{}"
+
+        def json(self):
+            return {}
+
+    class Boom:
+        calls = 0
+        headers: dict = {}
+
+        def request(self, *a, **k):
+            Boom.calls += 1
+            raise _rq.exceptions.SSLError("simulated EOF")
+
+    client = CanoeApi()
+    client._http = Boom()
+    t0 = time.time()
+    code, message = "", ""
+    try:
+        client._request("GET", "/api/health")
+    except CanoeApiError as exc:
+        code, message = exc.code, exc.message
+    check("★ TLS 握手失败会重试（不是一次就放弃）", Boom.calls >= 2, f"{Boom.calls} 次")
+    check("★ 重试之间要等一下（不然只是白撞三次）", time.time() - t0 > 0.5,
+          f"{time.time() - t0:.1f}s")
+    check("最终仍然报 tls_error", code == "tls_error", code)
+    check("★ 提示里点明「可能是服务端在重启」", "重启" in message,
+          message.replace("\n", " ")[:120])
+
+    class Flaky:
+        """前两次断、第三次通 —— 模拟服务端刚好重启完。"""
+
+        calls = 0
+        headers: dict = {}
+
+        def request(self, *a, **k):
+            Flaky.calls += 1
+            if Flaky.calls < 3:
+                raise _rq.exceptions.ConnectionError("refused")
+            return _Ok()
+
+    client2 = CanoeApi()
+    client2._http = Flaky()
+    try:
+        client2._request("GET", "/api/health")
+        check("★ 抖动过去之后照样成功（用户根本看不到报错）", True)
+    except CanoeApiError as exc:
+        check("★ 抖动过去之后照样成功（用户根本看不到报错）", False, exc.message)
+
     print(f"\n{'=' * 48}")
     print(f"通过 {passed} 项，失败 {failed} 项，跳过 {skipped} 项")
     print(f"{'=' * 48}\n")

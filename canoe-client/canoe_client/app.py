@@ -128,6 +128,7 @@ def run_selftest() -> int:
     import json
     import platform
     import subprocess
+    from pathlib import Path
 
     from canoe_core import VERSION
 
@@ -179,6 +180,34 @@ def run_selftest() -> int:
         }
     except Exception as exc:  # noqa: BLE001 - 自检不能因为这一步失败就崩
         report["crypto"] = {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
+
+    # ---- TLS：客户端唯一的外部依赖就是"能不能连上服务端" ----
+    # 以前这里只报"内核在不在"，于是"更新报 TLS 握手失败"这种问题
+    # 只能靠用户描述。现在把 CA 从哪来、握手结果如何一并报出来：
+    # 打包之后 certifi 的路径和源码运行时不一样，出问题多半在这一段。
+    try:
+        import certifi
+        import requests
+
+        ca = certifi.where()
+        tls = {
+            "ca_bundle": ca,
+            "ca_exists": Path(ca).is_file(),
+            "ca_size": Path(ca).stat().st_size if Path(ca).is_file() else 0,
+            "server": config.server_url,
+        }
+        try:
+            resp = requests.get(
+                f"{config.server_url}/api/health", timeout=8, verify=config.ca_bundle
+            )
+            tls["http_status"] = resp.status_code
+            tls["ok"] = resp.status_code == 200
+        except Exception as exc:  # noqa: BLE001
+            tls["ok"] = False
+            tls["error"] = f"{exc.__class__.__name__}: {exc}"
+        report["tls"] = tls
+    except Exception as exc:  # noqa: BLE001
+        report["tls"] = {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
 
     text = json.dumps(report, indent=2, ensure_ascii=False)
     print(text)
