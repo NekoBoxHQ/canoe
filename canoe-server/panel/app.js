@@ -17,7 +17,7 @@ const TOKEN_KEY = 'canoe.panel.token';
 const state = {
   token: sessionStorage.getItem(TOKEN_KEY) || '',
   me: null,
-  page: 'overview',
+  page: 'users',
 };
 
 async function api(path, opts = {}) {
@@ -285,33 +285,26 @@ function statCard(k, v, unit, cls) {
     h('div', { class: 'v' }, String(v), unit ? h('small', { text: unit }) : null));
 }
 
-async function pageOverview(root) {
+/**
+ * 一排统计卡。原来是「概览」页的全部内容，后来用户说那一页没必要单开，
+ * 就搬到用户页顶上（新建用户按钮上面）了。包成函数是因为它要在
+ * 用户页里 await 一次 stats。
+ */
+async function statsGrid() {
   const s = await api('/api/admin/stats');
   const push = s.push || {};
-  root.append(h('div', { class: 'stat-grid' },
+  return h('div', { class: 'stat-grid' },
     statCard('用户总数', s.users_total, '', 'info'),
     statCard('正常', s.users_active, '', 'good'),
     statCard('已封禁', s.users_banned, '', s.users_banned ? 'warn' : ''),
     statCard('节点总数', s.nodes_total),
     statCard('已启用节点', s.nodes_enabled, '', 'good'),
     statCard('在线会话', s.sessions_online, '', s.sessions_online ? 'good' : ''),
-    statCard('配置版本', s.config_version, '', 'info'),
+    // 以前这里显示 config_version（中转层时代的全局配置版本号），
+    // 订阅模式下没有这个东西了，改成对管理员更有用的：客户端发到哪一版了
+    statCard('客户端版本', s.latest_client_version || '未发布', '', 'info'),
     statCard('推送连接', push.connections || 0, `（${push.users || 0} 个账号）`),
-  ));
-
-  const warn = [];
-  if (!s.nodes_enabled) warn.push('还没有启用任何节点 —— 客户端启航会收到 503 no_node');
-  if (!s.users_active) warn.push('还没有正常状态的用户');
-
-  root.append(h('div', { class: 'card' },
-    h('h3', { text: '提示' }),
-    warn.length
-      ? h('ul', null, warn.map((t) => h('li', { text: t })))
-      : h('div', { class: 'muted', text: '一切正常。' }),
-    h('div', { class: 'card-actions', style: 'margin-top:12px' },
-      h('button', { class: 'btn btn-ghost btn-sm', text: '看接口文档 (/docs)', onclick: () => window.open('/docs', '_blank') }),
-      h('button', { class: 'btn btn-ghost btn-sm', text: '下载客户端安装包目录', onclick: () => window.open('/downloads/', '_blank') })),
-  ));
+  );
 }
 
 /* =========================================================================
@@ -330,6 +323,7 @@ async function pageUsers(root) {
   const data = await api('/api/admin/users?size=200');
   const rows = data.items || [];
 
+  root.append(await statsGrid());
   root.append(h('div', { class: 'card-actions' },
     h('button', {
       class: 'btn btn-primary btn-sm', text: '新建用户',
@@ -628,8 +622,9 @@ async function pageReleases(root) {
   ], rows, '还没有发布过任何版本 —— 客户端点「更新」会收到 404')));
 }
 
+// 「概览」整页删掉了 —— 那一页就一排统计卡，用户说没必要单开，
+// 搬到用户页顶上去了。默认落地页也跟着改成「用户」。
 const PAGES = [
-  { key: 'overview', label: '概览', ico: '◈', title: '概览', render: pageOverview },
   { key: 'users',    label: '用户', ico: '☺', title: '用户管理', render: pageUsers },
   { key: 'nodes',    label: '节点', ico: '⛵', title: '节点管理', render: pageNodes },
   { key: 'sessions', label: '会话', ico: '⇄', title: '在线会话', render: pageSessions },

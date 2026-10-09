@@ -55,7 +55,8 @@ const FIXTURES = [
   [/\/api\/health$/, { ok: true, app: 'Canoe Server', version: '1.0.0' }],
   [/\/api\/admin\/stats/, {
     users_total: 12, users_active: 11, users_banned: 1, nodes_total: 3, nodes_enabled: 2,
-    sessions_total: 40, sessions_online: 5, config_version: 7, push: { connections: 4, users: 2 },
+    sessions_total: 40, sessions_online: 5, latest_client_version: '1.0.2',
+    push: { connections: 4, users: 2 },
   }],
   [/\/api\/admin\/users\?/, { max_nodes_per_user: 6, items: [
     { id: 1, username: 'admin', role: 'admin', status: 'active', online: true, expire_at: 0, max_devices: 3, remark: '主账号', last_login_at: 1790000000, subscription: '', subscription_lines: 0 },
@@ -129,32 +130,38 @@ const form = document.querySelector('#login-form');
 document.querySelector('#login-user').value = 'admin';
 document.querySelector('#login-pass').value = 'secret123';
 form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
-await tick(); await tick(); await tick();
+await settle();
 
 check('登录后主界面显示', !document.querySelector('#app-screen').hidden, JSON.stringify(calls));
 check('登录页隐藏', document.querySelector('#login-screen').hidden);
 check('令牌已存进 sessionStorage', !!storage.getItem('canoe.panel.token'));
-check('侧边栏有 5 个入口（中转层已删除）', document.querySelectorAll('#nav .nav-item').length === 5,
+check('★ 侧边栏 4 个入口（概览整页删了）', document.querySelectorAll('#nav .nav-item').length === 4,
       String(document.querySelectorAll('#nav .nav-item').length));
 check('身份显示出来了', /admin/.test(document.querySelector('#whoami').textContent));
 check('★ 进后台时收掉了启动屏（否则会卡在「正在验证」）',
       !document.documentElement.classList.contains('booting'));
-check('★ 进后台时收掉了启动屏（否则会卡在「正在验证」）',
-      !document.documentElement.classList.contains('booting'));
 
-console.log('\n[3] 概览页');
+console.log('\n[3] 用户页顶上的统计卡');
 const page = document.querySelector('#page');
+check('★ 登录后落在用户页（「概览」整页删了）',
+      document.querySelector('#page-title').textContent === '用户管理',
+      document.querySelector('#page-title').textContent);
 check('渲染出了统计卡', page.querySelectorAll('.stat').length >= 6,
       String(page.querySelectorAll('.stat').length));
 check('在线会话数字正确', /5/.test(page.textContent), page.textContent.slice(0, 200));
 check('没有「加载失败」', !page.textContent.includes('加载失败'), page.textContent.slice(0, 200));
+// 服务端字段改名、面板还在读旧名字时，页面上就会印出一个 undefined。
+// 这条盯的就是那类不同步 —— 之前「配置版本」就是这么变成 undefined 的
+// （config_version 是订阅模式之前的字段，早没了）。
+check('★ 页面上不出现 undefined', !/undefined/.test(page.textContent),
+      page.textContent.slice(0, 300));
 
 console.log('\n[4] 逐个标签页渲染');
 const navItems = [...document.querySelectorAll('#nav .nav-item')];
-const names = ['概览', '用户', '节点', '会话', '发布'];
+const names = ['用户', '节点', '会话', '发布'];
 for (let i = 0; i < navItems.length; i++) {
   navItems[i].dispatchEvent(new window.Event('click', { bubbles: true }));
-  await tick(); await tick(); await tick();
+  await settle();
   const body = document.querySelector('#page').textContent;
   check(`${names[i]} 页渲染出来了`, body.length > 10 && !body.includes('加载失败'),
         body.slice(0, 160));
@@ -162,15 +169,23 @@ for (let i = 0; i < navItems.length; i++) {
 
 console.log('\n[5] 表格内容');
 // 回到用户页
-navItems[1].dispatchEvent(new window.Event('click', { bubbles: true }));
-await tick(); await tick(); await tick();
+navItems[0].dispatchEvent(new window.Event('click', { bubbles: true }));
+await settle();
 const usersTxt = document.querySelector('#page').textContent;
 check('用户页列出 admin / demo', usersTxt.includes('admin') && usersTxt.includes('demo'));
+// 统计卡搬到这一页了，得在「新建用户」按钮**上面**
+{
+  const els = [...document.querySelector('#page').children];
+  const statIdx = els.findIndex((e) => e.classList.contains('stat-grid'));
+  const btnIdx = els.findIndex((e) => e.querySelector && e.querySelector('button'));
+  check('★ 统计卡在用户页顶上（「新建用户」按钮之前）',
+        statIdx >= 0 && btnIdx > statIdx, `stat=${statIdx} btn=${btnIdx}`);
+}
 check('封禁状态有标签', usersTxt.includes('已封禁'));
 
 // 节点页 —— 一个节点就是一行链接，列表显示解析出来的协议/主机/端口
-navItems[2].dispatchEvent(new window.Event('click', { bubbles: true }));
-await tick(); await tick(); await tick();
+navItems[1].dispatchEvent(new window.Event('click', { bubbles: true }));
+await settle();
 const nodesTxt = document.querySelector('#page').textContent;
 check('节点页显示备注', nodesTxt.includes('香港家宽'), nodesTxt.slice(0, 200));
 check('★ 节点页显示解析出来的主机端口',
@@ -180,8 +195,8 @@ check('节点页没有"入口 / 真实节点"那两列了',
       !nodesTxt.includes('真实节点') && !nodesTxt.includes('入口'), nodesTxt.slice(0, 200));
 
 console.log('\n[6] 弹窗能构造出来');
-navItems[4].dispatchEvent(new window.Event('click', { bubbles: true }));   // 发布页
-await tick(); await tick(); await tick();
+navItems[3].dispatchEvent(new window.Event("click", { bubbles: true }));   // 发布页
+await settle();
 const newBtn = [...document.querySelectorAll('#page button')].find((b) => b.textContent.includes('上传安装包'));
 check('发布页有「上传安装包」按钮', !!newBtn);
 newBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
@@ -209,8 +224,8 @@ check('★ 该规则带 !important（否则压不过 #id 那种选择器）',
       /\[hidden\][^{]*\{[^}]*display\s*:\s*none\s*!important/.test(css));
 
 console.log('\n[7] 给客户分配节点');
-navItems[1].dispatchEvent(new window.Event('click', { bubbles: true }));   // 用户页
-await tick(); await tick(); await tick();
+navItems[0].dispatchEvent(new window.Event('click', { bubbles: true }));   // 用户页
+await settle();
 const usersPage = document.querySelector('#page');
 check('用户列表显示分发状态', usersPage.textContent.includes('个节点') || usersPage.textContent.includes('未配置'),
       usersPage.textContent.slice(0, 200));
@@ -219,7 +234,7 @@ const bindBtn = [...usersPage.querySelectorAll('button')].find((b) => b.textCont
 check('每行有「分配节点」按钮', !!bindBtn);
 bindBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
 // bindNodes 要先 await 拉节点列表才弹窗，一个 tick 不够
-await tick(); await tick(); await tick(); await tick();
+await settle(); await tick();
 const bindModal = document.querySelector('#modal-body');
 check('弹窗里列出了可选的节点',
       bindModal.textContent.includes('hk.example.com') || bindModal.textContent.includes('香港家宽'),
@@ -250,8 +265,8 @@ document.querySelector('#modal-close').dispatchEvent(new window.Event('click', {
 
 console.log('\n[8] 改用户名');
 // 回到用户页，打开 demo 那一行的「编辑」
-navItems[1].dispatchEvent(new window.Event('click', { bubbles: true }));
-await tick(); await tick(); await tick();
+navItems[0].dispatchEvent(new window.Event('click', { bubbles: true }));
+await settle();
 const editBtn = [...document.querySelector('#page').querySelectorAll('button')]
   .find((b) => b.textContent.trim() === '编辑');
 check('用户行有「编辑」按钮', !!editBtn);
@@ -270,7 +285,7 @@ bodies.length = 0;
 userModal.querySelector('#f_username').value = 'captain';
 userModal.querySelector('#f_password').value = '';
 document.querySelector('#modal-ok').dispatchEvent(new window.Event('click', { bubbles: true }));
-await tick(); await tick(); await tick();
+await settle();
 
 const patch = bodies.find((b) => b.method === 'PATCH' && /\/api\/admin\/users\/\d+/.test(b.path));
 check('★ 提交时发的是 PATCH', !!patch, JSON.stringify(bodies));
@@ -286,8 +301,8 @@ console.log('\n[9] 行操作按钮真的能干成活');
 // 调用点却留着 —— 点「封禁」「删除」「踢下线」毫无反应，页面上连个
 // 错都不显示（onclick 里抛 ReferenceError，只有控制台看得见）。
 // 原来那套测试只渲染表格、从不点按钮，于是一路绿灯。
-navItems[1].dispatchEvent(new window.Event('click', { bubbles: true }));   // 用户页
-await tick(); await tick(); await tick();
+navItems[0].dispatchEvent(new window.Event('click', { bubbles: true }));   // 用户页
+await settle();
 
 const rowBtn = (label) => [...document.querySelector('#page').querySelectorAll('button')]
   .find((b) => b.textContent.trim() === label);

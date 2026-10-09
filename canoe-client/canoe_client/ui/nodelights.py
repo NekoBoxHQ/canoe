@@ -5,8 +5,10 @@
 
 点一下切到那个节点，在航的话当场换过去重连。**不写字** —— 这是刻意的：
 节点名已经在上面那行大字里了，底下再标一遍既挤又重复，用户要的就是
-"像灯一样"。鼠标停上去会有 tooltip 说是哪个节点（只在悬停时出现，
-平时一点痕迹都没有）。
+"像灯一样"。
+
+**也没有 tooltip**：鼠标扫过去弹一串节点名，一样是"显示"，一样碍事。
+想知道哪盏是哪个，点一下，上面那行字就换了。
 
 关于"当前用的是哪个"：这排灯里只有一个是**正在用**的。都画成一样的话
 点起来是盲的 —— 你不知道现在在哪盏上。所以正在用的那盏多一个白色灯芯
@@ -25,8 +27,7 @@ from canoe_core import Palette as P
 SLOTS = 6
 
 BOX = 22                 # 单个灯的边长
-GAP = 12                 # 灯与灯的间距
-PAD = 16                 # 灯和外框之间
+PAD = 18                 # 最边上那盏离外框多远（其余间距由格宽均分）
 HEIGHT = 46              # 整排的高度
 
 
@@ -60,7 +61,6 @@ class NodeLights(QWidget):
         self._names = list(names)[:SLOTS]
         self._count = len(self._names)
         self._active = active if 0 <= active < self._count else (-1 if not self._count else 0)
-        self._refresh_tooltip()
         self.update()
 
     def count(self) -> int:
@@ -73,34 +73,31 @@ class NodeLights(QWidget):
         return self._names[index] if 0 <= index < len(self._names) else ""
 
     # ------------------------------------------------------------------
+    def _cell(self) -> tuple[float, float]:
+        """每盏灯占一格：返回 (第一格左边缘, 每格宽度)。
+
+        格子是**均分整个排面**的，灯在格子正中 —— 所以间距是"平均分配"
+        的。第一版用的是固定间距 + 整排居中，结果 6 盏挤在中间、左右各
+        空一大截，看着很散（用户反馈的）。
+        """
+        width = max(self.width(), SLOTS * BOX)     # 窄到放不下就别硬撑
+        usable = max(width - 2 * PAD, SLOTS * BOX)
+        return (width - usable) / 2, usable / SLOTS
+
     def _boxes(self) -> list[QRectF]:
-        """6 个灯的位置。整个排面居中 —— 灯数固定，所以位置也是固定的。"""
-        total = SLOTS * BOX + (SLOTS - 1) * GAP
-        x = (self.width() - total) / 2
+        x0, step = self._cell()
         y = (self.height() - BOX) / 2
         return [
-            QRectF(x + i * (BOX + GAP), y, BOX, BOX)
+            QRectF(x0 + i * step + (step - BOX) / 2, y, BOX, BOX)
             for i in range(SLOTS)
         ]
 
     def _index_at(self, x: float) -> int | None:
-        for i, box in enumerate(self._boxes()):
-            # 命中范围放宽到半个间距 —— 22px 的方块按像素点有点费劲
-            if box.left() - GAP / 2 <= x <= box.right() + GAP / 2:
-                return i
-        return None
-
-    def _refresh_tooltip(self) -> None:
-        if not self._count:
-            self.setToolTip("订阅里还没有节点")
-            return
-        lines = [
-            f"{i + 1}. {self._names[i]}" + ("　（当前）" if i == self._active else "")
-            for i in range(self._count)
-        ]
-        if self._count < SLOTS:
-            lines.append("点一下切换节点")
-        self.setToolTip("\n".join(lines))
+        """按格子判定，不用按方块本身 —— 22px 的方块要鼠标精确点太费劲。"""
+        x0, step = self._cell()
+        if step <= 0 or x < x0 or x > x0 + step * SLOTS:
+            return None
+        return min(int((x - x0) / step), SLOTS - 1)
 
     # ------------------------------------------------------------------
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名

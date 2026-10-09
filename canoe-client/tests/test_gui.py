@@ -529,6 +529,41 @@ def main() -> int:
     feed(2)
     check("恢复订阅后灯又亮起来", view.lights.count() == 2)
 
+    # 间距：6 盏要**均分整排**，不是固定间距挤在中间
+    _, six = None, None
+    feed(6)
+    view.lights.resize(380, 46)
+    boxes = view.lights._boxes()
+    gaps = [round(boxes[i + 1].left() - boxes[i].left(), 1) for i in range(len(boxes) - 1)]
+    check("★ 6 盏灯是均分的（相邻间距一致）",
+          max(gaps) - min(gaps) < 1.0, str(gaps))
+    edge_l, edge_r = boxes[0].left(), view.lights.width() - boxes[-1].right()
+    check("★ 灯铺满整排，不是挤在中间留一大块空",
+          abs(edge_l - edge_r) < 2 and edge_l < 40,
+          f"左边距 {edge_l:.0f}，右边距 {edge_r:.0f}")
+
+    # 用户明确不要 tooltip —— 鼠标扫过去弹一串节点名一样是"显示"
+    check("★ 灯上没有任何 tooltip", view.lights.toolTip() == "", repr(view.lights.toolTip()))
+    feed(2)
+
+    # --- 5.6 全局 QSS：托盘菜单 ----------------
+    print("\n[5.6] 托盘菜单的配色")
+    # QSS 头上是 `* {{ color: 浅色 }}`（普配所有控件）。它会给 QMenu 的文字
+    # 上近白色，但**不会**给弹出菜单铺底 —— 底还是系统默认的白，
+    # 于是白字白底，右键托盘看起来就是一块空白方块（用户截图反馈的）。
+    # 所以 QMenu 那几条规则必须存在，而且必须带 background。
+    import re as _re
+
+    sheet = qss()
+    check("★ QSS 里有 QMenu 规则", "QMenu {" in sheet or "QMenu{" in sheet)
+    m = _re.search(r"QMenu\s*\{(.*?)\}", sheet, _re.S)
+    check("★ QMenu 指定了底色（只给字色不够，白字白底 = 一块空白）",
+          bool(m) and "background" in m.group(1), (m.group(1)[:90] if m else "没找到 QMenu 规则"))
+    check("★ QMenu::item 也给了字色",
+          "QMenu::item " in sheet or "QMenu::item{" in sheet)
+    check("★ QToolTip 也铺了底（Windows 上的应用内提示同理）",
+          bool(_re.search(r"QToolTip\s*\{[^}]*background", sheet, _re.S)))
+
     # --- 6. 启航（真起内核）---
     print("\n[6] 启航")
     if mv.config.find_singbox() is None:

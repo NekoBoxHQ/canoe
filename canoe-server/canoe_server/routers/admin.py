@@ -548,6 +548,11 @@ def stats(_: User = Depends(get_current_admin), db: DBSession = Depends(get_db))
         "nodes_enabled": n_enabled,
         "sessions_total": len(sessions),
         "sessions_online": sum(1 for s in sessions if s.online),
+        # 最新客户端版本 —— 概览页显示用。以前这里是 config_version，
+        # 那是"中转层 + 全局配置版本号"时代的字段，改成订阅模式之后
+        # 没有这个东西了（变更检测改走每个用户各自的 revision），
+        # 面板那边就成了 undefined。
+        "latest_client_version": (latest_release(db).version if latest_release(db) else ""),
         # 推送连接数：排查"为什么客户端没收到推送"时先看这里
         "push": hub.stats(),
     }

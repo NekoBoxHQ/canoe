@@ -306,6 +306,15 @@ def main() -> int:
     check(f"POST {Api.HEARTBEAT} 200", r.status_code == 200, r.text[:200])
     check("心跳响应无节点信息泄漏", r.status_code == 200 and not scan_leaks(r.json()))
 
+    # 面板概览页直接读这几个键 —— 少一个就会在页面上印出 undefined
+    r = client.get(Api.ADMIN_STATS, headers=admin_h)
+    stats = r.json() if r.status_code == 200 else {}
+    want = {"users_total", "users_active", "users_banned", "nodes_total", "nodes_enabled",
+            "sessions_total", "sessions_online", "latest_client_version", "push"}
+    check("★ stats 里面板要用的字段一个不少", want <= set(stats), str(sorted(stats)))
+    check("★ 不再有配置版本这个字段（订阅模式下没有它了，留着只会被印成 undefined）",
+          "config_version" not in stats, str(sorted(stats)))
+
     r = client.get(Api.ADMIN_SESSIONS, params={"online": "true"}, headers=admin_h)
     check("管理员看到在线会话", r.status_code == 200 and len(r.json()["items"]) >= 1)
 

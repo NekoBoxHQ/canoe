@@ -37,6 +37,36 @@ def qss() -> str:
     QPushButton#WinBtn:hover {{ background: rgba(255, 255, 255, 26); }}
     QPushButton#WinBtnDanger:hover {{ background: #D64545; }}
 
+    /* ---------------- 托盘菜单 / 悬浮提示 ----------------
+     * 头一条 `* {{ color: 浅色 }}` 会连带作用到 QMenu 上：文字变近白，
+     * 而弹出菜单的底还是系统默认的白 —— 白字白底，整个菜单看起来就是
+     * 一块空白的白色方块（用户截图反馈的就是这个）。
+     * 所以这几个控件必须把底色一起给了，光给字色不行。
+     *
+     * ⚠ 这里是 f-string，注释里的花括号也要写成双的 —— 写单花括号
+     *   Python 会当成插值去求值，`qss()` 一调就 NameError，
+     *   整个程序起不来。
+     */
+    QMenu {{
+        background: {P.CARD};
+        border: 1px solid {P.CARD_LINE};
+        border-radius: 10px;
+        padding: 6px;
+    }}
+    QMenu::item {{
+        padding: 7px 24px 7px 14px;
+        border-radius: 7px;
+        color: {P.TEXT};
+    }}
+    QMenu::item:selected {{ background: {P.ACCENT_DEEP}; color: #FFFFFF; }}
+    QMenu::separator {{ height: 1px; margin: 5px 8px; background: {P.CARD_LINE}; }}
+
+    QToolTip {{
+        background: {P.CARD}; color: {P.TEXT};
+        border: 1px solid {P.CARD_LINE}; border-radius: 6px;
+        padding: 5px 8px;
+    }}
+
     /* ---------------- 卡片 ---------------- */
     QFrame#Card {{
         background: rgba(13, 27, 51, 214);
