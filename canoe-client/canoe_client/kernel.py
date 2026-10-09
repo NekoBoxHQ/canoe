@@ -1,12 +1,15 @@
 """sing-box 内核管理：生成配置 -> 拉起进程 -> 靠岸时关闭。
 
-阶段1 的配置长这样：
+配置长这样：
 
-    inbounds : 系统代理模式 -> 本机 127.0.0.1:20818 的 mixed 入站（SOCKS + HTTP）
-               全局模式     -> tun 网卡，同时接管 IPv4 与 IPv6
-    outbounds: proxy  -> 测试节点（阶段1 写死；阶段3 换成服务端下发的中转层入口）
+    inbounds : 系统代理 -> 本机 127.0.0.1:20818 的 mixed 入站（SOCKS + HTTP）
+               TUN      -> tun 网卡，同时接管 IPv4 与 IPv6（两者可并存）
+    outbounds: proxy  -> 服务端下发的中转层入口（vless）
                direct -> 直连，用于局域网与大陆流量
     route    : 局域网/大陆 -> direct，其余 -> proxy
+
+⚠ 出站里**只有中转入口**。真实节点的主机、端口、UUID 由服务端在
+   中转层决定，客户端从头到尾拿不到，也就无从导出。
 
 配置只写到临时文件，内核读完后立刻删除；不提供任何导出入口。
 """
@@ -102,7 +105,7 @@ def _ruleset_defs(opts: RunOptions) -> list[dict[str, Any]]:
     return defs
 
 
-def _dns_config(opts: RunOptions) -> dict[str, Any]:
+def _dns_config(opts: RunOptions, proxy_is_direct: bool = False) -> dict[str, Any]:
     """分流 DNS。
 
     大陆域名用国内 DNS 解析（走直连），其余走代理解析，
@@ -111,23 +114,34 @@ def _dns_config(opts: RunOptions) -> dict[str, Any]:
     ⚠ 必须用 sing-box 1.12+ 的**新** DNS 格式（type + server）。
        旧格式（address 字段）在 1.12 废弃、1.14 已彻底移除，
        写了会直接 decode 失败。这是 `sing-box check` 抓出来的。
+
+    proxy_is_direct：proxy 出站是不是 direct。
+        是的话**不能**给 remote 写 detour —— sing-box 认为
+        "让 DNS 绕一个 direct 出站"毫无意义，会直接拒绝启动：
+            FATAL start dns/https[remote]: detour to an empty
+            direct outbound makes no sense
+        生产里 proxy 恒为 vless，走不到这条分支；但本机联调、
+        以及任何把出站换成 direct 的场景都会踩到，所以这里判一下。
     """
+    remote: dict[str, Any] = {
+        "type": "https",
+        "tag": "remote",
+        "server": "1.1.1.1",
+    }
+    if not proxy_is_direct:
+        remote["detour"] = "proxy"
+
     dns: dict[str, Any] = {
         "servers": [
             {
                 # 不写 detour —— 不指定就是直连。
-                # 显式写 "detour": "direct" 会让 sing-box 报
+                # 显式写 "detour": "direct" 同样会让 sing-box 报
                 # "detour to an empty direct outbound makes no sense"。
                 "type": "udp",
                 "tag": "local",
                 "server": "223.5.5.5",
             },
-            {
-                "type": "https",
-                "tag": "remote",
-                "server": "1.1.1.1",
-                "detour": "proxy",
-            },
+            remote,
         ],
         "final": "remote",
     }
@@ -158,7 +172,7 @@ def _route_config(opts: RunOptions) -> dict[str, Any]:
     route: dict[str, Any] = {
         "rules": rules,
         "final": "proxy",
-        # 出站服务器是域名（one.leycc.com），必须指定用哪个 DNS 解析它。
+        # 出站服务器是域名（中转入口），必须指定用哪个 DNS 解析它。
         # 这里用 local（直连的国内 DNS）—— 不能用代理解析代理自己的地址，
         # 那是死循环。sing-box 1.12+ 强制要求这个字段。
         "default_domain_resolver": {"server": "local"},
@@ -225,7 +239,7 @@ def build_config(proxy_outbound: dict[str, Any], opts: RunOptions) -> dict[str, 
         # timestamp 关掉：日志总线自己会加 [HH:MM:SS]，
         # 开着的话每行会顶两个时间，面板里很挤。
         "log": {"level": opts.log_level, "timestamp": False},
-        "dns": _dns_config(opts),
+        "dns": _dns_config(opts, proxy_is_direct=proxy_outbound.get("type") == "direct"),
         "inbounds": _inbounds(opts),
         "outbounds": [
             {**proxy_outbound, "tag": "proxy"},
@@ -298,11 +312,20 @@ class SingBoxKernel:
         time.sleep(1.2)
         if self._proc.poll() is not None:
             code = self._proc.returncode
+            # ★ 把内核的报错捞出来再抛。
+            #   读取线程是在这之后才起的，不主动读一次的话，sing-box
+            #   说的"配置哪里不对"会被整个丢掉 —— 只剩一个退出码，没法排查。
+            output = ""
+            try:
+                output = (self._proc.stdout.read() or "").strip()
+            except (OSError, ValueError):
+                pass
             self._proc = None
             self._remove_config()
+            detail = _ANSI_RE.sub("", output)[-800:]
             raise KernelError(
                 f"sing-box 启动后立即退出（退出码 {code}）。"
-                "通常是配置有问题或内核版本不匹配。"
+                + (f"\n内核输出：\n{detail}" if detail else "通常是配置有问题或内核版本不匹配。")
             )
 
         self._cleaner = threading.Timer(CONFIG_CLEANUP_DELAY, self._remove_config)

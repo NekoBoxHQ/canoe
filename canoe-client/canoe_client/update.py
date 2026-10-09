@@ -1,12 +1,12 @@
 """检查客户端更新。
 
-从配置里的地址拉一个 JSON，和当前版本比大小：
+从服务端的 /api/client/latest 拉一个 JSON，和当前版本比大小：
 
     { "version": "1.1.0", "url": "https://.../Canoe-1.1.0-win64.zip",
       "notes": "修复 TUN 快速重连卡顿" }
 
-阶段1 还没有服务端，所以这个地址**默认是空的**，按钮会提示「未配置更新地址」。
-阶段4 把它指到自己的服务器即可，不需要改代码。
+地址由 config.update_url 派生（服务端地址写死，见 config.py），
+管理端在面板上「发布版本」就会生效，客户端不用改代码。
 
 不引第三方版本比较库 —— 三段式版本号手写十几行就够，少一个依赖。
 """
@@ -17,6 +17,8 @@ import re
 from dataclasses import dataclass
 
 import requests
+
+from .config import config
 
 TIMEOUT = 15
 
@@ -63,7 +65,8 @@ def check(url: str, current: str) -> UpdateInfo:
 
     try:
         resp = requests.get(url.strip(), timeout=TIMEOUT,
-                            headers={"User-Agent": "Canoe-Client/1.0"})
+                            headers={"User-Agent": "Canoe-Client/1.0"},
+                            verify=config.ca_bundle)
     except requests.exceptions.SSLError as exc:
         raise UpdateError(f"TLS 握手失败：{exc}") from exc
     except requests.exceptions.ConnectionError as exc:

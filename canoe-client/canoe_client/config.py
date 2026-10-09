@@ -1,22 +1,36 @@
 """轻舟客户端本地配置。
 
-只存**非敏感**信息：界面偏好、内核路径、本地端口。
-账号密码在 localauth.py（阶段1）里单独存，阶段3 会换成服务端 token。
+只存**非敏感**信息：界面偏好、内核路径、本地端口、设备号。
+账号密码不落盘（阶段3 起账号在服务端，本地只留一个登录令牌在内存里）。
 """
 from __future__ import annotations
 
 import json
 import os
+import socket
+import uuid
 from pathlib import Path
 from typing import Any
 
 from canoe_core import CONFIG_DIR_NAME
 
+# ---------------------------------------------------------------------------
+# ★ 服务端地址 —— 写死的 ★
+# ---------------------------------------------------------------------------
+#
+#   客户端是发给用户"下载即用"的，**不给任何配置入口** —— 用户不该、
+#   也不能自己填服务器地址。所以这里写死。
+#
+#   换服务器 = 重新发一版客户端。
+#
+#   本地开发/联调时可以用环境变量临时覆盖（不影响打包发布的行为）：
+#       set CANOE_SERVER_URL=http://127.0.0.1:8010
+#
+SERVER_BASE = "https://canoe.s-ui.com:58588"
+
 DEFAULTS: dict[str, Any] = {
     "singbox_path": "",            # 留空则自动在 bin/ 与 PATH 里找
-    # 客户端更新检查地址（阶段4 部署服务端后填入，例如
-    # https://canoe.example.com/api/client/latest）
-    "update_url": "",
+    "device_id": "",               # 首次运行自动生成（见 device_id 属性）
     # 界面选项（见 options.py 的 RunOptions）
     "options": {
         "profile": "split",         # 分流：绕过局域网和大陆
@@ -24,8 +38,6 @@ DEFAULTS: dict[str, Any] = {
         "use_tun": False,           # TUN 默认关，可与系统代理同时开
         "tun_ipv6": True,           # TUN 恒双栈
         "mixed_port": 20818,
-        # 界面上有输出日志面板，info 级别才有内容可看；
-        # 排查问题时可以在 client.json 里调成 debug
         "log_level": "info",
     },
 }
@@ -72,10 +84,13 @@ class ClientConfig:
                 self._data[key] = value
 
     def save(self) -> None:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(
-            json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            CONFIG_FILE.write_text(
+                json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError:
+            pass  # 写不了配置不该让程序崩
 
     def __getitem__(self, key: str) -> Any:
         return self._data.get(key, DEFAULTS.get(key))
@@ -89,6 +104,63 @@ class ClientConfig:
                 self._data[key] = value
         self.save()
 
+    # ------------------------------------------------------------------
+    # 服务端相关（全部写死或派生，界面里没有对应入口）
+    # ------------------------------------------------------------------
+    @property
+    def server_url(self) -> str:
+        """服务端根地址。写死，只有开发时能用环境变量顶掉。"""
+        return (os.environ.get("CANOE_SERVER_URL") or SERVER_BASE).rstrip("/")
+
+    @property
+    def update_url(self) -> str:
+        """客户端更新检查地址。由服务端地址派生，不单独配置。"""
+        from canoe_core import Api
+
+        return f"{self.server_url}{Api.CLIENT_LATEST}"
+
+    @property
+    def ca_bundle(self) -> str | bool:
+        """HTTPS 校验用的 CA。
+
+        **默认真校验**（返回 True）—— 生产是真实证书，这里绝不能放宽。
+
+        只有本地拿 run_local_https.py 起自签证书联调时，才用环境变量
+        指一张 CA 进来：
+
+            set CANOE_CA_BUNDLE=canoe-server/data/certs/local-cert.pem
+
+        注意是「换成只信这一张」，不是「关掉校验」：关掉的话中间人
+        就能伪造渡口，客户端会把令牌交出去。文件不存在也一律回退到
+        真校验，免得写错路径静默降级成不校验。
+        """
+        path = (os.environ.get("CANOE_CA_BUNDLE") or "").strip()
+        if path and Path(path).is_file():
+            return path
+        return True
+
+    @property
+    def device_id(self) -> str:
+        """本机设备号。首次运行生成并落盘，之后一直用它。
+
+        服务端拿它做「设备数上限」和设备级令牌绑定，
+        所以必须稳定 —— 每次启动都换的话，用户会被自己的设备挤下线。
+        """
+        did = str(self._data.get("device_id") or "")
+        if not did:
+            did = uuid.uuid4().hex
+            self._data["device_id"] = did
+            self.save()
+        return did
+
+    @property
+    def device_name(self) -> str:
+        try:
+            return socket.gethostname()[:64]
+        except OSError:
+            return ""
+
+    # ------------------------------------------------------------------
     def find_singbox(self) -> Path | None:
         """按 配置 -> bin/ -> 同级 -> PATH 的顺序找 sing-box。"""
         configured = self._data.get("singbox_path")

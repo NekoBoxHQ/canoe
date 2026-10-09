@@ -16,63 +16,39 @@ Windows 桌面代理工具。客户端极简到只有「节点名 + 启航 + 靠
 
 ---
 
-## ⚠️ 当前进度：阶段 1 已完成，等确认
-
-按你的要求分阶段开发，**每个阶段做完停下等确认**。
+## 进度
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| **1** | **框架 + 测试节点 + 桌面端跑通** | ✅ **已完成（本次）** |
-| 2 | 推送到 git 仓库，打 tag `v0.1.0-client` | ⏸ 等确认 |
-| 3 | 服务端管理端（API + 数据库） | ⏸ 等确认 |
-| 4 | 部署服务端管理界面（HTTPS） | ⏸ 等确认 |
-| 5 | 客户端与服务端联调、同步测试 | ⏸ 等确认 |
+| 1 | 客户端框架 + 内核跑通 | ✅ |
+| 2 | 推送到 git 仓库 | ✅ |
+| 3 | 服务端（API + 数据库 + 更新通道 + 推送） | ✅ |
+| 4 | 部署材料（Debian 12 + HTTPS + Web 管理面板） | ✅ |
+| 5 | 客户端与服务端联调 | ✅ |
 
 ---
 
-## 阶段 1 做了什么
+## 架构：客户端拿不到真实节点
 
-### 验收标准对照
-
-| 验收项 | 状态 | 怎么验证的 |
-|---|---|---|
-| 能打开界面 | ✅ | `tests/test_gui.py`（46 项全过） |
-| 能注册 / 登录（本地假账号） | ✅ | 含重复注册、错误密码、用户名过短的拒绝用例 |
-| 跳过注册直接测 | ✅ | 登舟页有「直接体验」按钮，一键进主界面 |
-| 主界面只有节点名 + 启航 + 靠岸 | ✅ | 测试断言界面上**不出现**地址/端口/协议/密钥 |
-| **点启航能真的走代理** | ✅ | `tests/test_live.py` + `test_gui.py` 真实联网验证 |
-| **点靠岸能停** | ✅ | 靠岸后再请求，代理确实失效 |
-| 不显示任何节点地址、端口、协议、密码 | ✅ | 界面全文本扫描断言 |
-| 能打包成 `Canoe.exe` | ✅ | 见下方「打包」 |
-
-### 分流效果（内核日志实证，不是推测）
+这是整个项目最重要的一条约束，其它设计都是围着它转的。
 
 ```
-outbound/shadowsocks[proxy]:  outbound connection to api.ipify.org:443   ← 国外走代理
-outbound/direct[direct]:      outbound connection to www.baidu.com:443   ← 国内走直连
+客户端 ──VLESS+WS+TLS──► 中转层（服务端）──► 真实节点
+   │                          │
+   │ 只知道：入口域名           │ 真实主机/端口/UUID 只存在于
+   │         入口端口           │ 服务端数据库与中转层配置里
+   │         入口 UUID          │
+   │         自己的登录令牌      │
 ```
 
-### 可选设置（两排，居中，无标签）
+- 客户端**只**拿到：服务端地址（写死）+ 用户令牌 + 每次启航下发的中转入口。
+- 真实节点由服务端在中转层决定和路由，客户端全程不参与。
+- 客户端**没有**导出入口，**不落盘**任何节点信息，内核配置写到临时文件、读完即删。
+- 管理端能看到的真实节点信息，永远不会出现在任何面向客户端的响应里
+  （由 `canoe-core` 的 `assert_whitelisted()` 在模型层强制）。
 
-```
-        ○ 分流          ○ 全局        ← 二选一，默认分流
-        ☑ 系统代理      ☐ TUN 模式     ← 可并存，默认只勾系统代理
-```
-
-| 需求 | 实现 |
-|---|---|
-| 默认系统代理 | ✅ 第二排「系统代理」默认勾选，「TUN 模式」默认不勾 |
-| 系统代理与 TUN 可并存 | ✅ 第二排是两个独立复选框，不是单选 |
-| 「绕过局域网 + 绕过大陆」是一个模式，与「全局」并列 | ✅ 合并成 `profile`，第一排就是「分流 / 全局」 |
-| 不要「接管」「分流」两个标签 | ✅ 已去掉 |
-| 三个工具按钮（更新 / TCping / URL测试） | ✅ 见 `canoe-client/README.md` 的「工具按钮」 |
-| 测试结果框 | ✅ 只显示 更新版本号 / TCping 毫秒 / URL 毫秒（不显示内核日志，避免泄漏节点域名） |
-| TUN 要 IPv4 + IPv6 | ✅ 恒为双栈（`172.19.0.1/30` + `fdfe:dcba:9876::1/126`），不暴露开关 |
-
----|---|
-| 默认系统代理、TUN 默认关 | ✅ 第一排 |
-| 「绕过局域网 + 绕过大陆」是一个模式，与「全局」并列 | ✅ 合并成 `profile`，第二排就是「分流 / 全局」 |
-| TUN 要 IPv4 + IPv6 | ✅ TUN 网卡同时配 `172.19.0.1/30` + `fdfe:dcba:9876::1/126`，始终双栈（不再暴露开关） |
+对应测试：`canoe-client/tests/test_server.py`（33 项，含 4 条泄漏断言）、
+`canoe-server/smoke_test.py`（97 项，含多条「响应里不许出现 real_」）。
 
 ---
 
@@ -80,124 +56,159 @@ outbound/direct[direct]:      outbound connection to www.baidu.com:443   ← 国
 
 ```
 canoe/
-├── canoe-core/            公共库
-│   └── canoe_core/
-│       ├── constants.py   品牌名 / 界面文案 / 配色 / API 路径
-│       ├── models.py      阶段3 的共享契约模型
-│       ├── passwords.py   密码哈希（阶段1 本地账号与阶段3 服务端共用）
-│       └── version.py
+├── canoe-core/            公共库（模型契约 / 常量 / 文案 / 密码哈希）
+├── canoe-client/          桌面客户端
+│   ├── canoe_client/
+│   │   ├── app.py         入口 + 页面切换 + 退出兜底清理
+│   │   ├── api.py         与服务端通话
+│   │   ├── entry.py       中转入口 -> sing-box 出站
+│   │   ├── events.py      SSE 长连接（服务端推送）
+│   │   ├── kernel.py      sing-box 配置生成与进程管理
+│   │   ├── sysproxy.py    Windows 系统代理（含自愈）
+│   │   └── ui/            界面
+│   ├── build.bat          一键打包成 Canoe.exe
+│   └── tests/             5 套，共 215 项
 │
-├── canoe-client/          桌面客户端（本期重点）
-│   ├── run.py
-│   ├── build.bat          ← 一键打包成 Canoe.exe
-│   ├── canoe.spec
-│   ├── assets/            图标（含可复现的生成脚本）
-│   ├── bin/               ← sing-box.exe / wintun.dll / ruleset/
-│   ├── tests/
-│   │   ├── test_config.py 配置生成（32 项）
-│   │   ├── test_live.py   真实联网验收（9 项）
-│   │   └── test_gui.py    GUI 端到端（42 项）
-│   └── canoe_client/
-│       ├── app.py         入口 + 页面切换 + 退出兜底清理
-│       ├── testnodes.py   ★ 阶段1 写死的测试节点（阶段3 删除）
-│       ├── localauth.py   ★ 阶段1 本地假账号（阶段3 替换）
-│       ├── kernel.py      sing-box 配置生成与进程管理
-│       ├── options.py     运行选项
-│       ├── sysproxy.py    Windows 系统代理
-│       ├── tun.py         全局模式先决条件检查
-│       ├── worker.py      线程池
-│       └── ui/            界面
+├── canoe-server/          服务端
+│   ├── serve.py           统一启动器（双端口，单进程）
+│   ├── canoe_server/
+│   │   ├── routers/       client.py / admin.py
+│   │   └── services/      relay（中转配置）/ broadcast（推送）/ updates
+│   ├── panel/             Web 管理面板
+│   ├── relay/             中转层 sing-box 配置模板
+│   ├── deploy/install.sh  交互式安装（域名 / 端口 / 证书）
+│   └── smoke_test.py      端到端冒烟（97 项）
 │
-├── canoe-server/          服务端 —— 阶段 3 再做（见该目录 README）
 └── docs/                  五份设计文档
 ```
 
 ---
 
-## 快速开始（阶段 1）
+## 客户端
 
-### 1. 装依赖
+### 跑起来
 
 ```bash
 cd canoe-core && pip install -e .
 cd ../canoe-client && pip install -r requirements.txt
-```
-
-### 2. 放内核
-
-`canoe-client/bin/` 下需要有：
-
-| 文件 | 必需性 | 说明 |
-|---|---|---|
-| `sing-box.exe` | **必需** | 代理内核，推荐 1.12+ |
-| `bin/ruleset/*.srs` | 绕过大陆需要 | 已内置 |
-| `wintun.dll` | 全局(TUN)模式需要 | 从 <https://www.wintun.net/> 下载 |
-
-### 3. 跑起来
-
-```bash
 python run.py
 ```
 
-造舟 → 登舟 → 启航。
+`bin/` 下需要有：
 
-### 4. 打包
+| 文件 | 必需性 | 说明 |
+|---|---|---|
+| `sing-box.exe` | **必需** | 代理内核，本项目用 1.14.2 验证 |
+| `bin/ruleset/*.srs` | 绕过大陆需要 | 已内置 |
+| `wintun.dll` | 全局(TUN)模式需要 | <https://www.wintun.net/> |
+
+### 打包
 
 ```bat
 build.bat
 ```
 
-产物 `dist\Canoe\Canoe.exe`，整个 `dist\Canoe\` 目录打 zip 发给用户，目标机器不需要装 Python。
+产物 `dist\Canoe\Canoe.exe`。整个 `dist\Canoe\` 目录打 zip 发给用户，
+目标机器不需要装 Python。
+
+### 服务端地址是写死的
+
+`canoe_client/config.py` 里：
+
+```python
+SERVER_BASE = "https://canoe.s-ui.com:58588"
+```
+
+客户端是「下载即用」的，不给用户任何填地址的入口 —— 换服务器就重发一版客户端。
+本机联调时可以用 `CANOE_SERVER_URL` 环境变量临时顶掉（不影响打包发布的行为）。
+
+> 面板端口在部署时随便改；客户端更新与订阅用的 `58588` 是固定的，两者互不影响。
+
+---
+
+## 服务端
+
+### 本地起一个（自签 HTTPS）
+
+```bash
+cd canoe-server
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+python seed.py              # 建管理员账号
+python run_local_https.py   # https://127.0.0.1:8443
+```
+
+客户端联调时用 `CANOE_CA_BUNDLE` 指自签证书：
+
+```bat
+set CANOE_SERVER_URL=https://127.0.0.1:8443
+set CANOE_CA_BUNDLE=canoe-server\data\certs\local-cert.pem
+```
+
+**不要**去关 TLS 校验 —— 关了就给了中间人伪造渡口、骗走用户令牌的机会。
+
+### 部署到服务器
+
+```bash
+sudo ./deploy/install.sh
+```
+
+安装向导会依次问：域名、客户端端口（默认 `58588`）、面板端口、证书方式
+（Let's Encrypt / 自签 / 已有证书 / 不要 TLS）。细节见 `canoe-server/deploy/README.md`。
+
+Web 管理面板在 `<域名>:<面板端口>/panel`，管用户、节点、会话、版本发布、中转层配置。
 
 ---
 
 ## 测试
 
+全部通过后才算改完。改完任何一处请整套重跑。
+
 ```bash
-cd canoe-client
-
-# 配置生成（不需要联网，32 项）
-python tests/test_config.py
-
-# 真实联网验收（需要节点可达，9 项）
-python tests/test_live.py
-
-# GUI 端到端（离屏，会真的启航一次，46 项）
+# —— 客户端（canoe-client/）——
+python tests/test_config.py     # 配置生成 + 安全断言（45 项）
+python tests/test_sysproxy.py   # 系统代理与自愈（33 项）
+python tests/test_tools.py      # 日志总线 / 版本 / TCping / URL 测试（31 项）
 set QT_QPA_PLATFORM=offscreen
-python tests/test_gui.py
+python tests/test_gui.py        # GUI 端到端，会真启航一次（73 项）
+
+# 联调（要有一个在跑的服务端）
+set CANOE_SERVER_URL=https://127.0.0.1:8443
+set CANOE_CA_BUNDLE=..\canoe-server\data\certs\local-cert.pem
+python tests/test_server.py     # 33 项
+
+# —— 服务端（canoe-server/）——
+python smoke_test.py https://127.0.0.1:8443 --insecure   # 97 项
+cd panel && bun test_panel.mjs                            # 面板 DOM（24 项）
 ```
+
+合计 **336 项**。
 
 ---
 
-## 阶段 1 的诚实说明（重要）
+## 已知缺口
 
-### 1. 阶段1 客户端**确实持有真实节点**
+### 中转层的 ticket 目前没有被强制执行
 
-这是刻意的临时状态，也是阶段1 与最终形态最大的差别：
+服务端在 `/api/config` 里会签发一张短期的、绑设备的 ticket
+（`ConfigResponse.token`），但中转层（sing-box 的 VLESS 入站）认的是
+**节点固定的 `entry_uuid`**，不是这张 ticket：
 
+```python
+# canoe_server/services/relay.py
+"users": [{"uuid": node.entry_uuid, "flow": ""}],
 ```
-阶段1：  客户端 ──直接连──► 测试节点          ← 客户端有节点信息 ⚠
-阶段3+： 客户端 ──连──► 中转层 ──转发──► 真实节点  ← 客户端只有中转层入口 ✅
-```
 
-节点信息**只写在一个文件里**（`canoe_client/testnodes.py`），
-并且只通过一个函数对外暴露（`build_proxy_outbound()`）。
-阶段3 替换这一个函数即可，界面与内核代码都不用动。
+后果：知道「入口域名 + 路径 + entry_uuid」的人，即使账号已被封禁，
+仍然能继续使用中转层 —— 因为这些值不会随封禁变化。ticket 现在是签了但没处验。
 
-**这份代码不能当正式版发布。**
+要真正闭环，可选（成本从低到高）：
 
-### 2. 本地账号是假账号
+1. **按用户分配 UUID**：中转层每个账号一个 UUID，封禁时重生成中转配置并热重载。
+   能立刻让封禁生效，代价是用户变更时要 reload 一次。
+2. **自建入口网关**：入口不用 sing-box，用一个能读 ticket 的网关终止 TLS，
+   校验通过再转发到真实节点。最彻底，但要自己写数据面。
 
-`localauth.py` 把账号存在 `%APPDATA%\Canoe\accounts.json`，密码用 pbkdf2 哈希
-（不存明文），但任何人都能改这个文件。阶段3 会被服务端的
-`POST /api/register` 与 `POST /api/login` 取代。
-
-### 3. 未在阶段1 覆盖的
-
-- 流量统计、限速
-- 多设备、封禁、到期 —— 这些依赖服务端，属于阶段3/5
-- `wintun.dll` 需要你自行下载（没打进仓库）
-- 代码签名（未签名的 exe 首次运行会有 SmartScreen 提示）
+在决定之前，请不要把中转层入口当作「可撤销的凭据」来用。
 
 ---
 
@@ -205,9 +216,9 @@ python tests/test_gui.py
 
 | 组件 | 用途 | 获取 |
 |---|---|---|
-| **sing-box** | 代理内核 | [Releases](https://github.com/SagerNet/sing-box/releases)，推荐 1.12+（本项目用 1.14.2 验证） |
+| **sing-box** | 代理内核（客户端与中转层共用） | [Releases](https://github.com/SagerNet/sing-box/releases)，本项目用 1.14.2 |
 | **wintun.dll** | 仅全局(TUN)模式 | <https://www.wintun.net/> |
-| Nginx + certbot | 阶段4 服务端部署 | 系统包管理器 |
+| Nginx + certbot | 服务端部署 | 系统包管理器 |
 
 ---
 

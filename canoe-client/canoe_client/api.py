@@ -24,7 +24,14 @@ from typing import Any
 import requests
 from pydantic import ValidationError
 
-from canoe_core import Api, ConfigResponse, ErrorCode, LoginResponse
+from canoe_core import (
+    Api,
+    ClientReleaseResponse,
+    ConfigResponse,
+    ErrorCode,
+    LoginResponse,
+    SubscriptionResponse,
+)
 
 from .config import config
 
@@ -66,6 +73,9 @@ class CanoeApi:
         headers = dict(kwargs.pop("headers", {}) or {})
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
+
+        # 默认真校验 TLS；只有联调自签证书时才用 CANOE_CA_BUNDLE 指一张 CA
+        kwargs.setdefault("verify", config.ca_bundle)
 
         try:
             resp = self._http.request(
@@ -118,7 +128,7 @@ class CanoeApi:
                 "username": username,
                 "password": password,
                 "device_id": config.device_id,
-                "device_name": config["device_name"],
+                "device_name": config.device_name,
             },
         )
         result = LoginResponse.model_validate(data)
@@ -176,6 +186,26 @@ class CanoeApi:
             self._request("POST", Api.SESSION_STOP, json={"session_id": session_id})
         except CanoeApiError:
             pass  # 靠岸流程不该因为网络问题卡住
+
+    # ------------------------------------------------------------------
+    # 更新通道（「更新」按钮对接的两条）
+    # ------------------------------------------------------------------
+    def subscription(self) -> SubscriptionResponse:
+        """订阅更新：我这条订阅变了没有。
+
+        不建会话、不发凭证，只读 —— 没启航的时候也能随手调。
+        """
+        data = self._request("GET", Api.SUBSCRIPTION)
+        resp = SubscriptionResponse.model_validate(data)
+        resp.assert_no_real_fields()
+        if resp.entry is not None:
+            resp.entry.assert_whitelisted()
+        return resp
+
+    def latest_release(self) -> ClientReleaseResponse:
+        """客户端更新：有没有新版本。这个接口**不需要登录**。"""
+        data = self._request("GET", Api.CLIENT_LATEST)
+        return ClientReleaseResponse.model_validate(data)
 
 
 api = CanoeApi()

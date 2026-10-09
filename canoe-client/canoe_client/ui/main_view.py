@@ -32,8 +32,10 @@ from PySide6.QtWidgets import (
 
 from canoe_core import BRAND_CN, VERSION, Palette as P, Text
 
-from .. import sysproxy
+from .. import sysproxy, update
+from ..api import CanoeApiError, api
 from ..config import config
+from ..entry import EntryError, build_entry_outbound
 from ..kernel import kernel
 from ..logbus import TAG_ERROR, TAG_RESULT, bus
 from ..nettest import tcping, url_test
@@ -46,9 +48,7 @@ from ..options import (
     RunOptions,
 )
 from ..session import STATE_DOCKED, STATE_SAILED, STATE_STORM, session
-from ..testnodes import build_proxy_outbound, node_display_name, node_endpoint
 from ..tun import check_tun_ready, relaunch_as_admin
-from ..update import check as check_update
 from ..worker import Worker
 from . import artwork as A
 from .controls import CheckBox, RadioButton
@@ -78,13 +78,11 @@ def _escape(text: str) -> str:
 
 
 def _mask_secrets(text: str) -> str:
-    """兜底遮罩：节点域名 -> 「节点」，其余域名 -> 打星。"""
-    try:
-        host, _ = node_endpoint()
-    except Exception:  # noqa: BLE001 - 遮罩本身不能把界面搞崩
-        host = ""
-    if host and host in text:
-        text = text.replace(host, "节点")
+    """兜底遮罩：结果文本里出现的任何域名都打码。
+
+    正常结果（TCP 延迟 / URL 耗时）本来不含域名；这一层是防着某条错误
+    信息里带了入口域名或 IP —— 界面上不出现节点/入口信息是硬要求。
+    """
     return _DOMAIN_RE.sub(lambda m: m.group(1) + "＊＊＊", text)
 
 
@@ -114,6 +112,14 @@ class MainView(FramelessWindow):
         self._opts = RunOptions.from_dict(config["options"])
         self._result_seq = 0
 
+        # --- 与服务端会话相关的状态 ---
+        #: 本次会话 id。启航时服务端发下来的，靠岸时要用它结束会话。
+        self._session_id = ""
+        #: 服务端下发的配置版本 / 订阅指纹，用来判断"配置变了没有"
+        self._config_version = 0
+        self._revision = ""
+        self._heartbeat_seconds = 30
+
         self._build()
         self._load_options_into_ui()
         self.refresh()
@@ -128,6 +134,11 @@ class MainView(FramelessWindow):
         self._log_timer = QTimer(self)
         self._log_timer.timeout.connect(self._drain_log)
         self._log_timer.start(LOG_POLL_MS)
+
+        # 心跳：航行期间每 N 秒报一次，顺便让服务端把会话续期。
+        # 被管理员封禁/踢下线时，服务端会在心跳响应里带 revoked —— 那时立即靠岸。
+        self._hb_timer = QTimer(self)
+        self._hb_timer.timeout.connect(self._on_heartbeat)
 
         bus.system("界面就绪")
         self._drain_log()
@@ -443,6 +454,39 @@ class MainView(FramelessWindow):
         self.dock_btn.setText(Text.BTN_DOCK)
 
     # ==================================================================
+    # 服务端推送（SSE）
+    # ==================================================================
+    def on_push_event(self, payload) -> None:
+        """服务端推来的事件。跑在主线程（信号是排队投递的）。"""
+        if not isinstance(payload, dict):
+            return
+        kind = payload.get("type")
+
+        if kind == "config_changed":
+            # 广播里**不带节点名**（免得把别人的节点泄露给所有人），
+            # 所以只说"变了"，具体是什么等用户重新启航时自然会拿到
+            version = payload.get("config_version")
+            if version:
+                self._config_version = 0   # 强制下次启航重新对齐
+            bus.result("配置已更新，请重新启航")
+
+        elif kind == "release":
+            version = payload.get("version") or ""
+            bus.result(f"有新版本：{version}" if version else "有新版本")
+
+        elif kind == "kick":
+            reason = payload.get("reason") or "已被管理员下线"
+            bus.error(f"{reason}，自动靠岸")
+            if session.sailing:
+                self._dock()
+            # permanent=True 才是连令牌一起废了（封禁）；单纯踢一次会话的话
+            # 令牌还有效，靠岸就完了，不必把人踹回登录页
+            if payload.get("permanent"):
+                self.logged_out.emit()
+
+        # hello / ping 不需要做什么
+
+    # ==================================================================
     # 启航 / 靠岸
     # ==================================================================
     def _launch(self) -> None:
@@ -461,7 +505,10 @@ class MainView(FramelessWindow):
                 self._handle_tun_blocked(reason)
                 return
 
-        def on_ok(_none) -> None:
+        def on_ok(cfg) -> None:
+            # 服务端可能和登录时给的节点不一样（比如刚被管理员调过），以启航拿到的为准
+            if getattr(cfg, "node_name", ""):
+                session.node_name = cfg.node_name
             self.refresh()
             self._set_state(STATE_SAILED)
             bus.system("已启航")
@@ -474,15 +521,69 @@ class MainView(FramelessWindow):
                     kernel.stop()
                     self._set_state(STATE_STORM, f"设置系统代理失败：{exc}")
                     bus.error(f"设置系统代理失败：{exc}")
+                    return
+            self._hb_timer.start(self._heartbeat_seconds * 1000)
 
         def on_err(code: str, message: str) -> None:
             self._set_state(STATE_STORM, message)
             bus.error(message)
+            if code in ("unauthorized", "banned", "expired", "bad_credentials"):
+                self.logged_out.emit()   # 令牌废了，回登录页
 
         Worker(self._do_start_kernel).run_with(on_ok, on_err)
 
-    def _do_start_kernel(self) -> None:
-        kernel.start(build_proxy_outbound(), self._opts)
+    def _do_start_kernel(self):
+        """启航：先问服务端要入口，再用它拉起内核。
+
+        ★ 客户端自始至终只拿到「中转层入口」——
+          真实节点的地址/端口/协议/密钥在服务端那一侧，客户端拿不到。
+        """
+        mode = "tun" if self._opts.use_tun else "system_proxy"
+        cfg = api.fetch_config(mode)          # 服务端做完全套校验才发
+
+        try:
+            outbound = build_entry_outbound(cfg.entry)
+        except EntryError as exc:
+            raise exc
+
+        self._session_id = cfg.session_id
+        self._config_version = cfg.config_version
+        self._heartbeat_seconds = max(10, int(cfg.heartbeat_interval or 30))
+        kernel.start(outbound, self._opts)
+        return cfg
+
+    # ------------------------------------------------------------------
+    # 心跳
+    # ------------------------------------------------------------------
+    def _on_heartbeat(self) -> None:
+        if not session.sailing or not self._session_id:
+            self._hb_timer.stop()
+            return
+
+        sid = self._session_id
+
+        def on_ok(data) -> None:
+            if not isinstance(data, dict):
+                return
+            if data.get("revoked"):
+                bus.error("已被管理员下线，自动靠岸")
+                self._dock()
+                return
+            name = data.get("node_name")
+            if name and name != session.node_name:
+                session.node_name = name
+                self.refresh()
+            version = data.get("config_version")
+            if version and self._config_version and version != self._config_version:
+                bus.result("配置已更新，请重新启航")
+
+        def on_err(code: str, message: str) -> None:
+            # 令牌废了 / 被封 / 到期 —— 服务端已经把会话吊销了，本地跟着靠岸
+            if code in ("unauthorized", "banned", "expired"):
+                bus.error(message)
+                self._dock()
+
+        Worker(api.heartbeat, sid).run_with(on_ok, on_err)
 
     def _handle_tun_blocked(self, reason: str) -> None:
         if "管理员" not in reason:
@@ -505,6 +606,7 @@ class MainView(FramelessWindow):
     def _dock(self) -> None:
         self.dock_btn.setEnabled(False)
         self.dock_btn.setText(Text.BTN_DOCK_BUSY)
+        self._hb_timer.stop()
         bus.system("正在靠岸…")
 
         # ★ 顺序不能反：**先还原系统代理，再停内核**。
@@ -520,6 +622,13 @@ class MainView(FramelessWindow):
                 self.error_label.setText(f"还原系统代理失败：{exc}")
                 bus.error(f"还原系统代理失败：{exc}")
 
+        # 告诉服务端这次会话结束了。
+        # 用 /api/session/stop 而不是 /api/logout —— 后者会吊销登录令牌，
+        # 用户每次靠岸都得重新登舟。丢到工作线程，别卡住界面。
+        if self._session_id:
+            sid, self._session_id = self._session_id, ""
+            Worker(api.stop_session, sid).run_with()
+
         try:
             kernel.stop()
         except Exception as exc:  # noqa: BLE001
@@ -533,32 +642,76 @@ class MainView(FramelessWindow):
     # 工具按钮
     # ==================================================================
     def _do_update(self) -> None:
-        self.update_btn.setEnabled(False)
-        url = str(config["update_url"])
+        """「更新」一次查两条 —— **客户端更新 + 订阅更新**。
 
-        def on_ok(info) -> None:
+            更新：1.0.0 最新 · 订阅：香港-01
+
+        结果框只留一行，所以两条拼起来显示；有新版本时再弹窗给详情。
+        """
+        self.update_btn.setEnabled(False)
+
+        def work():
+            parts: list[str] = []
+            newer = None
+            revision = ""
+            try:
+                rel = api.latest_release()
+                if update.compare_versions(rel.version, VERSION) > 0:
+                    parts.append(f"更新：{VERSION} → {rel.version}")
+                    newer = rel
+                else:
+                    parts.append(f"更新：{VERSION} 最新")
+            except CanoeApiError as exc:
+                parts.append(f"更新：{exc.message}")
+
+            if api.token:
+                try:
+                    sub = api.subscription()
+                    revision = sub.revision
+                    if revision and revision == self._revision:
+                        parts.append("订阅：最新")
+                    elif sub.node_name:
+                        parts.append(f"订阅：{sub.node_name}")
+                    else:
+                        parts.append("订阅：有更新")
+                except CanoeApiError as exc:
+                    parts.append(f"订阅：{exc.message}")
+            return " · ".join(parts), newer, revision
+
+        def on_ok(payload) -> None:
             self.update_btn.setEnabled(True)
-            if info.is_newer:
-                bus.result(f"更新：{info.current} → {info.latest}")
+            text, newer, revision = payload
+            if revision:
+                self._revision = revision
+            bus.result(text)
+            if newer is not None:
                 # 详细内容放弹窗，不塞进结果框（结果框只留一行）
-                detail = f"当前版本：{info.current}\n最新版本：{info.latest}"
-                if info.notes:
-                    detail += f"\n\n更新说明：\n{info.notes}"
-                if info.url:
-                    detail += f"\n\n下载地址：\n{info.url}"
+                detail = f"当前版本：{VERSION}\n最新版本：{newer.version}"
+                if newer.notes:
+                    detail += f"\n\n更新说明：\n{newer.notes}"
+                if newer.url:
+                    detail += f"\n\n下载地址：\n{newer.url}"
                 QMessageBox.information(self, "有新版本", detail)
-            else:
-                bus.result(f"更新：{info.current} 最新")
 
         def on_err(code: str, message: str) -> None:
             self.update_btn.setEnabled(True)
             bus.error(f"更新：{message}")
 
-        Worker(check_update, url, VERSION).run_with(on_ok, on_err)
+        Worker(work).run_with(on_ok, on_err)
 
     def _do_tcping(self) -> None:
+        """测本机到**中转层入口**的 TCP 握手延迟。
+
+        测的是入口，不是真实节点 —— 真实节点在服务端那一侧，
+        客户端拿不到（也不该拿到），所以只能测"我到入口这条路通不通"。
+        """
         self.tcping_btn.setEnabled(False)
-        host, port = node_endpoint()
+
+        def work():
+            sub = api.subscription()
+            if sub.entry is None:
+                raise EntryError("当前没有可用节点，请联系管理员")
+            return tcping(sub.entry.host, sub.entry.port, 4)
 
         def on_ok(result) -> None:
             self.tcping_btn.setEnabled(True)
@@ -568,7 +721,7 @@ class MainView(FramelessWindow):
             self.tcping_btn.setEnabled(True)
             bus.error(f"TCP 延迟：{message}")
 
-        Worker(tcping, host, port, 4).run_with(on_ok, on_err)
+        Worker(work).run_with(on_ok, on_err)
 
     def _do_urltest(self) -> None:
         if not session.sailing:
@@ -595,10 +748,14 @@ class MainView(FramelessWindow):
         self._do_logout()
 
     def _do_logout(self) -> None:
-        if session.sailing:
+        self._hb_timer.stop()
+        sid = self._session_id
+        if session.sailing or self._session_id:
             self._dock()
         session.logout()
         self.logged_out.emit()
+        # 吊销服务端令牌（幂等：没令牌 / 已失效都返回 ok）
+        Worker(api.logout, sid or None).run_with()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         """关窗必须停内核并还原系统代理，否则用户会断网。
@@ -607,11 +764,19 @@ class MainView(FramelessWindow):
         `session.sailing` 还是 False，只看它会漏掉这时候关窗的情况。
         """
         self._log_timer.stop()
+        self._hb_timer.stop()
         if session.sailing or kernel.running or sysproxy.has_backup():
             self._dock()
         super().closeEvent(event)
 
-    def start_with_test_node(self, username: str) -> None:
-        """阶段1：节点名来自写死的测试节点。阶段3 换成服务端下发的 node_name。"""
-        session.login(username, node_display_name())
+    def start_with_node(self, username: str, node_name: str = "") -> None:
+        """登录成功后进入主界面。
+
+        节点名是**登录时服务端一起给的** —— 主界面的「节点名称」要在点启航
+        之前就能显示，不能等启航才知道连哪个。
+        """
+        session.login(username, node_name)
+        self._session_id = ""
+        self._config_version = 0
+        self._revision = ""
         self.refresh()

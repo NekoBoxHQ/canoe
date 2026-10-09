@@ -244,7 +244,7 @@ def ban_user(
         )
     )
     db.commit()
-    pushed = notify_kick(user_id, "账号已被封禁")
+    pushed = notify_kick(user_id, "账号已被封禁", permanent=True)
     return {
         "ok": True,
         "revoked_tokens": tokens,

@@ -28,7 +28,15 @@ from canoe_client.kernel import kernel  # noqa: E402
 from canoe_client.logbus import LogBus  # noqa: E402
 from canoe_client.nettest import tcping, url_test  # noqa: E402
 from canoe_client.options import RunOptions  # noqa: E402
-from canoe_client.testnodes import build_proxy_outbound, node_endpoint  # noqa: E402
+from canoe_client.entry import build_entry_outbound  # noqa: E402
+from canoe_core import EntryPayload  # noqa: E402
+
+#: 样例入口（真实运行时由服务端下发）
+SAMPLE_ENTRY = EntryPayload(
+    transport="ws", host="entry.example.com", port=443,
+    uuid="11111111-2222-3333-4444-555555555555",
+    path="/e/test", sni="entry.example.com", tls=True, insecure=False,
+)
 
 passed = failed = skipped = 0
 
@@ -138,16 +146,23 @@ def main() -> int:
     check("同版本不算更新", not update.UpdateInfo(latest="1.0.0", current="1.0.0").is_newer)
 
     # --- 4. TCping ---
+    # 客户端现在测的是「到中转入口」的握手延迟（真实节点拿不到）。
+    # 这里不连真入口，只验证函数本身 —— 自己开一个本地端口当靶子，
+    # 不依赖外网，跑在谁的机器上结果都一样。
     print("\n[4] TCping")
-    host, port = node_endpoint()
-    check("拿到节点端点（非空）", bool(host) and port > 0, f"{host}:{port}")
-    result = tcping(host, port, count=3)
-    if result.ok:
-        check(f"TCping 通了：{result.summary()}", True)
-        check("记录次数正确", result.total == 3 and result.ok_count >= 1, str(result))
-        check("至少有一次耗时样本", len(result.times) >= 1)
-    else:
-        skip("TCping 实测", f"节点不可达：{result.error}")
+    import socket  # noqa: PLC0415
+
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(4)
+    live_port = listener.getsockname()[1]
+    try:
+        good = tcping("127.0.0.1", live_port, count=2, timeout=2.0)
+        check("连得上时报出耗时", good.ok and len(good.times) >= 1, good.summary())
+        check("记录尝试次数", good.total == 2, str(good))
+    finally:
+        listener.close()
 
     bad = tcping("127.0.0.1", 1, count=1, timeout=1.0)
     check("连不上时 ok=False 且有原因", not bad.ok and bool(bad.error), bad.summary())
@@ -161,7 +176,9 @@ def main() -> int:
         port = 22019
         opts = RunOptions(use_system_proxy=True, use_tun=False, mixed_port=port, log_level="info")
         try:
-            kernel.start(build_proxy_outbound(), opts)
+            # 出站用直连：这里验证的是「通过本地代理通道发请求」这条管道，
+            # 不需要真的有个节点。有节点时那条路由由 test_server.py 覆盖。
+            kernel.start({"type": "direct", "tag": "proxy"}, opts)
         except Exception as exc:  # noqa: BLE001
             skip("URL 测试", f"内核启动失败：{exc}")
         else:

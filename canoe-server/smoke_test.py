@@ -167,7 +167,10 @@ def main() -> int:
     node_body = {
         "name": f"轻舟-{suffix}",
         "enabled": True,
-        "sort_order": 1,
+        # 0 = 排最前。必须压过库里已有的节点（示例节点是 10，别人留的是 1），
+        # 否则 /api/config 可能挑中另一个，后面"ticket 记录了目标节点"
+        # 就会对着一个不是我们建的节点报错。
+        "sort_order": 0,
         "entry_host": "canoe.example.com",
         "entry_port": 443,
         "entry_path": f"/e/canoe{suffix}",
@@ -324,7 +327,19 @@ def main() -> int:
         z.writestr("Canoe.exe", b"P" * (48 * 1024))
     package = buf.getvalue()
     digest = hashlib.sha256(package).hexdigest()
-    release_version = f"9.{uuid.uuid4().int % 90 + 10}.0"
+    # 版本号必须**确定性地**盖过库里已有的。
+    # 以前是随机 9.10.0~9.99.0 —— 只要上一轮留下过一个更大的（比如跑崩了
+    # 没走到清理那步），"取最新版本"就取到旧的，这里两条断言必红。
+    # 现在读一遍现有列表，取最大主版本 +1。
+    existing = client.get(Api.ADMIN_RELEASES, headers=admin_h)
+    rows = existing.json().get("items", []) if existing.status_code == 200 else []
+    majors = []
+    for row in rows:
+        try:
+            majors.append(int(str(row.get("version", "0")).split(".")[0]))
+        except (TypeError, ValueError):
+            pass
+    release_version = f"{(max(majors) if majors else 0) + 1}.0.0"
 
     r = client.post(
         f"{Api.ADMIN_RELEASES}/upload",

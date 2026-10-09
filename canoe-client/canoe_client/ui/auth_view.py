@@ -1,13 +1,18 @@
-"""造舟 / 登舟 —— 注册页与登录页（美化稿）。
+"""造舟 / 登舟 —— 注册页与登录页。
 
-阶段1 的注册/登录走本地（localauth.py）；阶段3 换成服务端调用时，
-只需把 _do_login / _do_register 里的两个函数换成 api 调用，界面不用动。
+账号在**服务端**（阶段3 起）。这里只做两件事：收输入、调 /api/login 与
+/api/register。服务端地址是写死的（见 config.SERVER_BASE），界面上没有
+任何"服务器地址"入口。
+
+注册时先在本地做一遍和服务端同样的校验，省一次往返、也让错误提示更快。
 
 视觉：夜色山水打底；卡片浮在中间；卡片下方**特意留出一条山水带**，
 让远山、水波和那叶小舟露出来，而不是被卡片整个盖住。
 输入框内嵌线性图标，密码框右侧有个眼睛可以切换明文。
 """
 from __future__ import annotations
+
+import re
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon, QPainter
@@ -24,10 +29,25 @@ from PySide6.QtWidgets import (
 
 from canoe_core import BRAND_CN, SLOGAN_CN, SLOGAN_EN, Palette as P, Text
 
-from .. import localauth
+from ..api import api
 from ..worker import Worker
 from . import artwork as A
 from .window_base import FramelessWindow
+
+#: 与服务端 RegisterRequest 保持一致
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
+PASSWORD_MIN = 8
+
+
+def validate_credentials(username: str, password: str, confirm: str = "") -> str:
+    """本地先校验一遍。返回错误信息，空串表示通过。"""
+    if not USERNAME_RE.match(username):
+        return "用户名要 3-32 位字母、数字、下划线或短横线"
+    if len(password) < PASSWORD_MIN:
+        return f"密码至少 {PASSWORD_MIN} 位"
+    if confirm and password != confirm:
+        return "两次输入的密码不一致"
+    return ""
 
 WINDOW_W = 380
 PAD = 22                 # 正文左右留白
@@ -44,6 +64,9 @@ class AuthView(FramelessWindow):
 
     def __init__(self) -> None:
         super().__init__(WINDOW_W, 560)
+
+        #: 登录成功时服务端告诉我们的节点显示名（主界面要用）
+        self.last_node_name = ""
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_login())
@@ -190,17 +213,6 @@ class AuthView(FramelessWindow):
         self.login_btn.setIcon(QIcon(A.icon("arrow-right", 18, "#FFFFFF")))
         self.login_btn.clicked.connect(self._do_login)
         lay.addWidget(self.login_btn)
-        lay.addSpacing(9)
-
-        # 阶段1 测试便利：不想注册就直接进
-        self.guest_btn = QPushButton(Text.BTN_GUEST)
-        self.guest_btn.setObjectName("Outline")
-        self.guest_btn.setMinimumHeight(BTN_H2)
-        self.guest_btn.setCursor(Qt.PointingHandCursor)
-        self.guest_btn.setIcon(QIcon(A.icon("user-plus", 18, P.CYAN)))
-        self.guest_btn.setToolTip("跳过注册，用「访客」身份直接进主界面")
-        self.guest_btn.clicked.connect(self._do_guest)
-        lay.addWidget(self.guest_btn)
         lay.addSpacing(12)
 
         lay.addLayout(self._switch_row(Text.HINT_NO_ACCOUNT, Text.LINK_TO_REGISTER,
@@ -284,33 +296,25 @@ class AuthView(FramelessWindow):
         password = self.login_pass.text()
 
         self.login_err.setText("")
+        if not username or not password:
+            self.login_err.setText("用户名和密码都要填")
+            return
+
         self._set_busy(self.login_btn, Text.BTN_LOGIN, True)
 
-        def on_ok(account) -> None:
+        def on_ok(result) -> None:
             self._set_busy(self.login_btn, Text.BTN_LOGIN, False)
             self.login_pass.clear()
-            self.logged_in.emit(account.username)
+            # node_name 在登录时就回来了 —— 主界面的「节点名称」要在
+            # 点启航之前就能显示，不能等启航才知道连哪个。
+            self.last_node_name = result.user.node_name or ""
+            self.logged_in.emit(username)
 
         def on_err(code: str, message: str) -> None:
             self._set_busy(self.login_btn, Text.BTN_LOGIN, False)
             self.login_err.setText(message)
 
-        Worker(localauth.login, username, password).run_with(on_ok, on_err)
-
-    def _do_guest(self) -> None:
-        """跳过注册，直接用访客身份进主界面。阶段1 测试便利。"""
-        self.login_err.setText("")
-        self.guest_btn.setEnabled(False)
-
-        def on_ok(account) -> None:
-            self.guest_btn.setEnabled(True)
-            self.logged_in.emit(account.username)
-
-        def on_err(code: str, message: str) -> None:
-            self.guest_btn.setEnabled(True)
-            self.login_err.setText(message)
-
-        Worker(localauth.login_as_guest).run_with(on_ok, on_err)
+        Worker(api.login, username, password).run_with(on_ok, on_err)
 
     def _do_register(self) -> None:
         username = self.reg_user.text().strip()
@@ -318,24 +322,39 @@ class AuthView(FramelessWindow):
         confirm = self.reg_pass2.text()
 
         self.reg_err.setText("")
-        try:
-            localauth.validate(username, password, confirm)
-        except localauth.LocalAuthError as exc:
-            self.reg_err.setText(exc.message)
+        problem = validate_credentials(username, password, confirm)
+        if problem:
+            self.reg_err.setText(problem)
             return
 
         self._set_busy(self.reg_btn, Text.BTN_REGISTER, True)
 
-        def on_ok(_account) -> None:
+        def on_ok(_result) -> None:
             # 造舟成功后直接登舟，少一步
-            self._set_busy(self.reg_btn, Text.BTN_REGISTER, False)
             self.reg_user.clear()
             self.reg_pass.clear()
             self.reg_pass2.clear()
-            self.logged_in.emit(username)
+            self._auto_login(username, password)
 
         def on_err(code: str, message: str) -> None:
             self._set_busy(self.reg_btn, Text.BTN_REGISTER, False)
             self.reg_err.setText(message)
 
-        Worker(localauth.register, username, password).run_with(on_ok, on_err)
+        Worker(api.register, username, password).run_with(on_ok, on_err)
+
+    def _auto_login(self, username: str, password: str) -> None:
+        """注册成功后自动登录（服务端注册接口不返回令牌）。"""
+
+        def on_ok(result) -> None:
+            self._set_busy(self.reg_btn, Text.BTN_REGISTER, False)
+            self.last_node_name = result.user.node_name or ""
+            self.logged_in.emit(username)
+
+        def on_err(code: str, message: str) -> None:
+            self._set_busy(self.reg_btn, Text.BTN_REGISTER, False)
+            # 注册成功了但自动登录失败：把人送回登录页，别让他卡在造舟页
+            self._switch(0)
+            self.login_user.setText(username)
+            self.login_err.setText(f"账号已创建，请手动登录（{message}）")
+
+        Worker(api.login, username, password).run_with(on_ok, on_err)

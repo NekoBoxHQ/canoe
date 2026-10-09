@@ -9,7 +9,9 @@ from PySide6.QtWidgets import QApplication
 from canoe_core import BRAND_CN, SLOGAN_CN
 
 from . import sysproxy
+from .api import api
 from .config import ASSETS_DIR, BIN_DIR, CONFIG_DIR, CONFIG_FILE, config
+from .events import stream
 from .kernel import kernel
 from .options import RunOptions
 from .session import session
@@ -25,20 +27,28 @@ class CanoeApp:
 
         self.auth.logged_in.connect(self._on_logged_in)
         self.main.logged_out.connect(self._on_logged_out)
+        # 服务端推来的事件（配置变更 / 踢下线 / 新版本）交给主界面处理
+        stream.event.connect(self.main.on_push_event)
 
     def start(self) -> None:
         self.auth.show()
 
     def _on_logged_in(self, username: str) -> None:
-        self.main.start_with_test_node(username)
+        # 节点名是登录时服务端一起给的（主界面要在启航前就显示它）
+        self.main.start_with_node(username, self.auth.last_node_name)
         self.main.refresh()
         self.main.show()
         self.auth.hide()
+        # 挂上推送长连接 —— 管理员改节点 / 封禁时能立刻知道，不用等心跳
+        if api.token:
+            stream.start(api.token)
 
     def _on_logged_out(self) -> None:
+        stream.stop()
         self.auth.login_user.clear()
         self.auth.login_pass.clear()
         self.auth.login_err.setText("")
+        self.auth.last_node_name = ""
         self.auth.show()
         self.main.hide()
 
@@ -51,6 +61,7 @@ class CanoeApp:
         先把代理还回去，这段时间用户也不会没网。理由同 `MainView._dock`。
         """
         try:
+            stream.stop()
             if sysproxy.has_backup():
                 sysproxy.clear_proxy()
             if session.sailing or kernel.running:

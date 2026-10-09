@@ -182,14 +182,14 @@ canoe-server/
 
 ## 与客户端的接线点（阶段 5）
 
-客户端里为服务端预留的位置：
+客户端接线情况（阶段 5 已完成）：
 
-| 客户端位置 | 换成 |
+| 客户端位置 | 现在 |
 |---|---|
-| `testnodes.build_proxy_outbound()` | 用 `api.fetch_config()` 返回的 `entry` 构造出站 |
-| `localauth.login()` / `register()` | 调 `api.login()` / `api.register()` |
-| `testnodes.py` | 删除 |
-| `update.py` 的单一地址检查 | 加一条 `/api/subscription` 检查 |
-| 新增 | 启航后挂 `/api/events` 收推送 |
+| 账号 | 走 `api.login()` / `api.register()`，本地不落账号 |
+| 出站 | 用 `api.fetch_config()` 的 `entry` 经 `entry.build_entry_outbound()` 拼 |
+| 更新 / 订阅 | 「更新」按钮同时查 `api.latest_release()` 与 `api.subscription()` |
+| 推送 | 登录后挂 `events.stream`，收 `config_changed` / `release` / `kick` |
+| 心跳 | 启航期间按 `heartbeat_interval` 打 `/api/heartbeat`，被吊销即自动靠岸 |
 
-`canoe_client/api.py` 已经写好（登录、取配置、心跳、停会话），阶段 5 直接接线。
+见 `canoe-client/README.md` 与根目录 `README.md` 的「架构」一节。

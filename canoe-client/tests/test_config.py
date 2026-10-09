@@ -8,7 +8,7 @@
     3. 绕过局域网：IPv4 与 IPv6 的私有段都在规则里
     4. 绕过大陆：规则集被正确引用
     5. 关掉绕过选项后，对应规则消失
-    6. 出站是测试节点，且流量默认走代理
+    6. ★ 出站只指向中转入口，真实节点一个字都不许出现
 
 用法：
     python tests/test_config.py
@@ -34,7 +34,17 @@ from canoe_client.options import (  # noqa: E402
     PROFILE_SPLIT,
     RunOptions,
 )
-from canoe_client.testnodes import build_proxy_outbound  # noqa: E402
+from canoe_client.entry import build_entry_outbound  # noqa: E402
+
+#: 样例入口。真实运行时它是服务端下发的（ConfigResponse.entry），
+#: 这里只是造一个形状一样的，用来测配置生成。
+from canoe_core import EntryPayload  # noqa: E402
+
+SAMPLE_ENTRY = EntryPayload(
+    transport="ws", host="entry.example.com", port=443,
+    uuid="11111111-2222-3333-4444-555555555555",
+    path="/e/test", sni="entry.example.com", tls=True, insecure=False,
+)
 
 passed = failed = 0
 
@@ -76,7 +86,7 @@ def main() -> int:
         return 0
     print(f"内核: {exe}\n")
 
-    outbound = build_proxy_outbound()
+    outbound = build_entry_outbound(SAMPLE_ENTRY)
 
     # --- 1. 两种模式都能通过 check ---
     print("[1] 配置能被 sing-box 接受")
@@ -165,13 +175,50 @@ def main() -> int:
     check("只监听本机 127.0.0.1", inb["listen"] == "127.0.0.1")
     check("端口取自选项", inb["listen_port"] == 20818)
 
-    # --- 6. 出站就是测试节点 ---
-    print("\n[6] 出站指向测试节点")
-    ob = cfg["outbounds"][0]
-    check("出站类型是 shadowsocks", ob["type"] == "shadowsocks")
-    check("出站服务器是测试节点", ob["server"] == "one.leycc.com")
-    check("出站端口是测试节点端口", ob["server_port"] == 33222)
-    check("出站方法是 SS2022", ob["method"] == "2022-blake3-aes-128-gcm")
+    # --- 6. 出站指向中转入口（不是真实节点）---
+    #
+    # 这一段是安全底线：客户端内核配置里只能出现**中转层入口**，
+    # 真实节点的主机/端口/UUID 一律不许出现在这里。
+    print("\n[6] 出站指向中转入口")
+    ob = cfg["outbounds"][0] if cfg["outbounds"][0]["tag"] == "proxy" else None
+    check("第一个出站就是 proxy", ob is not None, str(cfg["outbounds"][0]))
+    if ob is not None:
+        check("出站类型是 vless", ob["type"] == "vless", str(ob.get("type")))
+        check("出站服务器是中转入口", ob["server"] == SAMPLE_ENTRY.host, str(ob.get("server")))
+        check("出站端口是中转入口端口", ob["server_port"] == SAMPLE_ENTRY.port, str(ob.get("server_port")))
+        check("用了 WS 传输", ob.get("transport", {}).get("type") == "ws")
+        check("WS 的 Host 头是入口域名",
+              ob.get("transport", {}).get("headers", {}).get("Host") == SAMPLE_ENTRY.sni)
+        check("开了 TLS", ob.get("tls", {}).get("enabled") is True)
+
+        blob = json.dumps(cfg, ensure_ascii=False)
+        check("★ 整份配置里没有任何 real_ 字段", "real_" not in blob)
+        check("★ 整份配置里不含真实节点标识",
+              "198.51.100.7" not in blob and "aaaaaaaa-bbbb" not in blob)
+
+    check("★ 出站只有 proxy 与 direct 两个",
+          [o["tag"] for o in cfg["outbounds"]] == ["proxy", "direct"],
+          str([o["tag"] for o in cfg["outbounds"]]))
+    check("★ 没有可导出的节点列表（客户端不落任何节点）",
+          "outbounds_dump" not in cfg and "nodes" not in cfg)
+
+    # --- 7. DNS 的 detour 要跟出站对得上（防回归）---
+    #
+    # 真代理出站：remote DNS 必须绕 proxy 走（否则国外域名会被污染）。
+    # direct 出站：**必须不写** detour —— 写了 sing-box 会判定
+    # "让 DNS 绕一个 direct 出站毫无意义" 直接拒绝启动。
+    # 本机联调和测试都会把出站换成 direct，所以两种都要验。
+    print("\n[7] DNS detour 与出站类型一致")
+    real = build_config(outbound, RunOptions())
+    remote = next(s for s in real["dns"]["servers"] if s["tag"] == "remote")
+    check("真代理出站时 remote DNS 绕 proxy", remote.get("detour") == "proxy", str(remote))
+
+    direct_cfg = build_config({"type": "direct", "tag": "proxy"}, RunOptions())
+    d_remote = next(s for s in direct_cfg["dns"]["servers"] if s["tag"] == "remote")
+    check("★ direct 出站时不写 detour（否则内核拒启）",
+          "detour" not in d_remote, str(d_remote))
+    ok_d, msg_d = singbox_check(direct_cfg)
+    check("★ direct 出站的配置能通过 sing-box check", ok_d, msg_d[:300])
 
     print(f"\n{'=' * 48}")
     print(f"通过 {passed} 项，失败 {failed} 项")

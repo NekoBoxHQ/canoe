@@ -2,8 +2,8 @@
 
 Windows 桌面程序。界面只有三页：**造舟（注册）、登舟（登录）、主界面**。
 
-> **阶段状态**：当前是**阶段 1** —— 客户端跑通，节点写死，账号存本地。
-> 服务端联调在阶段 3/5。见根目录 `README.md`。
+> **阶段状态**：阶段 1-5 已完成 —— 账号、配置、订阅、更新全部走服务端。
+> 客户端不落任何节点信息。见根目录 `README.md`。
 
 ## 运行
 
@@ -15,8 +15,8 @@ pip install -r requirements.txt
 python run.py
 ```
 
-**最快试用路径**：双击 → 点「**直接体验（跳过注册）**」→ 点「启航」。
-不用注册。
+**最快试用路径**：双击 → 造舟（注册）→ 登舟 → 点「启航」。
+账号在服务端，必须联网。
 
 ## 界面
 
@@ -178,14 +178,15 @@ outbound/shadowsocks[proxy]: outbound connection to one.leycc.com:443
 | 文件 | 职责 |
 |---|---|
 | `app.py` | 入口、页面切换、退出兜底清理、`--selftest` 自检 |
-| `testnodes.py` | ★ 阶段1 写死的测试节点（阶段3 删除，替换点 `build_proxy_outbound()`） |
-| `localauth.py` | ★ 阶段1 本地假账号（阶段3 换成服务端调用） |
+| `api.py` | 与服务端通话（注册 / 登录 / 配置 / 心跳 / 订阅 / 更新） |
+| `entry.py` | 中转入口 -> sing-box 出站 |
+| `events.py` | SSE 长连接，接收服务端推送 |
+| `config.py` | 本地非敏感配置 + 写死的服务端地址 |
 | `kernel.py` | sing-box 配置生成与进程管理 |
 | `options.py` | 运行选项 |
-| `sysproxy.py` | Windows 系统代理（备份 / 还原） |
+| `sysproxy.py` | Windows 系统代理（备份 / 还原 / 自愈） |
 | `tun.py` | 全局模式先决条件检查（管理员、wintun） |
 | `worker.py` | 线程池，避免网络请求卡住界面 |
-| `api.py` | 阶段3 使用，现在未接线 |
 | `ui/auth_view.py` | 造舟 / 登舟 |
 | `ui/main_view.py` | 主界面 |
 | `ui/style.py` | QSS |

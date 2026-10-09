@@ -154,6 +154,12 @@ def notify_release(version: str, url: str = "", notes: str = "") -> int:
     )
 
 
-def notify_kick(user_id: int, reason: str = "管理员操作") -> int:
-    """踢下线。客户端收到必须立即靠岸。"""
-    return hub.publish({"type": "kick", "user_id": user_id, "reason": reason})
+def notify_kick(user_id: int, reason: str = "管理员操作", *, permanent: bool = False) -> int:
+    """踢下线。客户端收到必须立即靠岸。
+
+    permanent=True 表示连登录令牌一起废了（封禁）—— 客户端要回登录页，
+    而不是"靠岸后还能再启航"。单独踢一次会话时它是 False。
+    """
+    return hub.publish(
+        {"type": "kick", "user_id": user_id, "reason": reason, "permanent": permanent}
+    )
