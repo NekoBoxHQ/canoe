@@ -1,0 +1,33 @@
+# 换行符钉死，别依赖每个人的 core.autocrlf。
+#
+# 为什么值得单独一个文件：部署脚本是「在 Windows 上开发、clone 到 Debian 上跑」。
+# 如果有人开着 autocrlf 检出、再把目录拷到 Linux，脚本里会多出 \r，
+# 于是 shebang 变成 "#!/usr/bin/env bash\r"，报的却是
+#   bash: ./deploy/install.sh: /usr/bin/env: bad interpreter: No such file or directory
+# —— 一个跟换行毫无字面关系的错误，够查半天。
+
+# 要在 Linux 上直接执行的，必须 LF
+*.sh   text eol=lf
+*.py   text eol=lf
+*.mjs  text eol=lf
+*.md   text eol=lf
+*.sql  text eol=lf
+*.conf text eol=lf
+.env*  text eol=lf
+
+# Windows 批处理反过来，必须 CRLF
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# 二进制 —— 明确标注，免得被当文本做换行转换而损坏
+*.png  binary
+*.ico  binary
+*.jpg  binary
+*.exe  binary
+*.dll  binary
+*.pyd  binary
+*.so   binary
+*.srs  binary
+*.zip  binary
+*.db   binary
+*.pem  binary
