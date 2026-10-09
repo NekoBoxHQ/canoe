@@ -14,8 +14,8 @@
 与服务端通信。HTTPS + Bearer token。
 
 这个模块拿到的所有响应都会先经 canoe_core 的模型校验 ——
-`/api/config` 的响应类型是 ConfigResponse，它的 entry 字段是 EntryPayload，
-**类型上就没有真实节点的容身之处**。见 docs/04-security.md。
+`/api/config` 的响应类型是 ConfigResponse —— 它**类型上就没有节点信息的
+容身之处**。节点只在 /api/subscription 的加密信封里。见 docs/04-security.md。
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ from canoe_core import (
     LoginResponse,
     SubCryptoError,
     SubscriptionResponse,
+    assert_no_leaks,
     unseal,
 )
 
@@ -176,8 +177,9 @@ class CanoeApi:
                 ErrorCode.INTERNAL, f"服务端返回的配置格式不对：{exc.error_count()} 处问题"
             ) from exc
 
-        # 出网前的自检：万一服务端有 bug 把 real_* 发过来了，这里直接拒绝
-        resp.assert_no_real_fields()
+        # 自检：这个接口本来就不该有节点信息。真收到了说明服务端有 bug，
+        # 直接拒绝，不把明文链接带进内核配置里。
+        assert_no_leaks(resp.model_dump())
         return resp
 
     def heartbeat(self, session_id: str) -> dict:
@@ -204,7 +206,9 @@ class CanoeApi:
         """
         data = self._request("GET", Api.SUBSCRIPTION)
         resp = SubscriptionResponse.model_validate(data)
-        resp.assert_no_real_fields()
+        # 信封本身是密文，不含链接；解出来的明文才是订阅，所以这里只
+        # 检查信封以外的部分没有被塞进明文节点。
+        assert_no_leaks({k: v for k, v in resp.model_dump().items() if k != "envelope"})
         return resp
 
     def subscription_text(self) -> tuple[SubscriptionResponse, str]:

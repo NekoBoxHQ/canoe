@@ -47,9 +47,6 @@ class Settings(BaseSettings):
     token_bytes: int = 32
     token_ttl: int = 86400  # 登录令牌有效期（秒），默认 1 天
 
-    ticket_secret: str = "CHANGE_ME_ticket_secret_before_production"
-    entry_ticket_ttl: int = 300  # 入口凭证有效期（秒）
-
     # --- Web 管理面板 ---
     # 面板是纯静态的（HTML+CSS+JS，无构建步骤），挂在这个目录上。
     panel_dir: str = str(BASE_DIR / "panel")
@@ -82,18 +79,6 @@ class Settings(BaseSettings):
     default_max_devices: int = 3
     heartbeat_interval: int = 30
     online_timeout: int = 90
-
-    # --- 中转层 ---
-    relay_reload_hook: str = ""  # 例如 systemctl restart sing-box
-    relay_listen: str = "::"
-    relay_port: int = 443
-    relay_tls_cert: str = "/etc/sing-box/cert.pem"
-    relay_tls_key: str = "/etc/sing-box/key.pem"
-    # sing-box 多个入站不能共用同一端口，所以推荐 Nginx 前置：
-    # 443 上终止 TLS，按 WS 路径反代到本机 20000+ 的不同端口。
-    relay_behind_nginx: bool = True
-    relay_internal_base: int = 20000
-    relay_config_out: str = str(DATA_DIR / "relay_config.json")
 
     # --- seed ---
     admin_username: str = "admin"

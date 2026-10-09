@@ -1,8 +1,7 @@
 # 03 · 数据库表设计
 
-> **阶段状态**：本文描述的中转层模式**已经落地**（阶段 1-5 完成）。
-> 客户端只拿中转入口，真实节点只在服务端；中转层配置由
-> `canoe_server/services/relay.py` 从数据库渲染。
+> **阶段状态**：中转层**已删除**。服务端只分发订阅、不转发流量；
+> 节点就是管理员贴的一行链接，客户的订阅 = 他绑定节点的链接拼起来。
 
 **完整可执行的建表语句见 [`canoe-server/schema.sql`](../canoe-server/schema.sql)。**
 
@@ -70,53 +69,34 @@ python seed.py --schema > schema.sql
 
 ---
 
-## 3. `nodes` — 节点（**真实信息只在这张表**）
+## 3. `nodes` — 节点（**核心就是一行链接**）
 
-一行 = 一个「真实节点 + 对应的中转层入口」的绑定。
-
-### 3.1 展示与状态
+一行 = 一个节点。字段少到一句话说得完：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `id` | INTEGER PK | |
-| `name` | VARCHAR(64) | **客户端唯一能看到的节点信息**，如 `香港-01` |
-| `enabled` | BOOLEAN | 需求里的 `status`；停用后不生成入口、不分配 |
-| `sort_order` | INTEGER | 自动分配时的优先级 |
-| `remark` | VARCHAR(255) | 仅管理员可见 |
+| `link` | TEXT | ★ **节点链接原文**，如 `ss://…@host:port#名称` |
+| `name` | VARCHAR(64) | 显示名（面板用；不指定就取链接里 `#` 后面那段） |
+| `remark` | VARCHAR(255) | 管理员给自己看的备注，**不进订阅** |
+| `enabled` | BOOLEAN | 需求里的 `status`；停用后不进订阅 |
+| `sort_order` | INTEGER | 订阅正文里的排列顺序 |
+| `created_at` / `updated_at` | DATETIME | |
 
-### 3.2 中转入口 `entry_*` —— **允许下发给客户端**
+链接里的协议、主机、端口、密钥、名称全都是现成的 —— 所以这里**不需要**
+`entry_*` / `real_*` 那一堆字段（那是中转层时代服务端要自己渲染
+sing-box 配置才需要的，现在服务端不碰流量，一个字段都不用填）。
 
-| 字段 | 说明 |
-|---|---|
-| `entry_host` | 中转层公网域名，如 `canoe.example.com` |
-| `entry_port` | 默认 443 |
-| `entry_uuid` | 中转层 VLESS 入站 UUID（短期凭证的主体） |
-| `entry_path` | WebSocket 路径，如 `/e/hk01`，**每个节点必须唯一** |
-| `entry_sni` | TLS SNI，一般等于 `entry_host` |
-| `entry_transport` | `ws` / `grpc` / `tcp` |
-| `entry_tls` / `entry_insecure` | 生产 `insecure` 必须 false |
+面板列表里显示的协议 / 主机 / 端口是服务端**临时解析**出来的
+（`services/nodes.link_summary()`），不入库。
 
-### 3.3 真实节点 `real_*` —— **绝不下发**
-
-| 字段 | 对应需求 | 说明 |
-|---|---|---|
-| `real_protocol` | `protocol` | `vless` / `vmess` / `trojan` / `shadowsocks` |
-| `real_host` | `address` | 真实 IP / 域名 |
-| `real_port` | `port` | 真实端口 |
-| `real_uuid` | `secret` | 真实 UUID / 密码 |
-| `real_flow` | | 如 `xtls-rprx-vision` |
-| `real_tls` / `real_sni` / `real_fingerprint` | | TLS 与 uTLS 指纹 |
-| `real_network` / `real_ws_path` / `real_ws_host` / `real_grpc_service` | | 传输层参数 |
-| `real_insecure` | | |
-| `real_extra` | | JSON，协议特有参数（如 shadowsocks 的 method） |
-
-> **命名约定本身就是安全边界。** 代码里凡是要返回给客户端的，只允许读 `entry_*`
-> 和 `name`；`real_*` 只能被 `services/relay.py`（生成中转层配置）和 `/api/admin`
-> 接口读取。`services/nodes.py` 里的 `to_entry_payload()` 是唯一的出口白名单。
+> **`link` 是机密。** 它只允许出现在两个地方：加密订阅的信封里，
+> 和 `/api/admin/nodes`（需 admin）。别的明文响应一律不许有 ——
+> 每个响应出网前过一遍 `canoe_core.assert_no_leaks()`。
 
 ---
 
-## 4. `user_node` — 用户与节点绑定（需求指定）
+## 4. `user_nodes` — 客户与节点的绑定（需求指定）
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -127,11 +107,12 @@ python seed.py --schema > schema.sql
 
 唯一约束 `(user_id, node_id)`。
 
-一个用户可以绑多个节点。没绑任何节点的用户走**自动分配**（按 `sort_order`
-取第一个可用节点）—— 所以这张表可以为空，系统照样能用。
+一个客户可以绑多个节点，他的订阅就是这些节点的 `link` 按 `sort_order`
+拼起来。**没有"自动分配"这种兜底了** —— 那会让"我没给他配节点"和
+"配了但都停用了"变得无法区分，而这两种情况下服务端给出的订阅都该是空的。
 
-分配优先级见 `services/nodes.pick_node()`：
-请求指定 → `user_node` 绑定的（按 sort_order）→ 全局第一个可用。
+绑定是**整体替换**的（`services/nodes.set_bound_nodes()`）：面板提交什么
+就是什么，提交空列表 = 解绑全部。
 
 ---
 
@@ -141,10 +122,9 @@ python seed.py --schema > schema.sql
 |---|---|---|
 | `id` | VARCHAR(32) PK | 随机 hex |
 | `user_id` | FK → users | |
-| `node_id` | FK → nodes | 本次会话走的节点 |
+| `node_id` | FK → nodes NULL | **恒为 NULL** —— 服务端不分配节点，留着只为兼容老库 |
 | `device_id` | VARCHAR(64) | |
 | `last_seen` | DATETIME | 需求里的 `last_seen` |
-| `ticket_hash` | VARCHAR(64) | 入口凭证的哈希，**不存原文** |
 | `client_ip` | VARCHAR(64) | |
 | `mode` | VARCHAR(16) | `system_proxy` / `tun` |
 | `revoked` | BOOLEAN | |
@@ -172,15 +152,13 @@ def online(self) -> bool:
 
 `id / user_id / action / detail / ip / created_at`
 
-记录 `register`、`login`、`login_failed`、`config_issued`、`ban`、`node_update`、
-`relay_reload` 等事件。
+记录 `register`、`login`、`login_failed`、`config_issued`、`ban`、
+`node_update`、`user_bind_nodes` 等事件。
 
 ### `config_meta`
 
-`key / value / updated_at`，目前只存 `nodes_version`。
-
-节点增删改时自增，客户端心跳拿到版本变化就提示重新拉配置 —— 这就是需求里
-「配置变更可同步到客户端」的实现方式。
+`key / value / updated_at`。目前由 `revision`（订阅指纹）承担变更检测，
+这张表留着备用。
 
 ---
 
@@ -189,18 +167,24 @@ def online(self) -> bool:
 ```
 users ──1:N── tokens
   │
-  ├──1:N── user_node ──N:1── nodes        nodes.real_*  ← 真实节点只在这
-  │                              │
-  └──1:N── sessions ─────N:1─────┘
-        │
-        └──1:N── audit_logs
+  ├──1:N── user_nodes ──N:1── nodes        nodes.link  ← 那行链接只在这
+  │
+  ├──1:N── sessions                        （sessions.node_id 恒为 NULL）
+  │
+  └──1:N── audit_logs
 ```
 
 ---
 
 ## 8. 迁移
 
-开发期用 `Base.metadata.create_all()` 自动建表（`seed.py` 调用）。
+开发期用 `Base.metadata.create_all()` 自动建表（`seed.py` 调用），
+外加 `database.py` 里两段轻量迁移：
+
+- `_ensure_columns()` —— 给老库补上后加的列（有了就跳过）；
+- `_drop_stale_tables()` —— 老库里有些表**整张都不作数了**：SQLite 删不掉列，
+  而 `nodes.entry_host` 那种字段还挂着 NOT NULL，新代码 INSERT 时必炸。
+  检测到这些遗留列就把整张表重建（`sessions` 是易失数据，重建无妨）。
 
 正式环境请引入 Alembic：
 

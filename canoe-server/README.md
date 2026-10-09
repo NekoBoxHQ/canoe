@@ -1,6 +1,9 @@
 # canoe-server
 
-轻舟的服务端：用户系统、节点管理、配置下发、心跳、**更新通道**与**推送**。
+轻舟的服务端：用户系统、节点管理、**订阅分发**、心跳、客户端更新与推送。
+
+服务端**不转发任何流量**，也不渲染代理配置 —— 节点服务器跟它互不关联。
+它只做一件事：把管理员绑给客户的那些节点链接，加密发过去。
 
 > 阶段状态：**阶段 3 已完成**（在原有草稿上按新要求扩展），阶段 4 的本地
 > HTTPS 部署已跑通，部署材料在 [`deploy/`](deploy/)。服务端与客户端的
@@ -13,7 +16,7 @@
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ../canoe-core -r requirements.txt
-cp .env.example .env          # 至少改掉 TICKET_SECRET
+cp .env.example .env
 .venv/bin/python seed.py      # 建库 + 管理员 + 示例节点 + 测试用户
 
 .venv/bin/python serve.py               # 按 .env 里的 PORT / TLS_CERT 起
@@ -47,7 +50,7 @@ cp .env.example .env          # 至少改掉 TICKET_SECRET
 | **GET** | **`/api/client/latest`** | **客户端更新**：最新版本 + 安装包地址 | **否** |
 | **GET** | **`/api/subscription`** | **订阅**：**加密的**订阅载荷 + 变更指纹 | **是** |
 | **GET** | **`/api/events`** | **推送**：SSE 长连接 | **是** |
-| — | `/api/admin/*` | 管理端（用户 / 节点 / 会话 / 统计 / 中转层 / 发布） | admin |
+| — | `/api/admin/*` | 管理端（用户 / 节点 / 绑定 / 会话 / 统计 / 发布） | admin |
 | — | `/downloads/*` | 安装包静态下载 | 否 |
 | — | `/panel` | **Web 管理面板**（纯静态前端） | 页面本身不需要，API 需要 |
 | — | `/` | 跳转到 `/panel` | 否 |
@@ -61,7 +64,7 @@ cp .env.example .env          # 至少改掉 TICKET_SECRET
 `/panel` 是一套**无构建步骤**的原生 HTML + CSS + JS，和 API 共用同一个端口。
 
 - **登录**复用 `/api/login`，拿到的是同一个管理员令牌；`role != admin` 会被拒。
-- 六个页签：概览 / 用户 / 节点 / 会话 / 发布 / 中转层。
+- 五个页签：概览 / 用户 / 节点 / 会话 / 发布。
 - **不引任何外部 CDN** —— 一个代理服务的后台不该在打开时去 ping 第三方，
   何况离线/内网环境也得能用。所有资源都在 `panel/` 里。
 - 令牌放 `sessionStorage`（关标签页即失效），不放 cookie，省掉 CSRF 面。
@@ -72,7 +75,7 @@ cp .env.example .env          # 至少改掉 TICKET_SECRET
 改面板：`panel/` 下直接改，刷新页面即可，**不需要重新打包或重启服务**
 （StaticFiles 每次读盘；生产环境浏览器可能有缓存，Ctrl+F5 一下）。
 
-面板的 DOM 冒烟测试（登录 + 六个页签渲染 + 弹窗构造，24 项）：
+面板的 DOM 冒烟测试（登录 + 五个页签渲染 + 弹窗构造）：
 
 ```bash
 cd panel
@@ -93,11 +96,14 @@ bun run test_panel.mjs
 - `revision` —— 明文指纹，客户端拿它判断要不要重新拉；
 - `envelope` —— **密文**，只有登录时下发的那把 `sub_key` 解得开。
 
-### 订阅分发（阶段 6 起的模型）
+### 订阅分发
 
-管理员在面板的**用户 → 订阅**栏里逐账号贴节点链接
-（`ss:// vmess:// vless:// trojan://`，一行一个，也可以整体 base64）；
-你的节点服务器和 Canoe 服务端**互不关联**，这边只管"发不发"。
+**一个节点 = 一行链接 + 一个给自己看的备注。**
+
+管理员在「节点」页贴一行 `ss://… / vmess://… / vless://… / trojan://…`，
+然后去「用户」页点**分配节点**，勾给需要的客户。客户的订阅正文 =
+他所绑节点的链接一行一行拼起来。节点服务器和 Canoe 服务端**互不关联**，
+这边只管"发哪些、发不发"。
 
 服务端在三种情况下回**空信封**（客户端收到就地销毁本地订阅）：
 
@@ -105,7 +111,7 @@ bun run test_panel.mjs
 |---|---|
 | 账号被封 | 面板点「封禁」，或 `POST /api/admin/users/{id}/ban` |
 | 账号到期 | 面板把到期日改到过去 |
-| 主动停发 | 把订阅栏清空并保存（会定向推送给该账号，在航的当场靠岸） |
+| 不再分发 | 面板点「分配节点」把勾全部取消（定向推送给该账号，在航的当场靠岸） |
 
 加密用的是 `canoe_core/crypto.py`：HKDF-SHA256 派生 + AES-256-GCM，
 每次响应随机 `salt`/`nonce`，`alg`/`revision` 作为 AAD 参与认证。
@@ -138,13 +144,13 @@ bun run test_panel.mjs
 
 这一节是整个项目的安全底线，**不是可选的**：
 
-1. **`/api/config` 与 `/api/subscription` 只能回 `EntryPayload`。**
-   序列化一律走 `services/nodes.to_entry_payload()`，
-   **绝不要用 `model_dump()` 全量序列化节点** —— 那样新加的 `real_*` 字段会顺带泄漏。
-2. 每个下发响应出网前都会调 `assert_no_real_fields()` / `assert_whitelisted()` 自检，
-   越界直接 500 而不是静默泄漏。新加下发接口时照做。
-3. `real_*` 只允许出现在 `/api/admin/nodes`，且需要 `role=admin`。
-4. 生产必须 HTTPS + HSTS；`entry.insecure` 保持 false。
+1. **节点链接是机密。** `nodes.link` 只允许出现在两个地方：
+   加密订阅（`/api/subscription` 的信封里）和 `/api/admin/nodes`（需 admin）。
+   别的客户端可见响应一律不许有。
+2. 每个明文下发响应出网前都会调 `assert_no_leaks()` 自检 —— 扫到一行链接
+   直接 500，而不是静默泄漏。新加下发接口时照做。
+3. 会话不绑节点（`sessions.node_id` 是空的）：服务端不下发"你该用哪个节点"。
+4. 生产必须 HTTPS + HSTS。
 5. `/api/admin/*` 二次校验角色，不能只靠前端隐藏入口。
 
 详见 [`../docs/04-security.md`](../docs/04-security.md)。
@@ -159,10 +165,10 @@ bun run test_panel.mjs
 .venv/bin/python smoke_test.py https://127.0.0.1:8443 --insecure   # 自签证书
 ```
 
-**85 项**，覆盖：注册 → 登录 → `/api/config`（核心安全断言）→ 心跳 →
-封禁踢下线 → 登出 → 中转层配置 → 客户端更新 → 订阅更新 → SSE 推送 → 鉴权。
+**93 项**，覆盖：注册 → 登录 → `/api/config`（核心安全断言）→ 心跳 →
+封禁踢下线 → 登出 → 客户端更新 → 节点绑定与加密订阅 → SSE 推送 → 鉴权 → 面板。
 
-其中一批断言专门盯着"客户端可见的响应里绝不出现 `real_*`"。
+其中一批断言专门盯着"客户端可见的响应里绝不出现节点信息"。
 
 ---
 
@@ -175,13 +181,12 @@ canoe-server/
 │   ├── config.py           配置（.env 覆盖）
 │   ├── models.py           ORM：users/tokens/nodes/user_node/sessions
 │   │                              + audit_logs/config_meta/client_releases
-│   ├── security.py         密码哈希、令牌、入口凭证
+│   ├── security.py         密码哈希、登录令牌
 │   ├── deps.py             鉴权（authenticate 可被长连接复用）
 │   ├── routers/            auth.py / client.py / admin.py
 │   └── services/
-│       ├── nodes.py        入口白名单序列化 ★安全核心
+│       ├── nodes.py        节点、绑定与订阅正文 ★安全核心
 │       ├── sessions.py     会话与心跳
-│       ├── relay.py        中转层配置渲染
 │       ├── updates.py      ★客户端更新 + 订阅更新
 │       └── broadcast.py    ★SSE 推送中心
 ├── panel/                  ★Web 管理面板（纯静态，无构建步骤）
@@ -189,12 +194,11 @@ canoe-server/
 │   ├── logo.png
 │   └── test_panel.mjs      面板的 DOM 冒烟测试（需 bun + linkedom）
 ├── deploy/                 ★部署材料（systemd / Nginx / 一键脚本）
-├── relay/                  中转层部署材料
 ├── releases/               上传的客户端安装包（不进仓库）
 ├── data/                   SQLite 与证书（不进仓库）
 ├── serve.py                ★统一启动器（读 .env 决定端口与 TLS）
 ├── seed.py                 建库 + 种子数据
-├── smoke_test.py           端到端冒烟测试（96 项）
+├── smoke_test.py           端到端冒烟测试（93 项）
 └── run_local_https.py      HTTPS 启动（自签证书，本地联调用）
 ```
 
@@ -207,7 +211,7 @@ canoe-server/
 | 客户端位置 | 现在 |
 |---|---|
 | 账号 | 走 `api.login()` / `api.register()`，本地不落账号 |
-| 出站 | 用 `api.fetch_config()` 的 `entry` 经 `entry.build_entry_outbound()` 拼 |
+| 节点 | 从 `/api/subscription` 的密文信封里解出来，本地解析成 sing-box 出站 |
 | 更新 / 订阅 | 「更新」按钮同时查 `api.latest_release()` 与 `api.subscription()` |
 | 推送 | 登录后挂 `events.stream`，收 `config_changed` / `release` / `kick` |
 | 心跳 | 启航期间按 `heartbeat_interval` 打 `/api/heartbeat`，被吊销即自动靠岸 |

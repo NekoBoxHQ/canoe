@@ -105,7 +105,7 @@ def main() -> int:
     from canoe_client.kernel import kernel
     from canoe_client.options import RunOptions
     from canoe_client import update
-    from canoe_core import SubCryptoError, unseal
+    from canoe_core import SubCryptoError, find_leaks, unseal
 
     print(f"[0] 环境\n      服务端 {BASE}")
     check("服务端可达", requests.get(f"{BASE}/api/health", timeout=8, verify=VERIFY).status_code == 200)
@@ -126,6 +126,7 @@ def main() -> int:
     username = f"it_{uuid.uuid4().hex[:8]}"
     password = "canoe-pass-123"
     user_id = None
+    node_ids: list[int] = []
 
     try:
         # --- 1. 注册 ---
@@ -163,13 +164,21 @@ def main() -> int:
         check("★ 没配订阅时明文为空（而不是报错）", text == "", repr(text))
         check("★ 空订阅时信封也是空的", resp.envelope.is_empty)
 
-        # --- 4. 管理员配置订阅 ---
-        print("\n[4] 管理员配置订阅")
-        r = requests.patch(f"{BASE}/api/admin/users/{user_id}", headers=ah,
-                           json={"subscription": SUB_BOTH}, timeout=10, verify=VERIFY)
-        check("配置订阅 200", r.status_code == 200, r.text[:200])
-        check("★ 服务端报告订阅变了（会触发推送）",
-              r.json().get("subscription_changed") is True, r.text[:160])
+        # --- 4. 管理员建节点 + 绑定给这个客户 ---
+        # 节点就是一行链接；客户的订阅 = 他绑定的那些节点的链接拼起来。
+        print("\n[4] 管理员建节点并绑定")
+        for link_text, remark in ((SUB_ONE, "日本家宽"), (SUB_TWO, "备用")):
+            r = requests.post(f"{BASE}/api/admin/nodes", headers=ah,
+                              json={"link": link_text, "remark": remark, "enabled": True},
+                              timeout=10, verify=VERIFY)
+            check(f"建节点（{remark}）201", r.status_code == 201, r.text[:200])
+            if r.status_code == 201:
+                node_ids.append(r.json()["id"])
+
+        r = requests.put(f"{BASE}/api/admin/users/{user_id}/nodes", headers=ah,
+                         json={"node_ids": node_ids}, timeout=10, verify=VERIFY)
+        check("绑定节点 200", r.status_code == 200, r.text[:200])
+        check("★ 回读了绑定列表", r.json().get("node_ids") == node_ids, r.text[:160])
 
         # --- 5. 拉加密订阅 ---
         print("\n[5] 拉订阅（加密）")
@@ -220,7 +229,8 @@ def main() -> int:
         check("拿到会话 id", bool(cfg.session_id))
         check("★ 配置响应里没有 entry（节点不再由服务端下发）",
               not hasattr(cfg, "entry") or getattr(cfg, "entry", None) is None)
-        check("★ 配置里不含真实 IP", "198.51.100.7" not in cfg.model_dump_json())
+        check("★ 配置响应明文里不含任何节点信息",
+              not find_leaks(cfg.model_dump()), str(cfg.model_dump())[:160])
         check("配置里带了订阅指纹", cfg.revision != "")
 
         exe = config.find_singbox()
@@ -278,20 +288,23 @@ def main() -> int:
         from canoe_core import VERSION
         check("版本比较可用", update.compare_versions("1.1.0", VERSION) >= -1)
 
-        # --- 11. 管理员清空订阅 -> 客户端拉回来是空 ---
+        # --- 11. 管理员解除绑定 -> 客户端拉回来是空 ---
         print("\n[11] 管理员停止分发")
-        r = requests.patch(f"{BASE}/api/admin/users/{user_id}", headers=ah,
-                           json={"subscription": ""}, timeout=10, verify=VERIFY)
-        check("清空订阅 200", r.status_code == 200, r.text[:160])
+        r = requests.put(f"{BASE}/api/admin/users/{user_id}/nodes", headers=ah,
+                         json={"node_ids": []}, timeout=10, verify=VERIFY)
+        check("解除绑定 200", r.status_code == 200, r.text[:160])
         resp3, text3 = api.subscription_text()
-        check("★ 清空后客户端拉到的是空", text3 == "", repr(text3))
-        check("★ 清空后信封也是空的", resp3.envelope.is_empty)
+        check("★ 解绑后客户端拉到的是空", text3 == "", repr(text3))
+        check("★ 解绑后信封也是空的", resp3.envelope.is_empty)
         check("★ 指纹跟着变了（客户端能察觉）", resp3.revision != resp.revision)
 
     finally:
         api.logout()
         if user_id:
             requests.delete(f"{BASE}/api/admin/users/{user_id}", headers=ah,
+                            timeout=10, verify=VERIFY)
+        for nid in node_ids:
+            requests.delete(f"{BASE}/api/admin/nodes/{nid}", headers=ah,
                             timeout=10, verify=VERIFY)
 
     print(f"\n{'=' * 48}")

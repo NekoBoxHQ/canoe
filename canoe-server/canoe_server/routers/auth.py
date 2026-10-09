@@ -29,7 +29,6 @@ from ..database import get_db
 from ..deps import client_ip, get_current_user
 from ..models import AuditLog, Token, User, as_aware, epoch, utcnow
 from ..security import hash_password, token_hash, verify_password
-from ..services.nodes import node_name_for
 from ..services.sessions import (
     CanoeError,
     ensure_device_allowed,
@@ -125,7 +124,7 @@ def login(body: LoginRequest, request: Request, db: DBSession = Depends(get_db))
             status=user.status,
             expire_at=epoch(user.expire_at),
             # 客户端主界面要在点启航之前就显示节点名，所以登录时就得给
-            node_name=node_name_for(db, user),
+            node_name=None,
         ),
     )
 
@@ -196,6 +195,6 @@ def me(user: User = Depends(get_current_user), db: DBSession = Depends(get_db)):
         role=user.role,
         status=user.status,
         expire_at=epoch(user.expire_at),
-        node_name=node_name_for(db, user),
+        node_name=None,
         devices=list(seen.values()),
     )

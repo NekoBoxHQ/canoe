@@ -30,6 +30,7 @@ from canoe_core import (
     PROTOCOL_VERSION,
     SubscriptionResponse,
     VERSION,
+    assert_no_leaks,
 )
 
 from ..config import settings
@@ -44,6 +45,7 @@ from ..deps import (
 from ..models import AuditLog, User, epoch
 from ..services.broadcast import hub
 from ..services.sessions import CanoeError, heartbeat as svc_heartbeat, start_session
+from ..services.nodes import subscription_text_for
 from ..services.updates import (
     latest_release,
     subscription_for,
@@ -101,10 +103,11 @@ def get_config(
         node_name=None,
         expires_at=epoch(row.expire_at) or 0,
         heartbeat_interval=settings.heartbeat_interval,
-        revision=subscription_revision(user, user.subscription or ""),
+        revision=subscription_revision(user, subscription_text_for(db, user)),
     )
-    # 出网前的最后一道自检：万一将来有人改了模型，这里会直接 500 而不是静默泄漏
-    resp.assert_no_real_fields()
+    # 出网前的最后一道自检：万一将来有人往模型里塞了节点链接，
+    # 这里直接 500，而不是静默把它发给客户端。
+    assert_no_leaks(resp.model_dump())
     return resp
 
 
@@ -153,7 +156,7 @@ def heartbeat(
     return HeartbeatResponse(
         ok=True,
         expires_at=epoch(row.expire_at) or 0,
-        revision=subscription_revision(user, user.subscription or ""),
+        revision=subscription_revision(user, subscription_text_for(db, user)),
         revoked=row.revoked,
         node_name=None,
     )
@@ -236,7 +239,7 @@ def _hello_payload(user_id: int) -> dict:
         # hello 里**不带**任何订阅内容 —— 只给个指纹，客户端自己去拉。
         # 推送是广播的，塞内容就等于把别人的订阅发给所有人。
         return {
-            "revision": subscription_revision(user, user.subscription or "") if user else "",
+            "revision": subscription_revision(user, subscription_text_for(db, user)) if user else "",
             "server_time": int(time.time()),
         }
 

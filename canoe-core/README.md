@@ -2,7 +2,12 @@
 
 轻舟 / Canoe 的公共库。客户端和服务端都依赖它。
 
-存在的理由只有一个：**让"客户端拿不到真实节点"这条约束由类型系统强制，而不是靠约定。**
+存在的理由有两个：
+
+1. **接口契约只写一遍。** 请求/响应的模型在这里，两边 import 同一份，
+   不会出现"服务端改了字段名、客户端还在按老名字解析"。
+2. **节点链接的解析和加密只写一遍。** 客户端要解析节点、服务端要校验
+   管理员贴的链接、两边都要信封加解密 —— 都是同一份代码。
 
 ## 内容
 
@@ -10,32 +15,38 @@
 |---|---|
 | `constants.py` | 品牌名、界面文案、配色、API 路径、错误码。改文案不用翻代码 |
 | `models.py` | 双方共享的请求/响应模型 |
+| `crypto.py` | 订阅信封：`seal` / `unseal` / `new_sub_key` |
+| `links.py` | 节点链接解析（`ss://` / `vmess://` / `vless://` / `trojan://`） |
+| `passwords.py` | 密码哈希与令牌 |
 | `version.py` | 版本号 |
 
 ## 关键设计
 
-`models.py` 里只有 `EntryPayload`（中转层入口），**没有任何真实节点的模型**。
-`ConfigResponse` —— 也就是客户端 `/api/config` 拿到的那个类型 —— 里面的
-`entry` 字段类型就是 `EntryPayload`。
+### 节点 = 一行链接
 
-于是：
+服务端**不渲染任何代理配置**，也不转发流量。一个节点就是管理员在面板上
+贴的一行链接，原样发给客户端，客户端自己解析成 sing-box 出站。
 
-```python
-from canoe_core import ConfigResponse
+所以 `models.py` 里**没有任何节点模型** —— 没有那种"服务端下发节点参数、
+客户端照着建连接"的字段。节点只以两种形式存在：
 
-resp = ConfigResponse.model_validate(api.get(Api.CONFIG))
-resp.entry.host          # 中转层入口，可以
-resp.entry.real_host     # AttributeError —— 这个字段压根不存在
-```
+- 密文：`SubscriptionResponse.envelope`（传输途中）
+- 明文：客户端解密后自己解析出的 `NodeLink`
 
-不是"服务端记得别下发"，而是"客户端侧根本没有接收它的类型"。
+### 订阅是密文下发的
 
-两个自校验方法把这层保护做成了可执行的断言：
+`crypto.py` 定义了信封格式。客户端登录时拿到一把会话级 `sub_key`
+（只放内存），`/api/subscription` 回来的正文是 AES-256-GCM 密文，
+解出来才是那几行链接。
 
-- `EntryPayload.assert_whitelisted()` —— 字段集合必须与 `ENTRY_FIELDS` 完全一致，
-  有人偷偷加了字段会直接报错。
-- `ConfigResponse.assert_no_real_fields()` —— 递归扫描序列化结果，
-  出现 `real_*` 就报错。测试里会调用它。
+密钥在客户端手上，所以这层加密防的是**传输链路**，不是拿到客户端的用户 ——
+真正决定"能不能用"的是服务端随时可以不发（空信封 = 客户端销毁本地订阅）。
+
+### 明文响应里不许出现节点
+
+`links.find_leaks(payload)` / `assert_no_leaks(payload)` 递归扫描一份
+序列化结果，出现任何一行链接就报错。出网前调一次，测试里也调。
+见 `docs/04-security.md`。
 
 ## 安装
 

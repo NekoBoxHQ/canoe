@@ -184,8 +184,6 @@ class Api:
     ADMIN_NODES = "/api/admin/nodes"
     ADMIN_SESSIONS = "/api/admin/sessions"
     ADMIN_STATS = "/api/admin/stats"
-    ADMIN_RELAY_CONFIG = "/api/admin/relay/config"
-    ADMIN_RELAY_RELOAD = "/api/admin/relay/reload"
     # 发布新版本（含上传安装包）
     ADMIN_RELEASES = "/api/admin/releases"
 
@@ -196,13 +194,10 @@ class Api:
 
 PROTOCOL_VERSION = 1
 
-#: 真实节点字段前缀。客户端侧的任何代码、测试都不应出现这个前缀的字段。
-REAL_FIELD_PREFIX = "real_"
-
-#: 客户端允许从服务端拿到的入口字段白名单（与 EntryPayload 保持一致）
-ENTRY_FIELDS = frozenset(
-    {"transport", "host", "port", "uuid", "path", "sni", "tls", "insecure"}
-)
+# 这里原本还有 REAL_FIELD_PREFIX / ENTRY_FIELDS —— 那是「中转层」模型
+# 的产物：那时服务端自己渲染 sing-box 配置做中转，客户端只能拿到入口，
+# 于是需要一份白名单来守住"真实节点不下发"。现在服务端只发订阅、
+# 不转发流量，节点就是管理员贴进来的那行链接，白名单没有守的对象了。
 
 
 class ErrorCode:

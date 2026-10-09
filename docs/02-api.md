@@ -1,8 +1,7 @@
 # 02 · API 约定
 
-> **阶段状态**：本文描述的中转层模式**已经落地**（阶段 1-5 完成）。
-> 客户端只拿中转入口，真实节点只在服务端；中转层配置由
-> `canoe_server/services/relay.py` 从数据库渲染。
+> **阶段状态**：中转层**已删除**。服务端只分发订阅、不转发流量。
+> 节点 = 管理员贴的一行链接；客户的订阅 = 他绑定节点的链接拼起来。
 
 - **Base URL**：`https://<your-domain>`（生产必须 HTTPS；本地调试 `http://127.0.0.1:8000`）
 - **编码**：`application/json; charset=utf-8`
@@ -113,7 +112,7 @@
 客户端**只把它放在内存里**，不落盘、不写配置文件。
 
 > `user.node_name` 是上一版模型（服务端分配节点）的遗留字段，
-> 订阅模式下恒为 `null`；节点名由客户端从解密出来的订阅里解析。
+> 现在恒为 `null`；节点名由客户端从解密出来的订阅里解析。
 
 `403 banned` / `403 expired` / `409 device_limit` 时客户端应停在登舟页并提示。
 
@@ -147,25 +146,22 @@ Authorization: Bearer <token>
 ### 这个响应里**没有**什么
 
 没有 `entry`、没有 `token`、没有 `address`/`port`/`protocol`/`secret`、
-没有 `real_*`。节点一律走订阅那条加密通道。
+没有任何一行节点链接。节点一律走订阅那条加密通道。
 
 `revision` 是订阅指纹（明文，只取哈希，不含任何订阅内容片段）——
 客户端拿它和手里的比一比就知道要不要重新拉订阅。
 
 ---
 
-## 3.1 历史：`entry` 与 `token`（中转层模型，已退役）
+## 3.1 历史：`entry` 与 `token`（已删除）
 
-早先版本在这里下发过 `entry`（`EntryPayload`，中转层入口白名单）
-和 `token`（绑定 `user_id + node_id + device_id` 的短期入口凭证，
-默认 300 秒有效）。阶段 6 转向订阅分发后，客户端不再需要它们，
-两个字段已从这个响应里移除。相关的类型与校验仍在 `canoe-core` 里保留，
-服务于仍在跑的中转层代码（`/api/admin/relay/config`）。
+早先版本在这里下发过 `entry`（中转层入口的参数白名单）和 `token`
+（绑定 `user_id + node_id + device_id` 的短期入口凭证，默认 300 秒有效）。
+中转层删掉之后客户端不再需要它们，这两个字段、相关的类型，
+以及 `/api/admin/relay/*` 两个端点都已一并移除。
 
-原先 `token` 的说明保留在此，供读旧代码时对照：
-服务端可随时吊销。它和中转层入口一起构成本次会话的凭据。
-
-`503 no_node` 表示没有可用节点；`403 banned/expired` 表示账号级拒绝。
+`403 banned/expired` 表示账号级拒绝。**不再有 `503 no_node`** ——
+服务端不替客户端挑节点，"没节点可用"是客户端从空订阅里自己看出来的。
 
 ---
 
@@ -178,14 +174,13 @@ Authorization: Bearer <token>
 **200**
 
 ```json
-{ "ok": true, "expires_at": 1790000600, "config_version": 4, "revoked": false, "node_name": "香港-01" }
+{ "ok": true, "expires_at": 1790000600, "revision": "fca8e285fa5cbc53", "revoked": false }
 ```
 
 客户端行为：
 
 - `revoked=true` 或 `403` → **立即靠岸**（管理员封禁/踢下线）
-- `config_version` 变化 → 提示「配置已更新，请重新启航」
-- `node_name` 变化 → 更新主界面显示的节点名
+- `revision` 变化 → 重新拉 `/api/subscription`；解出来是空就销毁本地订阅
 
 心跳同时是"续期"：服务端每次都把会话的 `last_seen` 和 `expire_at` 往后推。
 
@@ -238,35 +233,53 @@ Authorization: Bearer <token>
 | POST | `/api/admin/users/{id}/ban` | 封禁 → 立即吊销令牌与会话 |
 | POST | `/api/admin/users/{id}/unban` | 解封 |
 | DELETE | `/api/admin/users/{id}` | 删号 |
-| GET | `/api/admin/nodes` | 节点列表（**含真实节点字段**） |
-| POST | `/api/admin/nodes` | 建节点 |
+| GET | `/api/admin/nodes` | 节点列表 |
+| POST | `/api/admin/nodes` | 建节点（贴一行链接 + 备注） |
 | PATCH | `/api/admin/nodes/{id}` | 改节点 |
 | DELETE | `/api/admin/nodes/{id}` | 删节点 |
-| POST | `/api/admin/nodes/{id}/bind` | 把节点绑定给一批用户（写 `user_node`） |
+| PUT | `/api/admin/users/{id}/nodes` | **把这个客户绑定的节点整体换掉** |
 | GET | `/api/admin/sessions?online=true` | 在线会话 |
 | DELETE | `/api/admin/sessions/{id}` | 踢下线 |
 | GET | `/api/admin/stats` | 统计 |
-| GET | `/api/admin/relay/config?fmt=singbox\|nginx` | 渲染中转层配置 |
-| POST | `/api/admin/relay/reload` | 重新渲染并执行 reload hook |
 
-节点对象（含真实节点，**只对管理员可见**）：
+### 节点对象
+
+管理员看到的节点。`link` 是原文（**只对管理员可见**），
+`protocol`/`host`/`port` 是服务端替前端解析出来的展示信息：
 
 ```json
 {
   "id": 3,
-  "name": "香港-01",
+  "name": "日本-家宽",
+  "remark": "买的那个 100M 的",
+  "link": "ss://2022-blake3-aes-128-gcm:AAAA:BBBB@one.example.com:33222#日本",
+  "protocol": "shadowsocks",
+  "host": "one.example.com",
+  "port": 33222,
+  "valid": true,
   "enabled": true,
   "sort_order": 10,
-  "entry": { "transport": "ws", "host": "canoe.example.com", "port": 443,
-             "uuid": "b8f1...", "path": "/e/hk01", "sni": "canoe.example.com",
-             "tls": true, "insecure": false },
-  "real":  { "protocol": "vless", "host": "203.0.113.7", "port": 8443,
-             "uuid": "9a7e...", "flow": "xtls-rprx-vision", "tls": true,
-             "sni": "real.example.com", "fingerprint": "chrome",
-             "network": "tcp", "ws_path": "", "ws_host": "",
-             "grpc_service": "", "insecure": false, "extra": {} }
+  "created_at": 1790000000,
+  "updated_at": 1790000000
 }
 ```
+
+`valid=false` 表示这行链接解析不了（管理员可能粘了一半）——
+存是存下来了，但发给客户端的订阅里不会有它。
+
+### 绑定
+
+```http
+PUT /api/admin/users/12/nodes
+{ "node_ids": [3, 5] }
+```
+
+**整体替换**（不是追加）：传什么就是什么，传 `[]` 就是解绑全部 ——
+解绑后这个客户拉到的是**空信封**，客户端就地销毁本地订阅。
+
+绑定 / 改节点都会向该账号**定向推送** `config_changed`
+（`hub.publish(..., user_id=...)`），在航的客户端当场重新拉订阅；
+最迟下一次心跳也会靠 `revision` 发现。
 
 ---
 
@@ -315,14 +328,17 @@ Authorization: Bearer <token>
 ```json
 {
   "protocol": 1,
-  "config_version": 7,
-  "node_name": "香港-01",
-  "entry": { "transport": "ws", "host": "canoe.example.com", "port": 443,
-             "uuid": "b8f1...", "path": "/e/hk01", "sni": "canoe.example.com",
-             "tls": true, "insecure": false },
+  "node_name": null,
   "expires_at": 1799000000,
   "heartbeat_interval": 30,
-  "revision": "3f9c1e0a2b7d4e51"
+  "revision": "3f9c1e0a2b7d4e51",
+  "envelope": {
+    "alg": "AES-256-GCM",
+    "salt": "9f3K...",
+    "nonce": "Q2x...",
+    "data": "b8FI...",
+    "revision": "3f9c1e0a2b7d4e51"
+  }
 }
 ```
 
@@ -345,7 +361,7 @@ revision 变了 -> 重新拉一次并解密（内容可能是空的 = 服务端�
 所以同一条订阅两次拉取密文不同。
 
 服务端在三种情况下回**空信封**（`data` 为空）：
-账号被封、账号到期、管理员把订阅栏清空了。
+账号被封、账号到期、管理员把这个客户绑定的节点全取消了。
 客户端见到空信封必须**销毁本地订阅** —— 这是"服务端完全可控"的落点。
 
 ---
@@ -378,9 +394,8 @@ data: {"type":"kick","user_id":12,"reason":"账号已被封禁"}
 
 - `config_changed` 是**广播**，所以**不带订阅内容**（带了就是把一个人的订阅
   发给所有人）。客户端收到后自己去拉自己那份。
-- 管理员改某一账号的订阅时，走的是**定向推送**（`hub.publish(..., user_id=...)`），
+- 管理员改某一账号的绑定时，走的是**定向推送**（`hub.publish(..., user_id=...)`），
   不会把无关的人叫醒。
-  节点泄露给所有人了。客户端收到后自己去拉 `/api/subscription`。
 - 断线要自动重连（指数退避）。重连后先靠 `hello` 对齐，漏掉的事件不必补。
 - 服务端有连接数上限（默认全局 2000 / 单账号 5），超了返回 `429`。
 - 空闲时服务端每 20 秒发一个注释帧保活，中间的反代会掐掉沉默连接。
@@ -419,7 +434,9 @@ data: {"type":"kick","user_id":12,"reason":"账号已被封禁"}
 ## 10. 安全约定（实现层）
 
 1. `/api/admin/*` 必须二次校验 `role == "admin"`，不能只靠前端隐藏入口。
-2. `real_*` 只出现在 `/api/admin/nodes` 的响应里（中转层遗留）。
+2. **`nodes.link`（那行节点链接）只允许出现在两个地方**：加密订阅的信封里，
+   和 `/api/admin/nodes`（需 admin）。每个明文响应出网前都过一遍
+   `canoe_core.assert_no_leaks()` —— 扫到一行链接直接 500。
 3. **订阅内容只以密文出网**：`/api/subscription` 回的是 `envelope`，
    明文只能被登录时下发的 `sub_key` 解开。往这个响应里加任何明文节点
    字段都是破坏这条约定。

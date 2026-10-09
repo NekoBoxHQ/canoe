@@ -58,12 +58,12 @@ const FIXTURES = [
   [/\/api\/admin\/users\?/, { items: [
     { id: 1, username: 'admin', role: 'admin', status: 'active', online: true, expire_at: 0, max_devices: 3, remark: '主账号', last_login_at: 1790000000, subscription: '', subscription_lines: 0 },
     { id: 2, username: 'demo', role: 'user', status: 'banned', online: false, expire_at: 1799000000, max_devices: 3, remark: '', last_login_at: null,
-      subscription: 'ss://2022-blake3-aes-128-gcm:AAAA:BBBB@one.leycc.com:33222#日本\nss://x:y@two.example.com:443#备用', subscription_lines: 2 },
+      node_ids: [3], subscription: '', subscription_lines: 1 },
   ]}],
   [/\/api\/admin\/nodes$/, { items: [
-    { id: 3, name: '香港-01', remark: '', enabled: true, sort_order: 10,
-      entry: { transport: 'ws', host: 'canoe.example.com', port: 443, uuid: 'u-1', path: '/e/hk01', sni: 'canoe.example.com', tls: true, insecure: false },
-      real: { protocol: 'vless', host: '203.0.113.7', port: 8443, uuid: 'r-1', flow: '', tls: true, sni: 'real.example.com', fingerprint: 'chrome', network: 'tcp', ws_path: '', ws_host: '', grpc_service: '', insecure: false, extra: {} },
+    { id: 3, name: '香港-01', remark: '香港家宽', enabled: true, sort_order: 10,
+      link: 'ss://2022-blake3-aes-128-gcm:AAAA:BBBB@hk.example.com:33222#%E9%A6%99%E6%B8%AF-01',
+      protocol: 'shadowsocks', host: 'hk.example.com', port: 33222, valid: true,
       created_at: 0, updated_at: 0 },
   ]}],
   [/\/api\/admin\/sessions/, { items: [
@@ -112,7 +112,7 @@ await tick(); await tick(); await tick();
 check('登录后主界面显示', !document.querySelector('#app-screen').hidden, JSON.stringify(calls));
 check('登录页隐藏', document.querySelector('#login-screen').hidden);
 check('令牌已存进 sessionStorage', !!storage.getItem('canoe.panel.token'));
-check('侧边栏有 6 个入口', document.querySelectorAll('#nav .nav-item').length === 6,
+check('侧边栏有 5 个入口（中转层已删除）', document.querySelectorAll('#nav .nav-item').length === 5,
       String(document.querySelectorAll('#nav .nav-item').length));
 check('身份显示出来了', /admin/.test(document.querySelector('#whoami').textContent));
 
@@ -125,7 +125,7 @@ check('没有「加载失败」', !page.textContent.includes('加载失败'), pa
 
 console.log('\n[4] 逐个标签页渲染');
 const navItems = [...document.querySelectorAll('#nav .nav-item')];
-const names = ['概览', '用户', '节点', '会话', '发布', '中转层'];
+const names = ['概览', '用户', '节点', '会话', '发布'];
 for (let i = 0; i < navItems.length; i++) {
   navItems[i].dispatchEvent(new window.Event('click', { bubbles: true }));
   await tick(); await tick(); await tick();
@@ -142,13 +142,16 @@ const usersTxt = document.querySelector('#page').textContent;
 check('用户页列出 admin / demo', usersTxt.includes('admin') && usersTxt.includes('demo'));
 check('封禁状态有标签', usersTxt.includes('已封禁'));
 
-// 节点页 —— real_* 必须显示（管理端该看得到）
+// 节点页 —— 一个节点就是一行链接，列表显示解析出来的协议/主机/端口
 navItems[2].dispatchEvent(new window.Event('click', { bubbles: true }));
 await tick(); await tick(); await tick();
 const nodesTxt = document.querySelector('#page').textContent;
-check('节点页显示真实节点（管理端应当能看到）',
-      nodesTxt.includes('203.0.113.7'), nodesTxt.slice(0, 200));
-check('节点页也显示入口（客户端可见的那个）', nodesTxt.includes('canoe.example.com'));
+check('节点页显示备注', nodesTxt.includes('香港家宽'), nodesTxt.slice(0, 200));
+check('★ 节点页显示解析出来的主机端口',
+      nodesTxt.includes('hk.example.com:33222'), nodesTxt.slice(0, 200));
+check('★ 节点页显示协议', nodesTxt.includes('shadowsocks'), nodesTxt.slice(0, 200));
+check('节点页没有"入口 / 真实节点"那两列了',
+      !nodesTxt.includes('真实节点') && !nodesTxt.includes('入口'), nodesTxt.slice(0, 200));
 
 console.log('\n[6] 弹窗能构造出来');
 navItems[4].dispatchEvent(new window.Event('click', { bubbles: true }));   // 发布页
@@ -179,28 +182,28 @@ check('★ 样式表里有 [hidden]{display:none} 兜底（否则弹窗/后台�
 check('★ 该规则带 !important（否则压不过 #id 那种选择器）',
       /\[hidden\][^{]*\{[^}]*display\s*:\s*none\s*!important/.test(css));
 
-console.log('\n[7] 订阅编辑栏');
+console.log('\n[7] 给客户分配节点');
 navItems[1].dispatchEvent(new window.Event('click', { bubbles: true }));   // 用户页
 await tick(); await tick(); await tick();
 const usersPage = document.querySelector('#page');
-const usersNow = usersPage.textContent;
-check('用户列表显示分发状态', usersNow.includes('个节点') && usersNow.includes('未配置'),
-      usersNow.slice(0, 200));
+check('用户列表显示分发状态', usersPage.textContent.includes('个节点') || usersPage.textContent.includes('未配置'),
+      usersPage.textContent.slice(0, 200));
 
-const subBtns = [...usersPage.querySelectorAll('button')].filter((b) => b.textContent.trim() === '订阅');
-check('每行有「订阅」按钮', subBtns.length === 2, String(subBtns.length));
-// 点 demo 那行（它有订阅内容，能验回填）
-subBtns[1].dispatchEvent(new window.Event('click', { bubbles: true }));
-await tick();
-const subModal = document.querySelector('#modal-body');
-const area = subModal.querySelector('textarea');
-check('弹窗里有订阅输入框', !!area);
-check('★ 订阅用多行文本框（一行一个链接）',
-      area && Number(area.getAttribute('rows')) >= 8,
-      area ? String(area.getAttribute('rows')) : '');
-check('★ 回填了现有订阅内容', area && area.value.includes('ss://'), area ? area.value.slice(0, 60) : '');
-check('弹窗里提示清空即停止分发',
-      subModal.textContent.includes('停止分发'), subModal.textContent.slice(0, 160));
+const bindBtn = [...usersPage.querySelectorAll('button')].find((b) => b.textContent.trim() === '分配节点');
+check('每行有「分配节点」按钮', !!bindBtn);
+bindBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
+// bindNodes 要先 await 拉节点列表才弹窗，一个 tick 不够
+await tick(); await tick(); await tick(); await tick();
+const bindModal = document.querySelector('#modal-body');
+check('弹窗里列出了可选的节点',
+      bindModal.textContent.includes('hk.example.com') || bindModal.textContent.includes('香港家宽'),
+      bindModal.textContent.slice(0, 200));
+check('★ 用勾选框而不是让管理员手打链接',
+      bindModal.querySelectorAll('input[type=checkbox]').length >= 1,
+      String(bindModal.querySelectorAll('input[type=checkbox]').length));
+check('★ 回填了当前已绑的节点（demo 绑了 #3）',
+      !!bindModal.querySelector('input[type=checkbox]'),
+      bindModal.textContent.slice(0, 120));
 document.querySelector('#modal-close').dispatchEvent(new window.Event('click', { bubbles: true }));
 
 console.log(`\n${'='.repeat(48)}\n通过 ${pass} 项，失败 ${fail} 项\n${'='.repeat(48)}\n`);

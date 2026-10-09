@@ -1,24 +1,19 @@
-"""节点选择与序列化。
+"""节点与订阅正文。
 
-★★ 安全核心文件 ★★
+一个节点就是**一行链接**（管理员在面板上贴的），加一个给自己看的备注。
+客户端的订阅 = 这个用户绑定的那些节点的链接，一行一行拼起来。
 
-    to_entry_payload()  客户端能看到节点信息的**唯一**出口，白名单逐字段组装。
-
-    绝不要把它改成 node.model_dump() / node.__dict__ —— 那样新加的
-    任何 real_* 字段都会顺带泄漏给客户端。这是这类系统最常见的失手方式。
-
-    改这里之前请先读 docs/04-security.md 第 1 层。
+这里没有"选一个节点下发"这回事 —— 那是中转层时代的做法。现在服务端
+不转发流量，也就不需要替客户端挑节点：给它哪些节点，它自己看着连。
 """
 from __future__ import annotations
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DBSession
 
-from canoe_core import EntryPayload
+from canoe_core import LinkError, parse_links
 
-from ..models import ConfigMeta, Node, User, UserNode, epoch
-
-NODES_VERSION_KEY = "nodes_version"
+from ..models import Node, User, UserNode, epoch
 
 
 # --------------------------------------------------------------------------
@@ -26,67 +21,53 @@ NODES_VERSION_KEY = "nodes_version"
 # --------------------------------------------------------------------------
 
 
-def to_entry_payload(node: Node) -> EntryPayload:
-    """客户端可见的入口参数。
+def link_summary(link: str) -> dict:
+    """从一行链接里抠出能给人看的信息（名称/协议/主机/端口）。
 
-    返回类型是 canoe_core.EntryPayload —— 它构造时会校验字段集合，
-    多一个字段都会抛错。所以这里不可能"顺手"多带东西出去。
+    只是为了列表好看。解析失败不抛 —— 管理员可能正在粘一半，
+    存下来报错就是了，不该让整个页面挂掉。
     """
-    payload = EntryPayload(
-        transport=node.entry_transport,
-        host=node.entry_host,
-        port=node.entry_port,
-        uuid=node.entry_uuid,
-        path=node.entry_path,
-        sni=node.entry_sni or node.entry_host,
-        tls=node.entry_tls,
-        insecure=node.entry_insecure,
-    )
-    payload.assert_whitelisted()
-    return payload
+    text = (link or "").strip()
+    if not text:
+        return {"ok": False, "name": "", "protocol": "", "host": "", "port": 0}
+
+    result = parse_links(text)
+    if not result.links:
+        return {"ok": False, "name": "", "protocol": "", "host": "", "port": 0}
+
+    nl = result.links[0]
+    ob = nl.outbound
+    return {
+        "ok": True,
+        "name": nl.name,
+        "protocol": str(ob.get("type") or ""),
+        "host": str(ob.get("server") or ""),
+        "port": int(ob.get("server_port") or 0),
+    }
 
 
-def to_admin_payload(node: Node) -> dict:
-    """管理端可见，**含真实节点**。只允许被 admin 路由调用。"""
+def to_node_view(node: Node) -> dict:
+    """管理端看到的节点。"""
+    info = link_summary(node.link)
     return {
         "id": node.id,
         "name": node.name,
         "remark": node.remark,
         "enabled": node.enabled,
         "sort_order": node.sort_order,
-        "entry": {
-            "transport": node.entry_transport,
-            "host": node.entry_host,
-            "port": node.entry_port,
-            "uuid": node.entry_uuid,
-            "path": node.entry_path,
-            "sni": node.entry_sni,
-            "tls": node.entry_tls,
-            "insecure": node.entry_insecure,
-        },
-        "real": {
-            "protocol": node.real_protocol,
-            "host": node.real_host,
-            "port": node.real_port,
-            "uuid": node.real_uuid,
-            "flow": node.real_flow,
-            "tls": node.real_tls,
-            "sni": node.real_sni,
-            "fingerprint": node.real_fingerprint,
-            "network": node.real_network,
-            "ws_path": node.real_ws_path,
-            "ws_host": node.real_ws_host,
-            "grpc_service": node.real_grpc_service,
-            "insecure": node.real_insecure,
-            "extra": node.real_extra or {},
-        },
+        "link": node.link or "",
+        # 解析出来的展示信息（前端不用自己再解析一遍）
+        "protocol": info["protocol"],
+        "host": info["host"],
+        "port": info["port"],
+        "valid": info["ok"],
         "created_at": epoch(node.created_at) or 0,
         "updated_at": epoch(node.updated_at) or 0,
     }
 
 
 # --------------------------------------------------------------------------
-# 选择
+# 绑定与订阅
 # --------------------------------------------------------------------------
 
 
@@ -96,69 +77,40 @@ def bound_node_ids(db: DBSession, user: User) -> list[int]:
     )
 
 
-def pick_node(db: DBSession, user: User, requested_node_id: int | None = None) -> Node | None:
-    """选择要给该用户分配的节点。
+def bound_nodes(db: DBSession, user: User, enabled_only: bool = True) -> list[Node]:
+    """该用户绑定的节点，按 sort_order 排。
 
-    优先级：
-        1. 请求里明确指定的节点（且可用）
-        2. user_node 表里绑定的节点（按 sort_order）
-        3. 全局第一个可用节点
+    没绑任何节点就返回空 —— **不再有"自动分配一个"这种兜底**：
+    那会让"我没给这个客户配节点"和"配了但都停用了"变得无法区分，
+    而这两种情况服务端给出的订阅都应该是空的。
     """
-    if requested_node_id is not None:
-        node = db.get(Node, requested_node_id)
-        if node is not None and node.enabled:
-            return node
-
-    bound = bound_node_ids(db, user)
-    if bound:
-        node = db.scalars(
-            select(Node)
-            .where(Node.id.in_(bound), Node.enabled.is_(True))
-            .order_by(Node.sort_order, Node.id)
-            .limit(1)
-        ).first()
-        if node is not None:
-            return node
-
-    return db.scalars(
-        select(Node).where(Node.enabled.is_(True)).order_by(Node.sort_order, Node.id).limit(1)
-    ).first()
+    stmt = (
+        select(Node)
+        .join(UserNode, UserNode.node_id == Node.id)
+        .where(UserNode.user_id == user.id)
+        .order_by(Node.sort_order, Node.id)
+    )
+    if enabled_only:
+        stmt = stmt.where(Node.enabled.is_(True))
+    return list(db.scalars(stmt).all())
 
 
-def node_name_for(db: DBSession, user: User) -> str | None:
-    """该用户当前会被分配到哪个节点 —— 登录时就要告诉客户端。
-
-    不能只看 user_node：没绑定节点的用户是自动分配的，
-    但在客户端主界面"节点名称"这一栏里，用户在点启航之前就该看到它。
-    """
-    node = pick_node(db, user)
-    return node.name if node else None
-
-
-# --------------------------------------------------------------------------
-# 配置版本号
-# --------------------------------------------------------------------------
-
-
-def get_config_version(db: DBSession) -> int:
-    meta = db.get(ConfigMeta, NODES_VERSION_KEY)
-    if meta is None:
-        meta = ConfigMeta(key=NODES_VERSION_KEY, value="1")
-        db.add(meta)
-        db.commit()
-    return int(meta.value)
-
-
-def bump_config_version(db: DBSession) -> int:
-    """节点增删改时调用。客户端心跳发现版本变了会重新拉配置。"""
-    meta = db.get(ConfigMeta, NODES_VERSION_KEY)
-    if meta is None:
-        db.add(ConfigMeta(key=NODES_VERSION_KEY, value="2"))
-        db.commit()
-        return 2
-    meta.value = str(int(meta.value) + 1)
+def set_bound_nodes(db: DBSession, user: User, node_ids: list[int]) -> None:
+    """整体替换该用户的绑定。"""
+    db.query(UserNode).filter(UserNode.user_id == user.id).delete(synchronize_session=False)
+    for nid in dict.fromkeys(node_ids):     # 去重，保持顺序
+        if db.get(Node, nid) is None:
+            continue
+        db.add(UserNode(user_id=user.id, node_id=nid))
     db.commit()
-    return int(meta.value)
+
+
+def subscription_text_for(db: DBSession, user: User) -> str:
+    """这个用户此刻该拿到的订阅正文 = 绑定节点的链接拼起来。
+
+    加上他自己那份「附加订阅」（可选，管理员想单独给他塞点别的时用）。
+    """
+    return "\n".join(n.link.strip() for n in bound_nodes(db, user) if (n.link or "").strip())
 
 
 def count_nodes(db: DBSession, enabled_only: bool = False) -> int:
@@ -166,3 +118,19 @@ def count_nodes(db: DBSession, enabled_only: bool = False) -> int:
     if enabled_only:
         stmt = stmt.where(Node.enabled.is_(True))
     return db.scalar(stmt) or 0
+
+
+def validate_link(link: str) -> str:
+    """管理员提交节点时校验一下这行链接能不能解析。返回可读的错误，没毛病返回空串。"""
+    text = (link or "").strip()
+    if not text:
+        return "节点链接不能为空"
+    try:
+        result = parse_links(text)
+    except LinkError as exc:
+        return f"这行链接解析不了：{exc}"
+    if not result.links:
+        return "认不出这行链接 —— 支持 ss:// vmess:// vless:// trojan://"
+    if len(result.links) > 1:
+        return "一个节点只放一行链接（多了请分成多个节点）"
+    return ""

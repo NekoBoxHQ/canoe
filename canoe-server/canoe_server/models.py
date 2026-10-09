@@ -4,10 +4,9 @@
 本文件是它们的实现（外加 audit_logs / config_meta 两张辅助表）。
 
 ★ 安全约定（改前先读 docs/04-security.md）★
-    nodes 表分两组字段：
-        entry_*  -> 允许下发给客户端（中转层入口）
-        real_*   -> 绝不下发（真实节点，只用于生成中转层配置）
-    序列化一律走 services/nodes.py 的白名单函数，不要用 model_dump()。
+    nodes.link 是**节点链接原文**，属于机密：只能进加密订阅（/api/subscription
+    的信封）和管理端接口，绝不能出现在其他客户端可见的明文响应里。
+    序列化一律走 services/nodes.py 里的函数，不要随手 model_dump()。
 """
 from __future__ import annotations
 
@@ -67,8 +66,8 @@ class User(Base):
     expire_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     max_devices: Mapped[int] = mapped_column(Integer, default=3)
     remark: Mapped[str] = mapped_column(String(255), default="")
-    #: ★ 管理员在这个账号的「订阅栏」里贴的内容 —— 节点链接列表。
-    #: 客户端登舟后拿到的是它**加密后**的信封；清空这一栏就等于停止分发。
+    #: 【已废弃】上一版是"每个客户手打订阅文本"，现在是"节点 + 分配给谁"。
+    #: 列留着是为了不破坏老库；代码里已经不再读写它。
     subscription: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -122,16 +121,18 @@ class Token(Base):
 
 
 # ==========================================================================
-# nodes  —— 真实节点 + 中转入口
+# nodes  —— 节点（一行链接）
 # ==========================================================================
 
 
 class Node(Base):
-    """一行 = 一个「真实节点 + 对应的中转层入口」。
+    """一行 = 一个节点。**核心就是一行链接**：
 
-    需求建议的 address/port/protocol/secret/status 对应这里的
-    real_host / real_port / real_protocol / real_uuid / enabled。
-    入口部分（entry_*）是本项目为了"客户端拿不到真实节点"而增加的中转层参数。
+        ss://2022-blake3-aes-128-gcm:<server_key>:<user_key>@host:port#名称
+        vmess://... vless://... trojan://...
+
+    管理员在面板上贴这一行、再加个备注（备注是给自己看的），
+    然后把节点勾给需要的客户 —— 客户的订阅就是他所绑节点的链接拼起来。
     """
 
     __tablename__ = "nodes"
@@ -144,31 +145,10 @@ class Node(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=100)
     remark: Mapped[str] = mapped_column(String(255), default="")
 
-    # --- 中转层入口 entry_*（允许下发）---
-    entry_host: Mapped[str] = mapped_column(String(255), default="")
-    entry_port: Mapped[int] = mapped_column(Integer, default=443)
-    entry_uuid: Mapped[str] = mapped_column(String(64), default="")
-    entry_path: Mapped[str] = mapped_column(String(255), default="")
-    entry_sni: Mapped[str] = mapped_column(String(255), default="")
-    entry_transport: Mapped[str] = mapped_column(String(16), default="ws")
-    entry_tls: Mapped[bool] = mapped_column(Boolean, default=True)
-    entry_insecure: Mapped[bool] = mapped_column(Boolean, default=False)
-
-    # --- 真实节点 real_*（绝不下发）---
-    real_protocol: Mapped[str] = mapped_column(String(16), default="vless")   # 需求: protocol
-    real_host: Mapped[str] = mapped_column(String(255), default="")           # 需求: address
-    real_port: Mapped[int] = mapped_column(Integer, default=443)              # 需求: port
-    real_uuid: Mapped[str] = mapped_column(String(128), default="")           # 需求: secret
-    real_flow: Mapped[str] = mapped_column(String(64), default="")
-    real_tls: Mapped[bool] = mapped_column(Boolean, default=True)
-    real_sni: Mapped[str] = mapped_column(String(255), default="")
-    real_fingerprint: Mapped[str] = mapped_column(String(32), default="chrome")
-    real_network: Mapped[str] = mapped_column(String(16), default="tcp")
-    real_ws_path: Mapped[str] = mapped_column(String(255), default="")
-    real_ws_host: Mapped[str] = mapped_column(String(255), default="")
-    real_grpc_service: Mapped[str] = mapped_column(String(255), default="")
-    real_insecure: Mapped[bool] = mapped_column(Boolean, default=False)
-    real_extra: Mapped[dict] = mapped_column(JSON, default=dict)
+    # --- ★ 节点本体：一行链接 ---
+    #: 管理员贴进来的原始链接（ss:// vmess:// vless:// trojan://）。
+    #: 这就是发给客户端的东西，原样存、原样发，不做改写。
+    link: Mapped[str] = mapped_column(Text, default="")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -227,8 +207,6 @@ class Session(Base):
     # 避免"进程被 kill 后 online 永远是 true"的经典问题。见 is_online()。
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
-    #: 中转层时代的入口凭证摘要。订阅模式下发不出 ticket，恒为空串。
-    ticket_hash: Mapped[str] = mapped_column(String(64), default="")
     client_ip: Mapped[str] = mapped_column(String(64), default="")
     mode: Mapped[str] = mapped_column(String(16), default="system_proxy")
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)

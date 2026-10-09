@@ -1,15 +1,8 @@
 """轻舟 / Canoe —— 客户端与服务端共享的契约模型。
 
-★ 这个文件是"客户端拿不到真实节点"这条约束的类型级落点 ★
-
-    EntryPayload   客户端能拿到的全部入口信息（白名单，逐字段显式列出）
-    ConfigResponse /api/config 的响应体，里面只有 EntryPayload，没有别的
-
-    真实节点（地址/端口/协议/密钥）**没有对应的模型**，它只以数据库行的形式
-    存在于服务端；客户端代码根本 import 不到这样的类型。
-
-这样即使将来有人往节点表加了字段，也不会顺着类型定义漏到客户端——
-因为客户端拿数据的返回值类型就是 ConfigResponse.entry。
+节点**不在这个文件里**：它是管理员贴的一行链接，以密文形式下发
+（订阅信封，见 crypto.py），没有任何结构化的节点模型。
+客户端拿到明文后自己解析 —— 解析器在 links.py，两边共用同一份。
 """
 from __future__ import annotations
 
@@ -17,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .constants import ENTRY_FIELDS, PROTOCOL_VERSION
+from .constants import PROTOCOL_VERSION
 from .crypto import Envelope
 
 # --------------------------------------------------------------------------
@@ -84,57 +77,18 @@ class LoginResponse(BaseModel):
 
 
 # --------------------------------------------------------------------------
-# 入口参数（客户端可见的唯一节点相关信息）
+# 节点
 # --------------------------------------------------------------------------
-
-
-class EntryPayload(BaseModel):
-    """客户端能拿到的全部节点信息 —— 中转层入口。
-
-    ⚠️ 往这里加字段前，先读 docs/04-security.md。
-       这里**不允许**出现真实节点的地址/端口/协议/密钥。
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    transport: Literal["ws", "grpc", "tcp"] = "ws"
-    host: str = Field(description="中转层入口域名/IP，不是真实节点")
-    port: int
-    uuid: str = Field(description="中转层入口 UUID（短期凭证的主体）")
-    path: str = ""
-    sni: str = ""
-    tls: bool = True
-    insecure: bool = False
-
-    def assert_whitelisted(self) -> None:
-        """自我校验：字段集合必须与 ENTRY_FIELDS 完全一致。"""
-        actual = set(self.model_dump().keys())
-        if actual != set(ENTRY_FIELDS):
-            raise AssertionError(
-                f"EntryPayload 字段集合偏离白名单。\n"
-                f"  多出: {actual - ENTRY_FIELDS}\n"
-                f"  缺少: {ENTRY_FIELDS - actual}\n"
-                f"如果你是要新增入口字段，请同步更新 constants.ENTRY_FIELDS 和文档。"
-            )
+#
+# 这里原本有个 EntryPayload —— 中转层时代"客户端能拿到的全部节点信息"。
+# 那套模型没了：节点现在是管理员贴的一行链接（ss:// vmess:// …），
+# 原样发给客户端，客户端自己解析（见 canoe_core.links）。
+# 所以这里不需要任何节点模型，也就没有"字段会不会泄漏"这回事了。
 
 
 # --------------------------------------------------------------------------
 # /api/config
 # --------------------------------------------------------------------------
-
-
-def _assert_no_real_fields(blob: Any) -> None:
-    """递归找 real_* 键。任何下发模型的出网自检都走这里。"""
-    stack: list[Any] = [blob]
-    while stack:
-        cur = stack.pop()
-        if isinstance(cur, dict):
-            for k, v in cur.items():
-                if k.startswith("real_"):
-                    raise AssertionError(f"响应体泄漏真实节点字段: {k}")
-                stack.append(v)
-        elif isinstance(cur, list):
-            stack.extend(cur)
 
 
 class ConfigResponse(BaseModel):
@@ -154,9 +108,6 @@ class ConfigResponse(BaseModel):
     heartbeat_interval: int = 30
     revision: str = Field(default="", description="订阅指纹，用于判断要不要重新拉订阅")
 
-    def assert_no_real_fields(self) -> None:
-        """防御性断言：序列化结果里不能出现 real_* 字段。"""
-        _assert_no_real_fields(self.model_dump())
 
 
 # --------------------------------------------------------------------------
@@ -185,8 +136,6 @@ class SubscriptionResponse(BaseModel):
         description="加密后的订阅载荷；为空表示服务端不给",
     )
 
-    def assert_no_real_fields(self) -> None:
-        _assert_no_real_fields(self.model_dump())
 
 
 # --------------------------------------------------------------------------

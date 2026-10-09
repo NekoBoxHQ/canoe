@@ -796,7 +796,7 @@ class MainView(FramelessWindow):
         Worker(work).run_with(on_ok, on_err)
 
     def _do_tcping(self) -> None:
-        """测本机到**中转层入口**的 TCP 握手延迟。
+        """测本机到**当前节点**的 TCP 握手延迟。
 
         测的是它到节点服务器那台机器的握手延迟，也就是"这条路通不通"。
         """

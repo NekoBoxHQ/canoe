@@ -34,6 +34,7 @@ def get_db() -> Iterator[Session]:
 _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "users": {"subscription": "TEXT DEFAULT ''"},
     "tokens": {"sub_key": "VARCHAR(64) DEFAULT ''"},
+    "nodes": {"link": "TEXT DEFAULT ''"},
 }
 
 
@@ -61,6 +62,18 @@ _REBUILD_IF_STALE: list[tuple[str, str, bool]] = [
 ]
 
 
+#: 老库里"整张表都不作数了"的：这些列属于已经被删掉的模型（中转层的
+#: 入口/真实节点），新代码根本不认识它们。老行留着也没用 —— 那是
+#: 渲染 sing-box 配置用的参数，不是链接。但 SQLite 删不掉列，
+#: 而它们还挂着 NOT NULL，新代码 INSERT 时必炸（踩过：建节点 500）。
+_OBSOLETE_COLUMNS: dict[str, tuple[str, ...]] = {
+    # 中转层的入口/真实节点参数 —— 新代码根本不认识这些列
+    "nodes": ("entry_host", "entry_port", "entry_uuid", "real_host", "real_port"),
+    # 入口凭证 —— 订阅模式不发 ticket 了。sessions 是易失数据，重建无妨
+    "sessions": ("ticket_hash",),
+}
+
+
 def _drop_stale_tables() -> None:
     from sqlalchemy import inspect, text as sql_text
 
@@ -74,6 +87,12 @@ def _drop_stale_tables() -> None:
                 if col["name"] == column and bool(col["nullable"]) != want_nullable:
                     conn.execute(sql_text(f"DROP TABLE {table}"))
                     break
+        for table, gone in _OBSOLETE_COLUMNS.items():
+            if table not in names:
+                continue
+            have = {c["name"] for c in insp.get_columns(table)}
+            if have & set(gone):
+                conn.execute(sql_text(f"DROP TABLE {table}"))
 
 
 def init_db() -> None:

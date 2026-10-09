@@ -7,8 +7,23 @@ CREATE TABLE audit_logs (
 	created_at DATETIME NOT NULL, 
 	PRIMARY KEY (id)
 );
-CREATE INDEX ix_audit_logs_user_id ON audit_logs (user_id);
 CREATE INDEX ix_audit_logs_action ON audit_logs (action);
+CREATE INDEX ix_audit_logs_user_id ON audit_logs (user_id);
+
+CREATE TABLE client_releases (
+	id INTEGER NOT NULL, 
+	version VARCHAR(32) NOT NULL, 
+	filename VARCHAR(255) NOT NULL, 
+	size INTEGER NOT NULL, 
+	sha256 VARCHAR(64) NOT NULL, 
+	notes TEXT NOT NULL, 
+	min_version VARCHAR(32) NOT NULL, 
+	enabled BOOLEAN NOT NULL, 
+	published_at DATETIME NOT NULL, 
+	PRIMARY KEY (id)
+);
+CREATE UNIQUE INDEX ix_client_releases_version ON client_releases (version);
+CREATE INDEX ix_client_releases_enabled ON client_releases (enabled);
 
 CREATE TABLE config_meta (
 	"key" VARCHAR(64) NOT NULL, 
@@ -23,28 +38,7 @@ CREATE TABLE nodes (
 	enabled BOOLEAN NOT NULL, 
 	sort_order INTEGER NOT NULL, 
 	remark VARCHAR(255) NOT NULL, 
-	entry_host VARCHAR(255) NOT NULL, 
-	entry_port INTEGER NOT NULL, 
-	entry_uuid VARCHAR(64) NOT NULL, 
-	entry_path VARCHAR(255) NOT NULL, 
-	entry_sni VARCHAR(255) NOT NULL, 
-	entry_transport VARCHAR(16) NOT NULL, 
-	entry_tls BOOLEAN NOT NULL, 
-	entry_insecure BOOLEAN NOT NULL, 
-	real_protocol VARCHAR(16) NOT NULL, 
-	real_host VARCHAR(255) NOT NULL, 
-	real_port INTEGER NOT NULL, 
-	real_uuid VARCHAR(128) NOT NULL, 
-	real_flow VARCHAR(64) NOT NULL, 
-	real_tls BOOLEAN NOT NULL, 
-	real_sni VARCHAR(255) NOT NULL, 
-	real_fingerprint VARCHAR(32) NOT NULL, 
-	real_network VARCHAR(16) NOT NULL, 
-	real_ws_path VARCHAR(255) NOT NULL, 
-	real_ws_host VARCHAR(255) NOT NULL, 
-	real_grpc_service VARCHAR(255) NOT NULL, 
-	real_insecure BOOLEAN NOT NULL, 
-	real_extra JSON NOT NULL, 
+	link TEXT NOT NULL, 
 	created_at DATETIME NOT NULL, 
 	updated_at DATETIME NOT NULL, 
 	PRIMARY KEY (id)
@@ -60,6 +54,7 @@ CREATE TABLE users (
 	expire_at DATETIME, 
 	max_devices INTEGER NOT NULL, 
 	remark VARCHAR(255) NOT NULL, 
+	subscription TEXT NOT NULL, 
 	created_at DATETIME NOT NULL, 
 	last_login_at DATETIME, 
 	PRIMARY KEY (id)
@@ -70,10 +65,9 @@ CREATE INDEX ix_users_status ON users (status);
 CREATE TABLE sessions (
 	id VARCHAR(32) NOT NULL, 
 	user_id INTEGER NOT NULL, 
-	node_id INTEGER NOT NULL, 
+	node_id INTEGER, 
 	device_id VARCHAR(64) NOT NULL, 
 	last_seen DATETIME NOT NULL, 
-	ticket_hash VARCHAR(64) NOT NULL, 
 	client_ip VARCHAR(64) NOT NULL, 
 	mode VARCHAR(16) NOT NULL, 
 	revoked BOOLEAN NOT NULL, 
@@ -92,6 +86,7 @@ CREATE TABLE tokens (
 	user_id INTEGER NOT NULL, 
 	token_hash VARCHAR(64) NOT NULL, 
 	device_id VARCHAR(64) NOT NULL, 
+	sub_key VARCHAR(64) NOT NULL, 
 	revoked BOOLEAN NOT NULL, 
 	expire_at DATETIME NOT NULL, 
 	created_at DATETIME NOT NULL, 
@@ -111,6 +106,6 @@ CREATE TABLE user_node (
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE, 
 	FOREIGN KEY(node_id) REFERENCES nodes (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_user_node_node_id ON user_node (node_id);
 CREATE INDEX ix_user_node_user_id ON user_node (user_id);
+CREATE INDEX ix_user_node_node_id ON user_node (node_id);
 

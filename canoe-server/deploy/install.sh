@@ -648,12 +648,8 @@ SSE_KEEPALIVE=20
 SSE_MAX_CONNECTIONS=2000
 SSE_MAX_PER_USER=5
 
-# 中转层 —— 上一版模型的遗留，当前客户端链路不走它（订阅模式下
-# 服务端只发订阅、不转发流量）。保留这几行是为了不让老的 relay 配置
-# 读不到值；不用管它们。
-RELAY_BEHIND_NGINX=true
-RELAY_INTERNAL_BASE=20000
-RELAY_RELOAD_HOOK=
+# 说明：本服务端只分发订阅，不转发流量 —— 节点服务器是另一台机器，
+# 跟这里无关。所以 .env 里没有 relay * 那类设置。
 EOF
     chown "$APP_USER:$APP_USER" "$ENV_FILE"; chmod 600 "$ENV_FILE"
 

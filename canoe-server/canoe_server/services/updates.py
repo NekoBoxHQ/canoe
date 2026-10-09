@@ -17,7 +17,14 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DBSession
 
-from canoe_core import Api, ClientReleaseResponse, Envelope, SubscriptionResponse, seal
+from canoe_core import (
+    Api,
+    ClientReleaseResponse,
+    Envelope,
+    SubscriptionResponse,
+    assert_no_leaks,
+    seal,
+)
 
 from ..config import settings
 from ..models import ClientRelease, User, epoch
@@ -158,10 +165,14 @@ def subscription_for(db: DBSession, user: User, sub_key: str) -> SubscriptionRes
 
     空信封不是报错 —— 报错客户端会重试，空信封是明确的"没有"。
     """
+    from .nodes import subscription_text_for
+
     text = ""
 
     if user.status == "active" and not user_expired(user):
-        text = (user.subscription or "").strip()
+        # 订阅正文 = 这个用户绑定的那些节点的链接（加可选的手工附加）。
+        # 一个节点都没绑就是空串 -> 空信封 -> 客户端就地销毁本地订阅。
+        text = subscription_text_for(db, user).strip()
 
     revision = subscription_revision(user, text)
     # sub_key 为空（老数据里的令牌没这把钥匙）时不加密也不报错，
@@ -175,7 +186,8 @@ def subscription_for(db: DBSession, user: User, sub_key: str) -> SubscriptionRes
         revision=revision,
         envelope=envelope,
     )
-    resp.assert_no_real_fields()
+    # 信封的 data 是密文，明文链接不可能出现在这里；泄漏了就直接炸。
+    assert_no_leaks({k: v for k, v in resp.model_dump().items() if k != "envelope"})
     return resp
 
 

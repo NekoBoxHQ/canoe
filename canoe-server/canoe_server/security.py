@@ -1,4 +1,4 @@
-"""安全原语：密码哈希、登录令牌、入口凭证 ticket。
+"""安全原语：密码哈希、登录令牌。
 
 关于令牌方案：需求建议用 tokens 表存 `token`。
 这里用**不透明随机令牌 + 存哈希**，而不是 JWT，理由：
@@ -15,10 +15,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import json
 import secrets
-import time
-from typing import Any
 
 from .config import settings
 
@@ -73,72 +70,8 @@ def token_hash(token: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# 入口凭证 ticket（短期、绑定用户+节点+设备）
-# --------------------------------------------------------------------------
-
-
-def issue_ticket(user_id: int, node_id: int, device_id: str, ttl: int | None = None) -> tuple[str, int]:
-    """签发入口凭证，返回 (ticket, 过期时间戳)。"""
-    now = int(time.time())
-    exp = now + (ttl or settings.entry_ticket_ttl)
-    payload = {
-        "u": user_id,
-        "n": node_id,
-        # 只放设备号的哈希前缀，ticket 泄漏也不直接暴露原始 device_id
-        "d": hashlib.sha256(device_id.encode("utf-8")).hexdigest()[:16],
-        "iat": now,
-        "exp": exp,
-        "jti": secrets.token_hex(8),
-    }
-    body = _b64e(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
-    sig = hmac.new(
-        settings.ticket_secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256
-    ).digest()
-    return f"{body}.{_b64e(sig)}", exp
-
-
-def verify_ticket(ticket: str, device_id: str | None = None) -> dict[str, Any]:
-    """校验 ticket，失败抛 ValueError。"""
-    try:
-        body, sig_b64 = ticket.split(".", 1)
-    except ValueError as exc:
-        raise ValueError("ticket 格式错误") from exc
-
-    expected = hmac.new(
-        settings.ticket_secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256
-    ).digest()
-    if not hmac.compare_digest(expected, _b64d(sig_b64)):
-        raise ValueError("ticket 签名无效")
-
-    try:
-        payload = json.loads(_b64d(body))
-    except (ValueError, TypeError) as exc:
-        raise ValueError("ticket 内容损坏") from exc
-
-    if payload.get("exp", 0) < int(time.time()):
-        raise ValueError("ticket 已过期")
-
-    if device_id is not None:
-        expect = hashlib.sha256(device_id.encode("utf-8")).hexdigest()[:16]
-        if payload.get("d") != expect:
-            raise ValueError("ticket 与设备不匹配")
-
-    return payload
-
-
-def ticket_digest(ticket: str) -> str:
-    return hashlib.sha256(ticket.encode("utf-8")).hexdigest()
-
-
-# --------------------------------------------------------------------------
 # 其它
 # --------------------------------------------------------------------------
-
-
-def gen_entry_uuid() -> str:
-    import uuid
-
-    return str(uuid.uuid4())
 
 
 def gen_session_id() -> str:

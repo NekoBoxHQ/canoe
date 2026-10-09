@@ -1,4 +1,4 @@
-"""管理后台：用户管理、节点管理、在线会话、统计、中转层配置。
+"""管理后台：用户管理、节点管理（含绑定）、在线会话、统计、发布。
 
 这里是**唯一**允许返回 real_* 字段的地方，全部需要 role=admin。
 """
@@ -30,11 +30,26 @@ from canoe_core import Api
 from ..config import settings
 from ..database import get_db
 from ..deps import client_ip, get_current_admin
-from ..models import AuditLog, ClientRelease, Node, Session as SessionRow, User, epoch, utcnow
-from ..security import gen_entry_uuid, hash_password
+from ..models import (
+    AuditLog,
+    ClientRelease,
+    Node,
+    Session as SessionRow,
+    User,
+    UserNode,
+    epoch,
+    utcnow,
+)
+from ..security import hash_password
 from ..services.broadcast import hub, notify_config_changed, notify_kick, notify_release
-from ..services.nodes import bump_config_version, get_config_version, to_admin_payload
-from ..services.relay import dump_singbox, render_nginx, render_singbox
+from ..services.nodes import (
+    bound_node_ids,
+    count_nodes,
+    set_bound_nodes,
+    subscription_text_for,
+    to_node_view,
+    validate_link,
+)
 from ..services.sessions import revoke_user_sessions, revoke_user_tokens
 from ..services.updates import (
     latest_release,
@@ -58,12 +73,13 @@ router = APIRouter(tags=["admin"])
 
 
 def _broadcast_config(db: DBSession) -> int:
-    """节点/绑定变更后通知在线客户端。
+    """节点或绑定变了，通知在线客户端重新拉订阅。
 
-    广播里**不带节点名** —— 每个用户被分配到的节点不一样，带了就会把
-    别人的节点泄露给所有人。只说"配置变了"，客户端自己回头拉自己的订阅。
+    广播里**不带任何订阅内容** —— 那是群发，带上就等于把某个人的节点
+    发给所有人。只说"变了"，客户端自己去拉自己那份（拉回来是空就靠岸）。
     """
-    return notify_config_changed(get_config_version(db))
+    del db  # 已经不需要算出具体版本号了：客户端自己比对 revision
+    return notify_config_changed(0)
 
 
 # ==========================================================================
@@ -72,36 +88,19 @@ def _broadcast_config(db: DBSession) -> int:
 
 
 class NodeUpsert(BaseModel):
-    name: str = Field(min_length=1, max_length=64)
+    """建/改一个节点 —— **核心就是一行链接**，其余都是给自己看的。
+
+    链接里已经含着协议、地址、端口、密钥、名称了，不用再一个字段一个字段
+    填（那是中转层时代的表单，那时服务端要自己渲染配置）。
+    """
+
+    #: 节点链接：ss:// vmess:// vless:// trojan://（一行，可带 #名称）
+    link: str = ""
+    #: 给自己看的备注。留空则列表里显示链接自带的名称。
     remark: str = ""
-    enabled: bool = True
+    #: 列表排序，小的在前
     sort_order: int = 100
-
-    # 中转入口（客户端可见）
-    entry_host: str = ""
-    entry_port: int = 443
-    entry_uuid: str = ""      # 留空自动生成
-    entry_path: str = ""
-    entry_sni: str = ""
-    entry_transport: str = "ws"
-    entry_tls: bool = True
-    entry_insecure: bool = False
-
-    # 真实节点（绝不下发）
-    real_protocol: str = "vless"
-    real_host: str = ""
-    real_port: int = 443
-    real_uuid: str = ""
-    real_flow: str = ""
-    real_tls: bool = True
-    real_sni: str = ""
-    real_fingerprint: str = "chrome"
-    real_network: str = "tcp"
-    real_ws_path: str = ""
-    real_ws_host: str = ""
-    real_grpc_service: str = ""
-    real_insecure: bool = False
-    real_extra: dict = {}
+    enabled: bool = True
 
 
 class UserCreate(BaseModel):
@@ -110,7 +109,6 @@ class UserCreate(BaseModel):
     expire_days: int | None = None
     max_devices: int | None = None
     remark: str = ""
-    subscription: str = ""
 
 
 class UserUpdate(BaseModel):
@@ -119,12 +117,11 @@ class UserUpdate(BaseModel):
     max_devices: int | None = None
     remark: str | None = None
     role: str | None = None
-    #: 「订阅栏」内容 —— 节点链接列表（ss:// vmess:// vless:// trojan://，
-    #: 一行一条，也可以整体 base64）。清空 = 停止向这个账号分发。
-    subscription: str | None = None
 
 
-class BindNodes(BaseModel):
+class BindUserNodes(BaseModel):
+    """把一个客户绑到哪些节点上。整体替换，不是追加。"""
+
     node_ids: list[int] = []
 
 
@@ -145,17 +142,17 @@ def _user_view(db: DBSession, user: User) -> dict:
         "expire_at": epoch(user.expire_at),
         "max_devices": user.max_devices,
         "remark": user.remark,
-        "subscription": user.subscription or "",
-        # 面板列表里只显示行数，不把整段订阅铺开 —— 内容可能几十行
-        "subscription_lines": len(_subscription_lines(user.subscription or "")),
+        #: 绑了哪些节点（面板上要显示勾选状态）
+        "node_ids": bound_node_ids(db, user),
+        #: 最终发给客户端的订阅有几行（就是绑定的节点数）
+        "subscription_lines": len(_lines(subscription_text_for(db, user))),
         "created_at": epoch(user.created_at) or 0,
         "last_login_at": epoch(user.last_login_at),
         "online": online,
     }
 
 
-def _subscription_lines(text: str) -> list[str]:
-    """订阅文本 -> 非空行。整体 base64 的订阅也算一行，照样返回。"""
+def _lines(text: str) -> list[str]:
     return [line.strip() for line in (text or "").splitlines() if line.strip()]
 
 
@@ -190,7 +187,6 @@ def create_user(
         status="active",
         max_devices=body.max_devices or settings.default_max_devices,
         remark=body.remark,
-        subscription=body.subscription or "",
         expire_at=utcnow() + timedelta(days=days) if days else None,
     )
     db.add(user)
@@ -225,10 +221,6 @@ def update_user(
     if body.role in {"user", "admin"}:
         user.role = body.role
 
-    subscription_changed = body.subscription is not None and body.subscription != user.subscription
-    if body.subscription is not None:
-        user.subscription = body.subscription
-
     db.commit()
     db.add(
         AuditLog(
@@ -244,7 +236,7 @@ def update_user(
     if subscription_changed:
         from ..services.broadcast import notify_subscription_changed
 
-        notify_subscription_changed(user.id, subscription_revision(user, user.subscription or ""))
+        notify_subscription_changed(user.id, subscription_revision(user, subscription_text_for(db, user)))
 
     return {"ok": True, "subscription_changed": subscription_changed}
 
@@ -324,62 +316,50 @@ def delete_user(
 
 
 def _apply_node(node: Node, body: NodeUpsert) -> Node:
-    node.name = body.name
-    node.remark = body.remark
+    """把请求里的字段写进节点行。
+
+    名称优先用管理员填的备注；没填就用链接里 `#` 那段（比如「🌍日本家宽🌍」），
+    再没有就退回 host:port —— 总之列表里得有东西可看。
+    """
+    link = (body.link or "").strip()
+    node.link = link
+    node.remark = body.remark or ""
     node.enabled = body.enabled
     node.sort_order = body.sort_order
 
-    node.entry_host = body.entry_host
-    node.entry_port = body.entry_port
-    node.entry_uuid = body.entry_uuid or node.entry_uuid or gen_entry_uuid()
-    node.entry_path = body.entry_path
-    node.entry_sni = body.entry_sni or body.entry_host
-    node.entry_transport = body.entry_transport
-    node.entry_tls = body.entry_tls
-    node.entry_insecure = body.entry_insecure
+    from ..services.nodes import link_summary
 
-    node.real_protocol = body.real_protocol
-    node.real_host = body.real_host
-    node.real_port = body.real_port
-    node.real_uuid = body.real_uuid
-    node.real_flow = body.real_flow
-    node.real_tls = body.real_tls
-    node.real_sni = body.real_sni
-    node.real_fingerprint = body.real_fingerprint
-    node.real_network = body.real_network
-    node.real_ws_path = body.real_ws_path
-    node.real_ws_host = body.real_ws_host
-    node.real_grpc_service = body.real_grpc_service
-    node.real_insecure = body.real_insecure
-    node.real_extra = body.real_extra
+    info = link_summary(link)
+    node.name = (body.remark or "").strip() or info["name"] or (
+        f"{info['host']}:{info['port']}" if info["host"] else "未命名节点"
+    )
     return node
 
 
 @router.get(Api.ADMIN_NODES)
 def list_nodes(_: User = Depends(get_current_admin), db: DBSession = Depends(get_db)):
     nodes = db.scalars(select(Node).order_by(Node.sort_order, Node.id)).all()
-    return {"items": [to_admin_payload(n) for n in nodes]}
+    return {"items": [to_node_view(n) for n in nodes]}
 
 
 @router.post(Api.ADMIN_NODES, status_code=status.HTTP_201_CREATED)
 def create_node(
     body: NodeUpsert, admin: User = Depends(get_current_admin), db: DBSession = Depends(get_db)
 ):
-    node = Node(entry_uuid=gen_entry_uuid())
+    problem = validate_link(body.link)
+    if problem:
+        raise HTTPException(400, {"code": "bad_link", "detail": problem})
+
+    node = Node()
     _apply_node(node, body)
     db.add(node)
     db.commit()
     db.refresh(node)
 
-    if not node.entry_path:
-        node.entry_path = f"/e/n{node.id}"
-        db.commit()
-
-    version = bump_config_version(db)
     db.add(AuditLog(user_id=admin.id, action="node_create", detail=node.name))
     db.commit()
     pushed = _broadcast_config(db)
-    return {"id": node.id, "config_version": version, "pushed": pushed}
+    return {"id": node.id, "node": to_node_view(node), "pushed": pushed}
 
 
 @router.patch(Api.ADMIN_NODES + "/{node_id}")
@@ -392,13 +372,17 @@ def update_node(
     node = db.get(Node, node_id)
     if node is None:
         raise HTTPException(404, {"code": "not_found", "detail": "节点不存在"})
+
+    problem = validate_link(body.link)
+    if problem:
+        raise HTTPException(400, {"code": "bad_link", "detail": problem})
+
     _apply_node(node, body)
     db.commit()
-    version = bump_config_version(db)
     db.add(AuditLog(user_id=admin.id, action="node_update", detail=node.name))
     db.commit()
     pushed = _broadcast_config(db)
-    return {"ok": True, "config_version": version, "pushed": pushed}
+    return {"ok": True, "node": to_node_view(node), "pushed": pushed}
 
 
 @router.delete(Api.ADMIN_NODES + "/{node_id}")
@@ -410,38 +394,43 @@ def delete_node(
         raise HTTPException(404, {"code": "not_found", "detail": "节点不存在"})
     db.delete(node)
     db.commit()
-    bump_config_version(db)
     db.add(AuditLog(user_id=admin.id, action="node_delete", detail=str(node_id)))
     db.commit()
     pushed = _broadcast_config(db)
     return {"ok": True, "pushed": pushed}
 
 
-@router.post(Api.ADMIN_NODES + "/{node_id}/bind")
-def bind_node(
-    node_id: int,
-    body: BindNodes,
+@router.put(Api.ADMIN_USERS + "/{user_id}/nodes")
+def bind_user_nodes(
+    user_id: int,
+    body: BindUserNodes,
     admin: User = Depends(get_current_admin),
     db: DBSession = Depends(get_db),
 ):
-    """把节点绑定给一批用户（写 user_node 表）。"""
-    from ..models import UserNode
+    """把这个客户绑到哪些节点上。**整体替换**，不是追加。
 
-    if db.get(Node, node_id) is None:
-        raise HTTPException(404, {"code": "not_found", "detail": "节点不存在"})
+    绑定的节点决定他能拿到什么订阅：绑几个就有几条链接，
+    一个都不绑（或绑的都被停用了）订阅就是空的，客户端会就地销毁本地订阅。
+    """
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(404, {"code": "not_found", "detail": "用户不存在"})
 
-    existing = set(
-        db.scalars(select(UserNode.user_id).where(UserNode.node_id == node_id)).all()
+    set_bound_nodes(db, user, body.node_ids)
+    db.add(
+        AuditLog(
+            user_id=admin.id,
+            action="user_bind_nodes",
+            detail=f"{user.username} -> {len(body.node_ids)} 个节点",
+        )
     )
-    added = 0
-    for uid in body.node_ids:
-        if uid in existing or db.get(User, uid) is None:
-            continue
-        db.add(UserNode(user_id=uid, node_id=node_id))
-        added += 1
     db.commit()
-    pushed = _broadcast_config(db) if added else 0
-    return {"ok": True, "added": added, "pushed": pushed}
+
+    # 绑的是这个人，只推给他 —— 广播会把无关的人全叫醒
+    from ..services.broadcast import notify_subscription_changed
+
+    pushed = notify_subscription_changed(user.id, subscription_revision(user, subscription_text_for(db, user)))
+    return {"ok": True, "node_ids": bound_node_ids(db, user), "pushed": pushed}
 
 
 # ==========================================================================
@@ -466,13 +455,14 @@ def list_sessions(
         if online and not is_on:
             continue
         user = db.get(User, r.user_id)
-        node = db.get(Node, r.node_id)
+        # 订阅模式不让会话挂节点了，node_id 是空的 —— 别拿 None 去查
+        node = db.get(Node, r.node_id) if r.node_id else None
         items.append(
             {
                 "session_id": r.id,
                 "user_id": r.user_id,
                 "username": user.username if user else "?",
-                "node_name": node.name if node else "?",
+                "node_name": node.name if node else "",
                 "device_id": r.device_id,
                 "client_ip": r.client_ip,
                 "mode": r.mode,
@@ -517,50 +507,8 @@ def stats(_: User = Depends(get_current_admin), db: DBSession = Depends(get_db))
         "nodes_enabled": n_enabled,
         "sessions_total": len(sessions),
         "sessions_online": sum(1 for s in sessions if s.online),
-        "config_version": get_config_version(db),
         # 推送连接数：排查"为什么客户端没收到推送"时先看这里
         "push": hub.stats(),
-    }
-
-
-# ==========================================================================
-# 中转层
-# ==========================================================================
-
-
-@router.get(Api.ADMIN_RELAY_CONFIG)
-def relay_config(
-    fmt: str = Query("singbox", pattern="^(singbox|nginx)$"),
-    _: User = Depends(get_current_admin),
-    db: DBSession = Depends(get_db),
-):
-    if fmt == "nginx":
-        return PlainTextResponse(render_nginx(db), media_type="text/plain; charset=utf-8")
-    return render_singbox(db)
-
-
-@router.post(Api.ADMIN_RELAY_RELOAD)
-def relay_reload(admin: User = Depends(get_current_admin), db: DBSession = Depends(get_db)):
-    text = dump_singbox(db, settings.relay_config_out)
-
-    hook = settings.relay_reload_hook
-    if not hook:
-        return {"ok": True, "reloaded": False, "hint": "未配置 RELAY_RELOAD_HOOK", "config": text}
-
-    proc = subprocess.run(hook, shell=True, capture_output=True, text=True, timeout=30)
-    db.add(
-        AuditLog(
-            user_id=admin.id,
-            action="relay_reload",
-            detail=f"rc={proc.returncode} {proc.stderr[:200]}",
-        )
-    )
-    db.commit()
-    return {
-        "ok": proc.returncode == 0,
-        "reloaded": True,
-        "returncode": proc.returncode,
-        "stderr": proc.stderr[-2000:],
     }
 
 

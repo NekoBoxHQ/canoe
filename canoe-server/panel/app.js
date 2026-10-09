@@ -281,10 +281,6 @@ const userFields = [
   { key: 'expire_days', label: '有效天数', type: 'number', default: 30, help: '留空或 0 表示永不过期' },
   { key: 'max_devices', label: '设备数上限', type: 'number', default: 3 },
   { key: 'remark', label: '备注' },
-  {
-    key: 'subscription', label: '节点订阅（可稍后再填）', type: 'textarea', rows: 8,
-    placeholder: 'ss://... 一行一个；留空表示先不分发',
-  },
 ];
 
 async function pageUsers(root) {
@@ -302,7 +298,6 @@ async function pageUsers(root) {
             expire_days: v.expire_days === '' || v.expire_days === null ? null : Number(v.expire_days),
             max_devices: v.max_devices ? Number(v.max_devices) : null,
             remark: v.remark || '',
-            subscription: v.subscription || '',
           }});
           toast('用户已创建', 'ok'); closeModal(); render();
         },
@@ -328,9 +323,8 @@ async function pageUsers(root) {
     { title: '最近登录', render: (r) => fmtTime(r.last_login_at) },
     {
       title: '操作', render: (r) => actionCell(
-        h('button', { class: 'btn btn-primary btn-sm', text: '订阅', onclick: () => editSubscription(r) }),
         h('button', { class: 'btn btn-ghost btn-sm', text: '编辑', onclick: () => editUser(r) }),
-        h('button', { class: 'btn btn-ghost btn-sm', text: '绑定节点', onclick: () => bindNodes(r) }),
+        h('button', { class: 'btn btn-ghost btn-sm', text: '分配节点', onclick: () => bindNodes(r) }),
         r.status === 'active'
           ? h('button', { class: 'btn btn-danger btn-sm', text: '封禁', onclick: () => simple('/api/admin/users/' + r.id + '/ban', 'POST', '已封禁，令牌与会话立即失效') })
           : h('button', { class: 'btn btn-ghost btn-sm', text: '解封', onclick: () => simple('/api/admin/users/' + r.id + '/unban', 'POST', '已解封') }),
@@ -363,51 +357,32 @@ function editUser(r) {
   });
 }
 
-/* 订阅栏：一行一个节点链接（ss:// vmess:// vless:// trojan://），也可以整体 base64。
- * 清空 = 停止对这个账号分发；客户端下次交互就会发现并销毁本地订阅。 */
-function editSubscription(r) {
-  openModal({
-    title: '订阅 · ' + r.username,
-    wide: true,
-    fields: [
-      {
-        key: 'subscription', label: '节点订阅', type: 'textarea', rows: 12,
-        placeholder: 'ss://2022-blake3-aes-128-gcm:服务端密钥:用户密钥@主机:端口#名称\n一行一个，也可以直接粘贴整体 base64 的订阅',
-        help: '客户端登舟后拿到的是加密后的内容 —— 传输链路上看不到明文。清空这一栏即停止分发。',
-      },
-    ],
-    values: { subscription: r.subscription || '' },
-    submitText: '保存订阅',
-    onSubmit: async (v) => {
-      const res = await api('/api/admin/users/' + r.id, {
-        method: 'PATCH', body: { subscription: v.subscription || '' },
-      });
-      toast(res.subscription_changed ? '订阅已更新，在线客户端会立刻重新拉取' : '订阅未变化', 'ok');
-      closeModal(); render();
-    },
-  });
-}
-
 async function bindNodes(r) {
   const nodes = (await api('/api/admin/nodes')).items || [];
-  if (!nodes.length) { toast('还没有节点', 'warn'); return; }
+  if (!nodes.length) { toast('还没有节点 —— 先去「节点」页加一个', 'warn'); return; }
+  const bound = new Set(r.node_ids || []);
+
   openModal({
-    title: `把节点绑定给 ${r.username}`,
+    title: `给 ${r.username} 分配节点`,
     fields: [
-      { type: 'group', label: '勾选要绑定的节点（不勾则自动分配第一个可用节点）' },
-      ...nodes.map((n) => ({ key: 'node_' + n.id, label: `${n.name}（#${n.id}）${n.enabled ? '' : ' · 已停用'}`, type: 'checkbox' })),
+      { type: 'group', label: '勾选这个客户能用哪些节点。一个都不勾 = 停止对他分发。' },
+      ...nodes.map((n) => ({
+        key: 'node_' + n.id,
+        label: `${n.remark || n.name}（#${n.id} · ${n.protocol || '?'} ${n.host || '?'}）${n.enabled ? '' : ' · 已停用'}`,
+        type: 'checkbox',
+      })),
     ],
-    values: {},
-    submitText: '绑定',
+    // 回填当前绑定，不然每次打开都是全空的，看不出现在分的是哪几个
+    values: Object.fromEntries(nodes.map((n) => ['node_' + n.id, bound.has(n.id)])),
+    submitText: '保存',
     onSubmit: async (v) => {
-      const ids = Object.entries(v).filter(([k, on]) => k.startsWith('node_') && on).map(([k]) => Number(k.slice(5)));
-      if (!ids.length) { toast('一个都没勾', 'warn'); return; }
-      let added = 0;
-      for (const id of ids) {
-        const res = await api(`/api/admin/nodes/${id}/bind`, { method: 'POST', body: { node_ids: [r.id] } });
-        added += res.added || 0;
-      }
-      toast(`绑定完成（新增 ${added} 条）`, 'ok'); closeModal();
+      const ids = Object.entries(v)
+        .filter(([k, on]) => k.startsWith('node_') && on)
+        .map(([k]) => Number(k.slice(5)));
+      const res = await api(`/api/admin/users/${r.id}/nodes`, { method: 'PUT', body: { node_ids: ids } });
+      toast(ids.length ? `已分配 ${ids.length} 个节点` : '已清空 —— 这个客户下次交互就会被收回订阅', 'ok');
+      if (res.pushed) toast(`已推送给在线的 ${res.pushed} 条连接`, 'ok');
+      closeModal(); render();
     },
   });
 }
@@ -417,52 +392,21 @@ async function bindNodes(r) {
  * ========================================================================= */
 
 const nodeFields = () => [
-  { type: 'group', label: '基本' },
-  { key: 'name', label: '节点名（客户端只看到这个）', required: true, placeholder: '香港-01' },
-  { key: 'sort_order', label: '排序', type: 'number', default: 100, help: '数字越小越优先' },
-  { key: 'remark', label: '备注' },
+  { key: 'link', label: '节点链接', required: true, type: 'textarea', rows: 3,
+    placeholder: 'ss://2022-blake3-aes-128-gcm:服务端密钥:用户密钥@主机:端口#名称',
+    help: '一行就行。支持 ss:// vmess:// vless:// trojan:// —— 链接里已经带着协议、地址、端口、密钥了。' },
+  { key: 'remark', label: '备注（给自己看的）', help: '留空就显示链接里 # 后面的名字' },
+  { key: 'sort_order', label: '排序', type: 'number', default: 100, help: '数字越小越靠前' },
   { key: 'enabled', label: '启用', type: 'checkbox', default: true },
-
-  { type: 'group', label: '中转入口（客户端会拿到这些）' },
-  { key: 'entry_host', label: '入口域名', help: '客户端连的就是它，不是真实节点' },
-  { key: 'entry_port', label: '入口端口', type: 'number', default: 443 },
-  { key: 'entry_path', label: '入口路径', placeholder: '/e/hk01', help: '留空自动生成 /e/n<id>' },
-  { key: 'entry_uuid', label: '入口 UUID', help: '留空自动生成' },
-  { key: 'entry_sni', label: '入口 SNI', help: '留空跟随入口域名' },
-  { key: 'entry_transport', label: '传输', type: 'select', options: [
-    { value: 'ws', label: 'WebSocket' }, { value: 'grpc', label: 'gRPC' }, { value: 'tcp', label: 'TCP' }] },
-  { key: 'entry_tls', label: '入口启用 TLS', type: 'checkbox', default: true },
-
-  { type: 'group', label: '⚠ 真实节点（绝不下发给客户端，只用来生成中转层配置）' },
-  { key: 'real_protocol', label: '协议', type: 'select', options: [
-    { value: 'vless', label: 'VLESS' }, { value: 'vmess', label: 'VMess' }, { value: 'trojan', label: 'Trojan' },
-    { value: 'shadowsocks', label: 'Shadowsocks' }, { value: 'hysteria2', label: 'Hysteria2' },
-    { value: 'tuic', label: 'TUIC' }] },
-  { key: 'real_host', label: '真实地址' },
-  { key: 'real_port', label: '真实端口', type: 'number', default: 443 },
-  { key: 'real_uuid', label: '真实 UUID / 密码' },
-  { key: 'real_sni', label: '真实 SNI' },
-  { key: 'real_flow', label: 'Flow', placeholder: 'xtls-rprx-vision' },
-  { key: 'real_network', label: '传输网络', placeholder: 'tcp' },
-  { key: 'real_ws_path', label: 'WS 路径' },
-  { key: 'real_fingerprint', label: '指纹', default: 'chrome' },
-  { key: 'real_tls', label: '真实节点启用 TLS', type: 'checkbox', default: true },
 ];
 
 function nodeBody(v) {
   const num = (x, d) => (x === '' || x === null || x === undefined || isNaN(Number(x))) ? d : Number(x);
   return {
-    name: v.name, remark: v.remark || '', enabled: !!v.enabled, sort_order: num(v.sort_order, 100),
-    entry_host: v.entry_host || '', entry_port: num(v.entry_port, 443),
-    entry_uuid: v.entry_uuid || '', entry_path: v.entry_path || '',
-    entry_sni: v.entry_sni || '', entry_transport: v.entry_transport || 'ws',
-    entry_tls: !!v.entry_tls, entry_insecure: false,
-    real_protocol: v.real_protocol || 'vless', real_host: v.real_host || '',
-    real_port: num(v.real_port, 443), real_uuid: v.real_uuid || '',
-    real_flow: v.real_flow || '', real_tls: !!v.real_tls, real_sni: v.real_sni || '',
-    real_fingerprint: v.real_fingerprint || 'chrome', real_network: v.real_network || 'tcp',
-    real_ws_path: v.real_ws_path || '', real_ws_host: '', real_grpc_service: '',
-    real_insecure: false, real_extra: {},
+    link: (v.link || '').trim(),
+    remark: v.remark || '',
+    enabled: !!v.enabled,
+    sort_order: num(v.sort_order, 100),
   };
 }
 
@@ -474,39 +418,43 @@ async function pageNodes(root) {
     h('button', {
       class: 'btn btn-primary btn-sm', text: '新建节点',
       onclick: () => openModal({
-        title: '新建节点', fields: nodeFields(), values: { enabled: true, entry_tls: true, real_tls: true, sort_order: 100, entry_port: 443, real_port: 443, real_fingerprint: 'chrome', real_network: 'tcp', entry_transport: 'ws', real_protocol: 'vless' },
-        submitted: '创建', onSubmit: async (v) => {
+        title: '新建节点', fields: nodeFields(),
+        values: { enabled: true, sort_order: 100 },
+        submitText: '创建',
+        onSubmit: async (v) => {
           const res = await api('/api/admin/nodes', { method: 'POST', body: nodeBody(v) });
-          toast(`节点已创建（配置版本 → ${res.config_version}，已推送 ${res.pushed} 条连接）`, 'ok');
+          toast(`节点已创建${res.pushed ? `，已通知 ${res.pushed} 条在线连接` : ''}`, 'ok');
           closeModal(); render();
         },
       }),
     }),
-    h('button', { class: 'btn btn-ghost btn-sm', text: '重新加载中转层', onclick: relayReload }),
   ));
 
   root.append(h('div', { class: 'card' }, renderTable([
     { title: 'ID', key: 'id' },
-    { title: '节点名', key: 'name' },
+    { title: '名称', render: (r) => h('span', {},
+        h('strong', { text: r.remark || r.name }),
+        r.remark && r.name !== r.remark ? h('span', { class: 'muted', text: '  ' + r.name }) : '') },
+    { title: '节点', render: (r) => r.valid
+        ? h('span', { class: 'mono', text: `${r.protocol} ${r.host}:${r.port}` })
+        : tag('链接认不出', 'bad') },
     { title: '状态', render: (r) => r.enabled ? tag('启用', 'ok') : tag('停用') },
     { title: '排序', key: 'sort_order' },
-    { title: '入口（客户端可见）', render: (r) => h('span', { class: 'mono', text: `${r.entry.host || '?'}:${r.entry.port}${r.entry.path || ''}` }) },
-    { title: '真实节点（仅服务端）', render: (r) => h('span', { class: 'secret', text: `${r.real.protocol}://${r.real.host || '?'}:${r.real.port}` }) },
     {
       title: '操作', render: (r) => actionCell(
         h('button', { class: 'btn btn-ghost btn-sm', text: '编辑', onclick: () => openModal({
-          title: '编辑节点 · ' + r.name, fields: nodeFields(),
-          values: { ...r.entry, ...r.real, name: r.name, remark: r.remark, enabled: r.enabled, sort_order: r.sort_order },
+          title: '编辑节点 · ' + (r.remark || r.name), fields: nodeFields(),
+          values: { link: r.link, remark: r.remark, enabled: r.enabled, sort_order: r.sort_order },
           onSubmit: async (v) => {
             const res = await api('/api/admin/nodes/' + r.id, { method: 'PATCH', body: nodeBody(v) });
-            toast(`已保存（配置版本 → ${res.config_version}）`, 'ok');
+            toast(`已保存${res.pushed ? `，已通知 ${res.pushed} 条在线连接` : ''}`, 'ok');
             closeModal(); render();
           },
         }) }),
-        h('button', { class: 'btn btn-danger btn-sm', text: '删除', onclick: () => confirmDo(`删除节点 ${r.name}？`, () => simple('/api/admin/nodes/' + r.id, 'DELETE', '已删除')) }),
+        h('button', { class: 'btn btn-danger btn-sm', text: '删除', onclick: () => confirmDo(`删除节点「${r.remark || r.name}」？`, () => simple('/api/admin/nodes/' + r.id, 'DELETE', '已删除')) }),
       ),
     },
-  ], rows, '还没有节点 —— 客户端启航会收到 503，先建一个')));
+  ], rows, '还没有节点 —— 点上面的「新建节点」，把链接粘进去就行')));
 }
 
 /* =========================================================================
@@ -608,75 +556,12 @@ async function pageReleases(root) {
   ], rows, '还没有发布过任何版本 —— 客户端点「更新」会收到 404')));
 }
 
-/* =========================================================================
- * 页面：中转层
- * ========================================================================= */
-
-async function relayReload() {
-  const res = await api('/api/admin/relay/reload', { method: 'POST' });
-  if (res.reloaded) toast(res.ok ? '已重新加载' : 'reload 失败：' + (res.stderr || '').slice(0, 120), res.ok ? 'ok' : 'err');
-  else toast(res.hint || '未配置 reload hook', 'warn');
-}
-
-async function pageRelay(root) {
-  root.append(h('div', { class: 'card' },
-    h('h3', { text: '中转层配置' }),
-    h('div', { class: 'muted', text: '真实节点只出现在生成的配置里；客户端永远拿不到。改完节点记得重新加载。' }),
-    h('div', { class: 'card-actions', style: 'margin-top:12px' },
-      h('button', { class: 'btn btn-ghost btn-sm', text: '渲染 sing-box 配置', onclick: () => showConfig('singbox') }),
-      h('button', { class: 'btn btn-ghost btn-sm', text: '渲染 Nginx 配置', onclick: () => showConfig('nginx') }),
-      h('button', { class: 'btn btn-primary btn-sm', text: '重新加载中转层', onclick: relayReload }),
-    ),
-  ));
-  const box = h('div', { class: 'card' }, h('h3', { text: '输出' }),
-    h('div', { class: 'muted', text: '点上面的按钮生成配置' }));
-  root.append(box);
-}
-
-async function showConfig(fmt) {
-  const text = await api('/api/admin/relay/config?fmt=' + fmt, { raw: true, text: true });
-  const cards = document.querySelectorAll('.page .card');
-  const out = cards[cards.length - 1];
-  clear(out).append(h('h3', { text: fmt === 'nginx' ? 'Nginx 配置' : 'sing-box 配置' }),
-    h('div', { class: 'card-actions' },
-      h('button', { class: 'btn btn-ghost btn-sm', text: '复制', onclick: () => {
-        navigator.clipboard.writeText(typeof text === 'string' ? text : JSON.stringify(text, null, 2));
-        toast('已复制', 'ok');
-      }})),
-    h('pre', { class: 'code', text: typeof text === 'string' ? text : JSON.stringify(text, null, 2) }));
-}
-
-/* =========================================================================
- * 通用动作
- * ========================================================================= */
-
-async function simple(path, method, okMsg) {
-  try {
-    await api(path, { method });
-    toast(okMsg, 'ok');
-    render();
-  } catch (err) { toast(err.message, 'err'); }
-}
-
-function confirmDo(question, fn) {
-  openModal({
-    title: '确认', fields: [
-      { type: 'group', label: question },
-    ], submitText: '确定', onSubmit: async () => { closeModal(); await fn(); },
-  });
-}
-
-/* =========================================================================
- * 导航与渲染
- * ========================================================================= */
-
 const PAGES = [
   { key: 'overview', label: '概览', ico: '◈', title: '概览', render: pageOverview },
   { key: 'users',    label: '用户', ico: '☺', title: '用户管理', render: pageUsers },
   { key: 'nodes',    label: '节点', ico: '⛵', title: '节点管理', render: pageNodes },
   { key: 'sessions', label: '会话', ico: '⇄', title: '在线会话', render: pageSessions },
   { key: 'releases', label: '发布', ico: '⇪', title: '客户端版本发布', render: pageReleases },
-  { key: 'relay',    label: '中转层', ico: '⚙', title: '中转层配置', render: pageRelay },
 ];
 
 function buildNav() {

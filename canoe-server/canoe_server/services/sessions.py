@@ -150,7 +150,6 @@ def start_session(
         user_id=user.id,
         node_id=None,
         device_id=device_id,
-        ticket_hash="",
         client_ip=client_ip,
         mode=mode,
         created_at=now,
@@ -178,7 +177,8 @@ def heartbeat(db: DBSession, session_id: str, user: User) -> SessionRow:
         raise CanoeError(ErrorCode.UNAUTHORIZED, "会话已被服务端吊销")
 
     row.last_seen = utcnow()
-    row.expire_at = utcnow() + timedelta(seconds=settings.entry_ticket_ttl)
+    # 会话跟登录令牌同寿（建会话时也是这么算的），别在这里缩到几分钟
+    row.expire_at = utcnow() + timedelta(seconds=settings.token_ttl)
     db.commit()
     db.refresh(row)
     return row

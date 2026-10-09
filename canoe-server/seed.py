@@ -1,8 +1,9 @@
-"""初始化数据库、管理员、示例节点。
+"""初始化数据库、管理员、测试用户。
+
+节点不由这里造 —— 管理员在面板上贴链接自己加。
 
 用法：
-    python seed.py             # 建表 + 管理员 + 示例节点 + demo 用户
-    python seed.py --no-node   # 不建示例节点
+    python seed.py             # 建表 + 管理员 + demo 用户
     python seed.py --schema    # 只输出建表 SQL（不建库）
 """
 from __future__ import annotations
@@ -22,7 +23,7 @@ from canoe_core import BRAND_CN, SLOGAN_CN
 from canoe_server.config import DEFAULT_ADMIN_PASSWORD, settings
 from canoe_server.database import SessionLocal, engine, init_db
 from canoe_server.models import Node, User, utcnow
-from canoe_server.security import gen_entry_uuid, hash_password
+from canoe_server.security import hash_password
 
 
 def print_schema() -> None:
@@ -42,7 +43,6 @@ def print_schema() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=f"{BRAND_CN} · {SLOGAN_CN}")
-    parser.add_argument("--no-node", action="store_true", help="不创建示例节点")
     parser.add_argument("--schema", action="store_true", help="只打印建表 SQL")
     args = parser.parse_args()
 
@@ -86,37 +86,12 @@ def main() -> None:
         else:
             print(f"[=] 管理员已存在: {settings.admin_username}")
 
-        # --- 示例节点 ---
-        if not args.no_node:
-            name = "示例节点-轻舟"
-            if db.scalars(select(Node).where(Node.name == name)).first() is None:
-                node = Node(
-                    name=name,
-                    remark="seed 生成的占位节点，请到后台改成你的真实节点",
-                    enabled=False,  # 默认停用，避免误当成可用节点
-                    sort_order=10,
-                    entry_host="canoe.example.com",
-                    entry_port=443,
-                    entry_uuid=gen_entry_uuid(),
-                    entry_path="/e/hk01",
-                    entry_sni="canoe.example.com",
-                    entry_transport="ws",
-                    entry_tls=True,
-                    real_protocol="vless",
-                    real_host="203.0.113.7",  # TEST-NET-3 占位地址
-                    real_port=8443,
-                    real_uuid=gen_entry_uuid(),
-                    real_flow="xtls-rprx-vision",
-                    real_tls=True,
-                    real_sni="real.example.com",
-                    real_fingerprint="chrome",
-                    real_network="tcp",
-                )
-                db.add(node)
-                db.commit()
-                print(f"[+] 示例节点: {name}（默认停用）")
-            else:
-                print(f"[=] 示例节点已存在: {name}")
+        # --- 不造占位节点 ---
+        # 以前这里会塞一个「示例节点-轻舟」占位。现在节点就是管理员自己贴的
+        # 一行链接，占位节点只会让人以为"已经配好了"，反而添乱。
+        if db.scalars(select(Node)).first() is None:
+            print("[i] 还没有节点 —— 去面板「节点」页粘一行链接就有了")
+            print("    （支持 ss:// vmess:// vless:// trojan://）")
 
         # --- demo 用户，方便立刻联调 ---
         if db.scalars(select(User).where(User.username == "demo")).first() is None:

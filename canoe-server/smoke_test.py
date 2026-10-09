@@ -5,9 +5,9 @@
 
     --insecure  : 本地自签证书时跳过证书校验（只给本地调试用）
 
-覆盖：注册 -> 登录 -> /api/config -> 心跳 -> 登出 -> 封禁踢下线 -> 中转层配置
+覆盖：注册 -> 登录 -> /api/config -> 心跳 -> 登出 -> 封禁踢下线 -> 加密订阅
       -> 客户端更新 -> 订阅更新 -> SSE 推送 -> 鉴权，
-并断言所有客户端可见的响应里**绝对不出现**真实节点信息。
+并断言所有客户端可见的响应里**绝对不出现**节点信息。
 
 顺带验证 canoe-core 的两个自校验方法真的会拦截越界字段。
 """
@@ -29,7 +29,7 @@ import httpx
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from canoe_core import ENTRY_FIELDS, Api, ConfigResponse, EntryPayload, Envelope  # noqa: E402
+from canoe_core import Api, Envelope  # noqa: E402
 
 def _admin_credentials() -> tuple[str, str]:
     """管理员账号密码。
@@ -56,11 +56,9 @@ def _admin_credentials() -> tuple[str, str]:
     return user or "admin", password or "canoe-admin-123"
 
 
-#: 冒烟用的样例订阅（一行 SS2022 链接）
-SAMPLE_SUB = (
-    "ss://2022-blake3-aes-128-gcm:AAAA:BBBB@one.leycc.com:33222#%E6%97%A5%E6%9C%AC\n"
-    "vless://11111111-2222-3333-4444-555555555555@node.example.com:443"
-    "?security=tls&type=ws&path=%2Fx#%E5%A4%87%E7%94%A8"
+#: 冒烟用的节点链接（就是管理员会在面板上贴的那种）
+NODE_LINK = (
+    "ss://2022-blake3-aes-128-gcm:AAAA:BBBB@one.leycc.com:33222#%E6%97%A5%E6%9C%AC"
 )
 
 _ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -76,12 +74,9 @@ def new_client(**kwargs) -> httpx.Client:
     kwargs.setdefault("base_url", BASE)
     return httpx.Client(verify=VERIFY, **kwargs)
 
-# 管理员建节点时用的真实节点值 —— 绝不能出现在任何客户端可见的响应里
-REAL_IP = "203.0.113.77"
-REAL_UUID = "deadbeef-0000-1111-2222-333344445555"
-REAL_SNI = "classified-node.invalid"
-
-REAL_FIELD_PREFIX = "real_"
+#: 节点信息只能在**加密订阅**里出现。凡是客户端不加密就能看到的响应
+#: （/api/config、/api/me、心跳、hello……），都不该漏出链接或节点主机名。
+LEAK_MARKERS = ("ss://", "vmess://", "vless://", "trojan://", "one.leycc.com")
 
 passed = failed = 0
 
@@ -96,19 +91,21 @@ def check(label: str, cond: bool, extra: str = "") -> None:
         print(f"  [FAIL] {label} {extra}")
 
 
-def scan_real_keys(payload, path: str = "$") -> list[str]:
-    """递归找出所有以 real_ 开头的键。"""
+def scan_leaks(payload, path: str = "$") -> list[str]:
+    """递归找出序列化结果里任何一处节点信息（链接前缀 / 节点主机名）。"""
     hits: list[str] = []
     stack = [(payload, path)]
     while stack:
         cur, p = stack.pop()
         if isinstance(cur, dict):
             for k, v in cur.items():
-                if str(k).startswith(REAL_FIELD_PREFIX):
-                    hits.append(f"{p}.{k}")
                 stack.append((v, f"{p}.{k}"))
         elif isinstance(cur, list):
             stack.extend((v, f"{p}[{i}]") for i, v in enumerate(cur))
+        elif isinstance(cur, str):
+            for marker in LEAK_MARKERS:
+                if marker in cur:
+                    hits.append(f"{p} 含 {marker}")
     return hits
 
 
@@ -167,7 +164,7 @@ def main() -> int:
     token = body["token"]
     check("响应含 token", bool(token))
     check("响应含 expires_in", body.get("expires_in", 0) > 0)
-    check("★ 登录响应无 real_* 字段", not scan_real_keys(body))
+    check("★ 登录响应里不含任何节点信息", not scan_leaks(body), str(scan_leaks(body)))
     check("登录响应含 user.node_name", "node_name" in body["user"])
 
     # ★ 契约断言：管理面板靠这两个字段判断"这人能不能进面板"。
@@ -209,33 +206,19 @@ def main() -> int:
         return 1
     admin_h = {"Authorization": f"Bearer {r.json()['token']}"}
 
+    # 建节点 = 贴一行链接 + 一个给自己看的备注。就这么简单。
     node_body = {
-        "name": f"轻舟-{suffix}",
+        "link": NODE_LINK,
+        "remark": f"冒烟-{suffix}",
         "enabled": True,
-        # 0 = 排最前。必须压过库里已有的节点（示例节点是 10，别人留的是 1），
-        # 否则 /api/config 可能挑中另一个，后面"ticket 记录了目标节点"
-        # 就会对着一个不是我们建的节点报错。
         "sort_order": 0,
-        "entry_host": "canoe.example.com",
-        "entry_port": 443,
-        "entry_path": f"/e/canoe{suffix}",
-        "entry_sni": "canoe.example.com",
-        "entry_transport": "ws",
-        "real_protocol": "vless",
-        "real_host": REAL_IP,
-        "real_port": 8443,
-        "real_uuid": REAL_UUID,
-        "real_flow": "xtls-rprx-vision",
-        "real_tls": True,
-        "real_sni": REAL_SNI,
-        "real_network": "tcp",
     }
     r = client.post(Api.ADMIN_NODES, json=node_body, headers=admin_h)
     check("创建节点 201", r.status_code == 201, r.text[:250])
     node_id = r.json().get("id") if r.status_code == 201 else None
 
     r = client.get(Api.ADMIN_NODES, headers=admin_h)
-    check("admin 节点列表含 real（应当如此）", "real" in r.text)
+    check("admin 节点列表能看到链接", NODE_LINK[:30] in r.text, r.text[:200])
 
     # 6. /api/config —— 核心安全断言
     print("\n[6] /api/config（核心安全断言）")
@@ -246,52 +229,25 @@ def main() -> int:
     raw = r.text
     data = r.json()
 
-    check("★ 响应不含 real_* 字段", not scan_real_keys(data), str(scan_real_keys(data)))
-    check("★ 响应不含真实 IP", REAL_IP not in raw)
-    check("★ 响应不含真实 UUID", REAL_UUID not in raw)
-    check("★ 响应不含真实 SNI", REAL_SNI not in raw)
-    check("★ 响应不含 'real_' 字样", "real_" not in raw)
+    check("★ 响应里没有任何节点信息（节点只走加密订阅）",
+          not scan_leaks(data), str(scan_leaks(data)))
     check("返回会话 id", bool(data.get("session_id")))
     check("★ 不再下发任何入口/节点（订阅模式下节点从订阅来）",
           "entry" not in data and "token" not in data, str(sorted(data)))
     check("带上了订阅指纹（客户端靠它发现订阅被改）", bool(data.get("revision")))
 
-    # 7. canoe-core 的类型级校验真的会拦
-    print("\n[7] canoe-core 类型级防护")
-    resp = ConfigResponse.model_validate(data)
-    resp.assert_no_real_fields()
-    check("ConfigResponse 可校验且自检通过", True)
+    # 7. 链接解析（服务端也要认同一批链接，才能列表显示）
+    print("\n[7] 链接解析")
+    from canoe_core import parse_links
 
-    # EntryPayload 现在只服务于中转层（已不在客户端链路上），
-    # 但白名单这道防线本身还得是好的 —— 用字面量造一个来验。
-    sample_entry = {
-        "transport": "ws", "host": "entry.example.com", "port": 443,
-        "uuid": "11111111-2222-3333-4444-555555555555",
-        "path": "/e/x", "sni": "entry.example.com", "tls": True, "insecure": False,
-    }
-
-    # 7.1 extra=forbid：多传一个 real_host 直接构造失败
-    try:
-        EntryPayload(**{**sample_entry, "real_host": REAL_IP})
-        check("EntryPayload 应当拒绝 real_host", False)
-    except Exception:
-        check("★ EntryPayload 拒绝 real_host（extra=forbid）", True)
-
-    # 7.2 assert_whitelisted：子类偷偷加字段必须被抓出来
-    #     （不能直接往实例里塞属性 —— pydantic v2 不会把它带进 model_dump）
-    class SneakyEntry(EntryPayload):
-        sneaky_extra: str = ""
-
-    try:
-        SneakyEntry(**sample_entry).assert_whitelisted()
-        check("assert_whitelisted 应当抓出越界字段", False)
-    except AssertionError:
-        check("★ assert_whitelisted 抓出子类新增字段", True)
-
-    # 7.3 白名单本身没漂移
-    check("★ EntryPayload 字段与 constants.ENTRY_FIELDS 一致",
-          set(EntryPayload.model_fields.keys()) == set(ENTRY_FIELDS),
-          str(sorted(EntryPayload.model_fields.keys())))
+    parsed = parse_links(NODE_LINK)
+    check("服务端能解析节点链接", len(parsed.links) == 1, str(parsed.skipped))
+    listing = client.get(Api.ADMIN_NODES, headers=admin_h).json()["items"]
+    mine = next((n for n in listing if n["remark"] == f"冒烟-{suffix}"), None)
+    check("列表里带解析出来的协议/主机/端口",
+          mine is not None and mine.get("host") and mine.get("port"), str(mine)[:200])
+    check("★ 解析出来的主机就是链接里的那台",
+          mine is not None and mine["host"] == "one.leycc.com", str(mine)[:200])
 
     session_id = data["session_id"]
 
@@ -308,7 +264,7 @@ def main() -> int:
     print("\n[9] 心跳")
     r = client.post(Api.HEARTBEAT, json={"session_id": session_id}, headers=H)
     check(f"POST {Api.HEARTBEAT} 200", r.status_code == 200, r.text[:200])
-    check("心跳响应无 real_* 泄漏", r.status_code == 200 and not scan_real_keys(r.json()))
+    check("心跳响应无节点信息泄漏", r.status_code == 200 and not scan_leaks(r.json()))
 
     r = client.get(Api.ADMIN_SESSIONS, params={"online": "true"}, headers=admin_h)
     check("管理员看到在线会话", r.status_code == 200 and len(r.json()["items"]) >= 1)
@@ -341,29 +297,11 @@ def main() -> int:
     r = client.get(Api.ME, headers=H)
     check("★ 登出后令牌失效", r.status_code in (401, 403), f"got {r.status_code}")
 
-    # 12. 中转层配置
-    print("\n[12] 中转层配置")
-    r = client.get(Api.ADMIN_RELAY_CONFIG, headers=admin_h)
-    check("渲染 sing-box 配置 200", r.status_code == 200, r.text[:250])
-    if r.status_code == 200:
-        cfg = r.json()
-        check("含 inbounds", len(cfg.get("inbounds", [])) >= 1)
-        check("含 inbound→outbound 路由绑定", len(cfg.get("route", {}).get("rules", [])) >= 1)
-        check("★ 真实 IP 出现在中转层配置里（应当如此）", REAL_IP in json.dumps(cfg))
-        check("入口路径出现在中转层配置里", f"/e/canoe{suffix}" in json.dumps(cfg))
-        check("behind_nginx 下只监听 127.0.0.1",
-              all(i["listen"] == "127.0.0.1" for i in cfg["inbounds"]))
+    # 12. 中转层 —— 已删除，端点不该再存在
+    print("\n[12] 中转层（应当已删除）")
+    r = client.get("/api/admin/relay/config", headers=admin_h)
+    check("★ /api/admin/relay/config 已经不存在", r.status_code == 404, str(r.status_code))
 
-    r = client.get(Api.ADMIN_RELAY_CONFIG, params={"fmt": "nginx"}, headers=admin_h)
-    check("渲染 nginx 配置 200", r.status_code == 200)
-    if r.status_code == 200:
-        check("nginx 配置含入口域名与端口映射",
-              "canoe.example.com" in r.text and "127.0.0.1:" in r.text)
-
-    r = client.get(Api.ADMIN_STATS, headers=admin_h)
-    check("统计接口 200", r.status_code == 200, r.text[:250])
-
-    # ======================================================================
     # 13. 客户端更新（/api/client/latest + 管理端发布 + 自托管下载）
     # ======================================================================
     print("\n[13] 客户端更新")
@@ -404,8 +342,7 @@ def main() -> int:
     check("返回版本号", latest.get("version") == release_version, str(latest)[:200])
     check("返回下载地址", str(latest.get("url", "")).endswith("Canoe-smoke.zip"))
     check("返回 sha256", latest.get("sha256") == digest)
-    check("★ 更新响应里没有任何节点信息", not scan_real_keys(latest), str(latest)[:200])
-    check("★ 更新响应里没有 real_ 字样", "real_" not in json.dumps(latest))
+    check("★ 更新响应里没有任何节点信息", not scan_leaks(latest), str(latest)[:200])
 
     # 静态托管：下载回来字节必须一致
     if latest.get("url"):
@@ -450,40 +387,40 @@ def main() -> int:
     check("★ 没配订阅时回空信封（而不是报错）",
           not (sub.get("envelope") or {}).get("data"), str(sub)[:200])
 
-    # 管理员贴上订阅 -> 指纹必须变、内容必须是密文
-    r = client.patch(f"{Api.ADMIN_USERS}/{sub_uid}", headers=admin_h,
-                     json={"subscription": SAMPLE_SUB})
-    check("给账号配置订阅 200", r.status_code == 200, r.text[:200])
-    check("★ 服务端报告订阅变了", r.json().get("subscription_changed") is True)
+    # 管理员把节点分配给他 -> 指纹必须变、内容必须是密文
+    r = client.put(f"{Api.ADMIN_USERS}/{sub_uid}/nodes", headers=admin_h,
+                   json={"node_ids": [node_id]})
+    check("给账号分配节点 200", r.status_code == 200, r.text[:200])
+    check("★ 分配后回读了绑定列表", r.json().get("node_ids") == [node_id], r.text[:160])
 
     r = client.get(Api.SUBSCRIPTION, headers=sub_h)
     check(f"配了订阅后 GET {Api.SUBSCRIPTION} 200", r.status_code == 200, r.text[:200])
     sub = r.json() if r.status_code == 200 else {}
     second_revision = sub.get("revision", "")
-    check("★ 配了订阅后指纹变了", second_revision != first_revision,
+    check("★ 分配节点后指纹变了", second_revision != first_revision,
           f"{first_revision} -> {second_revision}")
     check("★ 订阅里没有明文链接", "ss://" not in r.text and "vless://" not in r.text)
     check("★ 订阅里没有节点域名", "leycc" not in r.text and "example.com" not in r.text)
-    check("★ 订阅里没有 real_* 字段", not scan_real_keys(sub), str(scan_real_keys(sub)))
+    check("★ 信封里确实装了东西（而不是空壳）", bool(sub["envelope"].get("data")), str(sub)[:200])
 
     # 用登录拿到的那把密钥真解一次
     from canoe_core import SubCryptoError, unseal  # noqa: E402
 
     plain = unseal(Envelope.model_validate(sub["envelope"]), sub_key_b64)
-    check("★ 用会话密钥能解出原文", plain == SAMPLE_SUB, repr(plain)[:120])
+    check("★ 用会话密钥能解出原文（就是那行链接）", plain.strip() == NODE_LINK, repr(plain)[:120])
     try:
         unseal(Envelope.model_validate(sub["envelope"]), "A" * 44)
         check("换密钥应当解不开", False)
     except SubCryptoError:
         check("★ 换密钥解不开", True)
 
-    # 管理员清空订阅 -> 空信封，客户端据此销毁
-    client.patch(f"{Api.ADMIN_USERS}/{sub_uid}", headers=admin_h, json={"subscription": ""})
+    # 管理员取消分配 -> 空信封，客户端据此销毁
+    client.put(f"{Api.ADMIN_USERS}/{sub_uid}/nodes", headers=admin_h, json={"node_ids": []})
     r = client.get(Api.SUBSCRIPTION, headers=sub_h)
     sub3 = r.json() if r.status_code == 200 else {}
-    check("★ 清空订阅后回空信封（客户端据此销毁本地订阅）",
+    check("★ 取消分配后回空信封（客户端据此销毁本地订阅）",
           not (sub3.get("envelope") or {}).get("data"), str(sub3)[:200])
-    check("★ 清空后指纹也跟着变", sub3.get("revision") != second_revision)
+    check("★ 取消分配后指纹也跟着变", sub3.get("revision") != second_revision)
 
     # ======================================================================
     # 15. 推送（SSE /api/events）
@@ -518,13 +455,13 @@ def main() -> int:
     check("hello 带订阅指纹", "revision" in hello, str(hello))
     check("★ hello 里没有订阅内容（推送是广播的，不能带内容）",
           "ss://" not in json.dumps(hello) and "envelope" not in hello, str(hello))
-    check("hello 里也没有真实节点字段", not scan_real_keys(hello), str(hello))
+    check("hello 里也没有节点信息", not scan_leaks(hello), str(hello))
 
     # 管理员改订阅 -> config_changed，且只推给这个人
-    client.patch(f"{Api.ADMIN_USERS}/{sub_uid}", headers=admin_h,
-                 json={"subscription": SAMPLE_SUB + "\n# 又加了一条"})
+    client.put(f"{Api.ADMIN_USERS}/{sub_uid}/nodes", headers=admin_h,
+               json={"node_ids": [node_id]})
     time.sleep(2.5)
-    check("★ 订阅变更推来 config_changed",
+    check("★ 节点分配变更推来 config_changed",
           any(e.get("type") == "config_changed" for e in events),
           str([e.get("type") for e in events]))
     changed = next((e for e in events if e.get("type") == "config_changed"), {})
@@ -646,15 +583,8 @@ def main() -> int:
         r = panel_client.post(
             Api.ADMIN_NODES, headers=admin_h,
             json={
-                "name": "跨端口测试", "remark": "", "enabled": True, "sort_order": 900,
-                "entry_host": "cross.example.com", "entry_port": 443, "entry_uuid": "",
-                "entry_path": "/e/cross", "entry_sni": "cross.example.com",
-                "entry_transport": "ws", "entry_tls": True, "entry_insecure": False,
-                "real_protocol": "vless", "real_host": "198.51.100.9", "real_port": 8443,
-                "real_uuid": "11111111-2222-3333-4444-555555555555", "real_flow": "",
-                "real_tls": True, "real_sni": "real.invalid", "real_fingerprint": "chrome",
-                "real_network": "tcp", "real_ws_path": "", "real_ws_host": "",
-                "real_grpc_service": "", "real_insecure": False, "real_extra": {},
+                "link": NODE_LINK, "remark": "跨端口测试",
+                "enabled": True, "sort_order": 900,
             })
         check("面板口能建节点", r.status_code == 201, r.text[:200])
         cross_node = r.json().get("id") if r.status_code == 201 else None

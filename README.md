@@ -59,16 +59,12 @@ Windows 桌面代理工具。客户端极简到只有「节点名 + 启航 + 靠
   （改订阅会走 SSE 定向推送给该账号，最迟下一次心跳也会发现。）
 - **客户端不落节点**：订阅只在内存里，不写配置文件、不提供导出。
 
-对应测试：`canoe-client/tests/test_server.py`（49 项，对着真服务端跑，
-含"响应里没有订阅明文/域名/链接"等多条断言）、
-`canoe-server/smoke_test.py`（105 项）。
+对应测试：`canoe-client/tests/test_server.py`（对着真服务端跑，含
+"响应里没有订阅明文/域名/链接"等多条断言）、`canoe-server/smoke_test.py`。
 
 > ⚠️ 说清楚边界：这一层加密**防不住拿到客户端的用户把节点扒出来** ——
 > 客户端必须能解密，密钥就在它手上。它防的是传输链路上的中间环节；
 > 真正决定"能不能用"的是服务端随时可以不发。
-
-> 中转层（`canoe_server/services/relay.py`、`/api/admin/relay/config`）
-> 是上一版模型的遗留，已经不在客户端链路上，保留只为兼容旧数据。
 
 ---
 
@@ -76,28 +72,27 @@ Windows 桌面代理工具。客户端极简到只有「节点名 + 启航 + 靠
 
 ```
 canoe/
-├── canoe-core/            公共库（模型契约 / 常量 / 文案 / 密码哈希）
+├── canoe-core/            公共库（模型契约 / 常量 / 加密信封 / 链接解析）
 ├── canoe-client/          桌面客户端
 │   ├── canoe_client/
 │   │   ├── app.py         入口 + 页面切换 + 托盘 + 退出兜底清理
 │   │   ├── api.py         与服务端通话
-│   │   ├── links.py       ★ 订阅里的链接 -> sing-box 出站
+│   │   ├── links.py       订阅链接解析（实现在 canoe-core）
 │   │   ├── events.py      SSE 长连接（服务端推送）
 │   │   ├── kernel.py      sing-box 配置生成与进程管理
 │   │   ├── sysproxy.py    Windows 系统代理（含自愈）
 │   │   └── ui/            界面（含 tray.py 托盘）
 │   ├── build.bat          一键打包成 Canoe.exe
-│   └── tests/             6 套，共 279 项
+│   └── tests/             6 套，共 281 项
 │
 ├── canoe-server/          服务端
 │   ├── serve.py           统一启动器（双端口，单进程）
 │   ├── canoe_server/
 │   │   ├── routers/       client.py / admin.py
-│   │   └── services/      relay（中转配置）/ broadcast（推送）/ updates
+│   │   └── services/      nodes（节点与订阅正文）/ broadcast / updates
 │   ├── panel/             Web 管理面板
-│   ├── relay/             中转层 sing-box 配置模板
 │   ├── deploy/install.sh  交互式安装（域名 / 端口 / 证书）
-│   └── smoke_test.py      端到端冒烟（97 项）
+│   └── smoke_test.py      端到端冒烟
 │
 └── docs/                  五份设计文档
 ```
@@ -230,7 +225,7 @@ bash deploy/test_canoe_sh.sh                              # 管理脚本（44 �
 
 | 组件 | 用途 | 获取 |
 |---|---|---|
-| **sing-box** | 代理内核（客户端与中转层共用） | [Releases](https://github.com/SagerNet/sing-box/releases)，本项目用 1.14.2 |
+| **sing-box** | 代理内核（客户端用；服务端不碰流量） | [Releases](https://github.com/SagerNet/sing-box/releases)，本项目用 1.14.2 |
 | **wintun.dll** | 仅全局(TUN)模式 | <https://www.wintun.net/> |
 | Nginx + certbot | 服务端部署 | 系统包管理器 |
 
