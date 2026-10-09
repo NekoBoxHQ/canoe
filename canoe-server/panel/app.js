@@ -421,9 +421,13 @@ async function bindNodes(r) {
              + '一个都不勾 = 停止对他分发。' },
       ...nodes.map((n) => ({
         key: 'node_' + n.id,
-        // 地址一律只写 host:port（跟节点表那一列一个规矩），
-        // 前面挂协议名会让每一行的"从哪儿开始是地址"都不一样
-        label: `${n.remark || n.name}（#${n.id} · ${n.host || '?'}:${n.port || '?'}）${n.enabled ? '' : ' · 已停用'}`,
+        // 只写备注。这是**勾选清单**，不是节点表 —— 挑的时候认的是
+        // "香港家宽"这个名字，编号和地址在这里是噪音，一列扫下来全是
+        // 冒号数字，反而找不着人。地址和协议在「节点」页看。
+        //
+        // 「· 已停用」留着：它不是一个标签，是个警告 —— 勾了也不会
+        // 生效（订阅里不会出现），不标出来的话点完保存会一脸问号。
+        label: `${n.remark || n.name}${n.enabled ? '' : ' · 已停用'}`,
         type: 'checkbox',
       })),
     ],
@@ -478,6 +482,13 @@ function nodeBody(v) {
   };
 }
 
+//: 协议在列表里用简称。链接里解出来的是全名（见 canoe_core/links.py 的
+//: `SCHEMES`），但「shadowsocks」摆在标签里太长了 —— 一列协议标签就它
+//: 一个把宽度撑到别人两倍，扫下来是一个长条。SS 是通行写法。
+//: 只收长得离谱的；vmess / vless / trojan 本来就短，照原样。
+const PROTO_SHORT = { shadowsocks: 'SS' };
+const protoName = (p) => PROTO_SHORT[String(p || '').toLowerCase()] || p;
+
 async function pageNodes(root) {
   const data = await api('/api/admin/nodes');
   const rows = data.items || [];
@@ -507,7 +518,7 @@ async function pageNodes(root) {
     // 协议名长短不一，"one." 和 "h." 就对不齐 —— 协议越多越花。
     // 拆开之后地址那列左边缘永远在同一个位置，什么协议都齐。
     { title: '协议', render: (r) => r.protocol
-        ? tag(r.protocol) : h('span', { class: 'muted', text: '—' }) },
+        ? tag(protoName(r.protocol)) : h('span', { class: 'muted', text: '—' }) },
     { title: '地址', render: (r) => r.valid
         ? h('span', { class: 'mono', text: `${r.host}:${r.port}` })
         : tag('链接认不出', 'bad') },
@@ -688,13 +699,15 @@ function showLogin(message) {
 
 //: 侧边栏底部那个「我是谁」。单独拎出来是因为改名之后要重画一次 ——
 //: state.me 是登录那一刻的快照，改完名字它还留着旧的。
+//:
+//: 一行：「管理员：admin」。角色在前当标签、用户名在后加粗，读起来是
+//: "谁在操作"，比原来上下两行（用户名 / 角色）省一行高度。
 function renderWhoami() {
   const el = $('#whoami');
   el.textContent = '';
   el.append(
+    document.createTextNode((state.me.role === 'admin' ? '管理员' : state.me.role) + '：'),
     h('b', { text: state.me.username }),
-    h('br'),
-    document.createTextNode(state.me.role === 'admin' ? '管理员' : state.me.role),
   );
 }
 

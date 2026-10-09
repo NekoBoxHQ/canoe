@@ -137,7 +137,13 @@ check('登录页隐藏', document.querySelector('#login-screen').hidden);
 check('令牌已存进 sessionStorage', !!storage.getItem('canoe.panel.token'));
 check('★ 侧边栏 4 个入口（概览整页删了）', document.querySelectorAll('#nav .nav-item').length === 4,
       String(document.querySelectorAll('#nav .nav-item').length));
-check('身份显示出来了', /admin/.test(document.querySelector('#whoami').textContent));
+check('身份显示出来了', /管理员：\s*admin/.test(document.querySelector('#whoami').textContent),
+      document.querySelector('#whoami').textContent);
+// 侧边栏 logo 右边那两行：「轻舟」居中在「Canoe Server」正上方。
+// linkedom 不算布局，只能查样式表里写了没写。
+check('★ 「轻舟」居中在「Canoe Server」正上方（.brand strong 有 text-align:center）',
+      /\.brand strong\s*\{[^}]*text-align\s*:\s*center/.test(readFileSync(`${PANEL}/style.css`, 'utf8')),
+      '没找到 text-align: center');
 check('★ 进后台时收掉了启动屏（否则会卡在「正在验证」）',
       !document.documentElement.classList.contains('booting'));
 
@@ -205,7 +211,10 @@ const nodesTxt = document.querySelector('#page').textContent;
 check('节点页显示备注', nodesTxt.includes('香港家宽'), nodesTxt.slice(0, 200));
 check('★ 节点页显示解析出来的主机端口',
       nodesTxt.includes('hk.example.com:33222'), nodesTxt.slice(0, 200));
-check('★ 节点页显示协议', nodesTxt.includes('shadowsocks'), nodesTxt.slice(0, 200));
+// 协议在列表里用简称：全名 "shadowsocks" 太长，一个标签顶别人两个宽
+check('★ 节点页显示协议（shadowsocks 用简称 SS）',
+      nodesTxt.includes('SS') && !nodesTxt.includes('shadowsocks'),
+      nodesTxt.slice(0, 200));
 check('节点页没有"入口 / 真实节点"那两列了',
       !nodesTxt.includes('真实节点') && !nodesTxt.includes('入口'), nodesTxt.slice(0, 200));
 // 地址那一格只能有 host:port，前面不许挂协议名。
@@ -222,7 +231,7 @@ check('节点页没有"入口 / 真实节点"那两列了',
         !!addr && addr.textContent.trim() === 'hk.example.com:33222',
         addr ? `实际 "${addr.textContent.trim()}"` : '没找到地址格');
   check('★ 协议单独占一列（不是拼在地址前面）',
-        cells.some((c) => c.textContent.trim() === 'shadowsocks'),
+        cells.some((c) => c.textContent.trim() === 'SS'),
         cells.slice(0, 8).map((c) => c.textContent.trim().slice(0, 20)).join(' | '));
 }
 
@@ -255,6 +264,16 @@ check('★ 样式表里有 [hidden]{display:none} 兜底（否则弹窗/后台�
 check('★ 该规则带 !important（否则压不过 #id 那种选择器）',
       /\[hidden\][^{]*\{[^}]*display\s*:\s*none\s*!important/.test(css));
 
+// 渐变按钮的 origin 必须跟 clip 一样是 border-box。
+//
+// `background` 简写会把 origin 重置回 padding-box，而 clip 仍是 border-box；
+// 两边不一致时渐变图按 padding-box 定尺寸、按 border-box 裁剪，差出来的
+// 两条 1px 就用平铺的邻块补 —— 左边缘粘一条**收尾色**、右边缘一条**起始色**。
+// 用户报的"按键前面边漏色、漏光"就是这个（要放到 7 倍才看得出）。
+check('★ .btn-primary 设了 background-origin: border-box（不然边缘漏色）',
+      /\.btn-primary\s*\{[^}]*background-origin\s*:\s*border-box/.test(css),
+      '这一段必须同时有 background 渐变 + background-origin: border-box');
+
 console.log('\n[7] 给客户分配节点');
 navItems[0].dispatchEvent(new window.Event('click', { bubbles: true }));   // 用户页
 await settle();
@@ -268,9 +287,17 @@ bindBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
 // bindNodes 要先 await 拉节点列表才弹窗，一个 tick 不够
 await settle(); await tick();
 const bindModal = document.querySelector('#modal-body');
-check('弹窗里列出了可选的节点',
-      bindModal.textContent.includes('hk.example.com') || bindModal.textContent.includes('香港家宽'),
-      bindModal.textContent.slice(0, 200));
+// 勾选清单只写备注。这是**挑节点**的清单，不是节点表 —— 认的是
+// "香港家宽"这个名字；#编号和 host:port 在这儿是噪音，一列扫下来
+// 全是冒号和数字，反而找不着人（用户要求的）。
+const bindLabels = [...bindModal.querySelectorAll('label.field.switch > span')]
+  .map((s) => s.textContent.trim());
+check('弹窗里列出了可选的节点（认备注）',
+      bindLabels.some((t) => t.includes('香港家宽')), bindLabels.slice(0, 3).join(' | '));
+check('★ 勾选清单只写备注，不带 #编号 / 地址',
+      bindLabels.length > 0
+      && bindLabels.every((t) => !/#\d/.test(t) && !t.includes(':33222')),
+      bindLabels.slice(0, 3).join(' | '));
 check('★ 用勾选框而不是让管理员手打链接',
       bindModal.querySelectorAll('input[type=checkbox]').length >= 1,
       String(bindModal.querySelectorAll('input[type=checkbox]').length));

@@ -128,8 +128,25 @@ html.booting #login-screen { display: none; }
 }
 .btn:hover { border-color: var(--line); }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
+/* 渐变从左往右由主蓝走到青。
+ *
+ * ⚠ `background-origin: border-box` 这句**不能删**，它不是装饰。
+ *
+ *   `background` 这个简写会把 background-origin 重置回初始值 padding-box，
+ *   而 background-clip 还是 border-box。两者一旦不一致，渐变这张图的
+ *   **尺寸**就按 padding-box 算（比整个按钮窄 2px），但**裁剪**按 border-box
+ *   算 —— 差出来的那两条 1px 只能拿平铺的**上一块/下一块瓦片**去补：
+ *     · 左边那条补上的是渐变的**收尾色**（青）
+ *     · 右边那条补上的是**起始色**（蓝）
+ *   于是按钮左边缘会粘着一条青光、右边缘一条蓝光 ——
+ *   用户报的"按键前面边漏色、漏光"就是它（放到 7 倍才看清）。
+ *
+ *   把 origin 也设成 border-box，图的大小和裁剪范围就对齐了，一条缝都没有。
+ *   教训：渐变 + border，origin 和 clip 必须一起是 border-box。
+ */
 .btn-primary {
-  background: linear-gradient(90deg, var(--accent-2), var(--accent) 60%, var(--cyan));
+  background: linear-gradient(90deg, var(--accent), var(--cyan));
+  background-origin: border-box;
   color: #fff; letter-spacing: 2px;
 }
 .btn-primary:hover { filter: brightness(1.1); }
@@ -155,7 +172,18 @@ html.booting #login-screen { display: none; }
 }
 .brand { display: flex; align-items: center; gap: 10px; padding: 18px 18px 14px; }
 .brand img { width: 34px; height: 34px; }
-.brand strong { display: block; font-size: 15px; letter-spacing: 3px; }
+/* 「轻舟」居中在「Canoe Server」正上方。
+ *
+ * strong 是 block，宽度被撑到跟 small 一样（70px），所以 text-align:center
+ * 居的就是 Canoe Server 的中线。
+ *
+ * ⚠ text-indent 那 3px 是补 letter-spacing 的账：字距会在**最后一个字
+ *   后面**也留 3px，光写 text-align:center 的话"轻舟"整体会偏左 1.5px。
+ *   text-indent 把行首右推 3px，正好抵掉。改字距时这个值要一起改。 */
+.brand strong {
+  display: block; font-size: 15px; letter-spacing: 3px;
+  text-align: center; text-indent: 3px;
+}
 .brand small { color: var(--faint); font-size: 11px; }
 
 #nav { flex: 1; padding: 6px 10px; overflow-y: auto; }
@@ -195,18 +223,18 @@ html.booting #login-screen { display: none; }
 }
 .card > h3 { margin: 0 0 12px; font-size: 14px; color: var(--dim); font-weight: 600; }
 /* 按钮行。它是用户页的"小节标题"，上下都要有气口：
-   上面比下面多一倍，视线才会把它和底下那张表格分开，
-   不然一行孤零零的小按钮贴在卡片下面，看着像表格的一部分。 */
-.card-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 14px; }
+   上面比下面多一点，视线才会把它和底下那张表格分开，
+   不然一行孤零零的小按钮贴在卡片下面，看着像表格的一部分。
+   差太多又会往表格那头坠 —— 20 / 18 是折中，上下都留得下。 */
+.card-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 18px; }
 
 /* 统计卡。底下留一段距离 —— 它现在贴在用户页顶上，紧挨着「新建用户」
    那一行会糊在一起，看着很挤（用户反馈过两次）。
 
-   28px 是量出来的：卡片是两块并排的深色块，按钮是它的三分之一高，
-   中间少于 26px 就会读成"卡片的一部分"。 */
+   20px：再少会读成"卡片的一部分"，再多按钮就往下坠、离表格太近。 */
 .stat-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 12px; margin-bottom: 28px;
+  gap: 12px; margin-bottom: 20px;
 }
 .stat {
   background: var(--card); border: 1px solid var(--line);
