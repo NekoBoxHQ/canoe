@@ -427,7 +427,9 @@ SSE_KEEPALIVE=20
 SSE_MAX_CONNECTIONS=2000
 SSE_MAX_PER_USER=5
 
-# 中转层（那台机器上再配）
+# 中转层 —— 上一版模型的遗留，当前客户端链路不走它（订阅模式下
+# 服务端只发订阅、不转发流量）。保留这几行是为了不让老的 relay 配置
+# 读不到值；不用管它们。
 RELAY_BEHIND_NGINX=true
 RELAY_INTERNAL_BASE=20000
 RELAY_RELOAD_HOOK=
@@ -471,6 +473,12 @@ systemctl is-active --quiet canoe-api \
     && log "canoe-api 已在跑" \
     || { journalctl -u canoe-api -n 40 --no-pager; die "canoe-api 起不来，日志见上"; }
 
+# 顺带装管理脚本：以后启停 / 看状态 / 改配置 / 升级都用 `sudo canoe`
+if [[ -f "$SERVER_DIR/deploy/canoe.sh" ]]; then
+    install -m 755 "$SERVER_DIR/deploy/canoe.sh" /usr/local/bin/canoe
+    log "管理脚本已安装：sudo canoe"
+fi
+
 # ---------------------------------------------------------------------------
 # 8. 防火墙提示
 # ---------------------------------------------------------------------------
@@ -507,19 +515,22 @@ cat <<EOF
 ============================================================
 
   管理面板       : $PANEL_URL
-  客户端更新接口 : $BASE_SHOWN/api/client/latest
   客户端订阅接口 : $BASE_SHOWN/api/subscription
+  客户端更新接口 : $BASE_SHOWN/api/client/latest
   健康检查       : $BASE_SHOWN/api/health
 
-  日志     : journalctl -u canoe-api -f
-  配置     : $SERVER_DIR/.env   （改端口/证书只改这里，然后 systemctl restart canoe-api）
+  管理脚本 : sudo canoe        （菜单：启动/停止/状态/配置/升级/卸载）
+  日志     : sudo canoe logs
+  配置     : $SERVER_DIR/.env
   管理员   : 见 $APP_DIR/ADMIN_PASSWORD.txt
 
   下一步：
-    1. 打开面板登录，改掉管理员密码
-    2. 面板「节点」里加一个节点，再去中转层机器部署 relay（见 relay/README.md）
-    3. 面板「发布」里上传客户端安装包 —— 客户端点「更新」就能看到
-    4. 客户端那边把 update_url 指到 $BASE_SHOWN/api/client/latest
+    1. 打开面板登录，改掉管理员密码（也可以 sudo canoe passwd）
+    2. 面板「用户」里给账号配**订阅** —— 点那行的「订阅」按钮，
+       把节点链接一行一个贴进去（ss:// vmess:// vless:// trojan://）。
+       清零 = 停止对该账号分发，客户端会就地销毁本地订阅。
+    3. 面板「发布」里上传客户端安装包 —— 客户端点「更新」就能看到。
+       （客户端地址写死在 $BASE_SHOWN，不用在客户端配任何东西）
 
 EOF
 

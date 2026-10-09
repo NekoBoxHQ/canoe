@@ -181,7 +181,15 @@ sudo ./deploy/install.sh
 安装向导会依次问：域名、客户端端口（默认 `58588`）、面板端口、证书方式
 （Let's Encrypt / 自签 / 已有证书 / 不要 TLS）。细节见 `canoe-server/deploy/README.md`。
 
-Web 管理面板在 `<域名>:<面板端口>/panel`，管用户、节点、会话、版本发布、中转层配置。
+装完就有个 `canoe` 管理脚本：
+
+```bash
+sudo canoe          # 菜单：安装 / 启动 / 停止 / 重启 / 状态 / 配置 / 升级 / 卸载
+sudo canoe status   # 也可以直接用子命令
+```
+
+Web 管理面板在 `<域名>:<面板端口>/panel`，管用户、订阅、会话、版本发布。
+**给账号配订阅**就在「用户」页那一行的「订阅」按钮里。
 
 ---
 
@@ -206,9 +214,10 @@ python tests/test_server.py     # 49 项
 # —— 服务端（canoe-server/）——
 python smoke_test.py https://127.0.0.1:8443 --insecure   # 105 项
 cd panel && bun test_panel.mjs                            # 面板 DOM（30 项）
+bash deploy/test_canoe_sh.sh                              # 管理脚本（44 项）
 ```
 
-合计 **414 项**。
+合计 **458 项**。
 
 ---
 

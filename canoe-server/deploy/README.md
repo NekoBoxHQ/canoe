@@ -2,8 +2,10 @@
 
 把 `canoe-server` 跑到一台公网机器上，前面用 Nginx 终止 TLS。
 
-> 中转层（真正转发流量的那个 sing-box）是**另一台机器**、另一套配置，
-> 见 [`../relay/README.md`](../relay/README.md)。本文只管服务端 API。
+> 服务端**不转发流量**。它只做三件事：管账号、按账号发加密订阅、发客户端更新。
+> 你的节点服务器和它**互不关联** —— 节点链接由你在面板里逐账号贴进去。
+>
+> （`relay/` 目录是上一版"中转层"模型的遗留，已不在使用路径上。）
 
 ---
 
@@ -34,7 +36,8 @@ uvicorn canoe_server.app:app --workers 1     # ← 必须
 | 端口 | **默认对外 58588**（客户端固定拿它取更新和订阅），另有 80 留给 Let's Encrypt 签发与续期 |
 | 域名 | 例如 `canoe.s-ui.com`，A 记录指向本机 |
 
-> 服务端**不需要**大带宽 —— 流量走的是中转层那台机器，这里只传几百字节的配置。
+> 服务端**不需要**大带宽也不用高配 —— 它不转发流量，只在登舟和启航时
+> 传几 KB 的 JSON。1 核 1G 跑几百个账号很轻松。
 
 ---
 
@@ -154,8 +157,13 @@ sudo -e /opt/canoe/canoe-server/.env     # 改 PORT / TLS_CERT / TLS_KEY
 sudo systemctl restart canoe-api
 ```
 
-`serve.py` 读 `.env` 决定监听什么。改完记得同步客户端那边的
-`update_url`（`%APPDATA%\Canoe\client.json`）。
+`serve.py` 读 `.env` 决定监听什么。
+
+> ⚠️ **客户端口不要随便改。** 客户端把那台服务器写死在 `58588` 上了，
+> 改成别的口，所有已经发出去的客户端都会连不上 —— 除非你打算重发一版客户端。
+> 面板口随便改，两者互不影响。
+>
+> 改配置也可以用管理脚本：`sudo canoe config`（会问你要不要重启）。
 
 ---
 
@@ -252,6 +260,39 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
 
 ## 6. 日常运维
 
+装完就有个管理脚本 `canoe`（在 `/usr/local/bin/`）：
+
+```bash
+sudo canoe          # 菜单：
+
+                    ┌──────────────────────────────┐
+                    │   1  安装 Canoe              │
+                    │   2  启动 Canoe              │
+                    │   3  停止 Canoe              │
+                    │   4  重启 Canoe              │
+                    │   5  Canoe 状态              │
+                    │   6  Canoe 配置              │
+                    │   7  升级 Canoe              │
+                    │   8  卸载 Canoe              │
+                    │   0  退出                    │
+                    └──────────────────────────────┘
+```
+
+也可以直接用子命令（写进脚本、定时任务都行，菜单和子命令是同一批函数）：
+
+```bash
+sudo canoe status      # 端口 / 健康检查 / 账号数 / 在线会话 / 最近日志
+sudo canoe config      # 改端口、换证书、编辑 .env（会问要不要重启）
+sudo canoe upgrade     # 拉代码 -> 更新依赖 -> 对齐数据库 -> 重启 -> 健康检查
+sudo canoe logs        # 跟随日志
+sudo canoe passwd      # 改管理员密码
+```
+
+`canoe upgrade` 不用手动 `git pull` + `pip install` + 重启那一串，
+它还会顺便跑一遍 `init_db()` 把新版本加的字段补上。
+
+### 手动做（脚本不在或想自己来）
+
 ```bash
 systemctl status canoe-api
 journalctl -u canoe-api -f                    # 看日志
@@ -266,6 +307,9 @@ sudo -u canoe canoe-server/.venv/bin/pip install -e canoe-core -r canoe-server/r
 sudo systemctl restart canoe-api
 ```
 
+> 改客户端口（`PORT`）前想清楚：客户端把服务器地址写死在 `58588` 了，
+> 改完所有已发出的客户端都会连不上。管理脚本在这个操作上会拦你一下。
+
 ---
 
 ## 7. 排查
@@ -278,7 +322,9 @@ sudo systemctl restart canoe-api
 | 更新按钮报 404 | 还没发布过任何版本：`/api/admin/releases` 是空的 |
 | 下载安装包 404 | 登记的 `filename` 和 `releases/` 里的文件名对不上 |
 | 上传安装包 413 | Nginx `client_max_body_size` 太小，或超了 `MAX_RELEASE_MB` |
-| 503 no_node | 没有启用的节点；后台加一个并勾上 `enabled` |
+| 客户端说"没有下发订阅" | 面板「用户」里那一行的「订阅」栏是空的。贴上节点链接即可 |
+| 客户端说"订阅解密失败" | 会话换了（服务端重启会换 TICKET_SECRET 吗？不会；多半是令牌被顶掉了）—— 重新登舟 |
+| 清空了订阅，客户端还在跑 | 它最迟下一次心跳（默认 30s）会发现；没挂推送时会慢一点。急的话在面板踢一下 |
 | 封禁了但客户端还在线 | 看 `pushed` 字段；为 0 说明客户端没挂着推送，会等心跳超时 |
 
 ---
@@ -287,6 +333,8 @@ sudo systemctl restart canoe-api
 
 | 文件 | 用途 |
 |---|---|
-| `install.sh` | 一键安装（Debian/Ubuntu） |
+| `install.sh` | 一键安装（Debian/Ubuntu），装完会把 `canoe` 放进 PATH |
+| `canoe.sh` | 管理脚本：菜单 + 子命令（启停 / 状态 / 配置 / 升级 / 卸载） |
 | `canoe-api.service` | systemd unit（已设单 worker） |
 | `nginx.canoe.conf` | Nginx 站点示例（含 SSE / 上传的特殊设置） |
+| `test_canoe_sh.sh` | 管理脚本的测试（44 项，不需要 root/systemd） |
