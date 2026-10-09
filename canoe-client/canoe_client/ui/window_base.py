@@ -1,0 +1,150 @@
+"""无边框窗口基类 —— 自绘圆角 + 标题栏 + 拖动。
+
+美化稿里的窗口是圆角、带蓝色描边、标题栏上有小帆船和 – × 的，
+所以这里去掉系统边框自己画：
+
+    FramelessWindow
+      ├─ _TitleBar   小徽标 + 「轻舟 · 轻舟已过万重山」+ – ×
+      └─ self.body   各页面自己的内容（用 self.body_layout 往里塞）
+
+子类只需要实现 `paint_background(painter, w, h)` 来铺底图。
+"""
+from __future__ import annotations
+
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from canoe_core import BRAND_CN, SLOGAN_CN, Palette as P
+
+from . import artwork as A
+
+TITLEBAR_H = 38
+CORNER_RADIUS = 14
+
+#: 描边颜色，稍微透一点，免得太硬
+_BORDER = QColor(46, 106, 190, 150)
+
+
+class _TitleBar(QWidget):
+    """自绘标题栏。按住空白处可以拖动窗口。"""
+
+    def __init__(self, window: "FramelessWindow") -> None:
+        super().__init__(window)
+        self.setObjectName("TitleBar")
+        self.setFixedHeight(TITLEBAR_H)
+        self._window = window
+        self._drag: QPointF | None = None
+        self.setCursor(Qt.ArrowCursor)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 0, 6, 0)
+        lay.setSpacing(8)
+
+        mark = QLabel()
+        mark.setPixmap(A.app_mark(18))
+        mark.setFixedSize(18, 18)
+        lay.addWidget(mark)
+
+        name = QLabel(BRAND_CN)
+        name.setObjectName("WinTitle")
+        lay.addWidget(name)
+
+        sub = QLabel(f"· {SLOGAN_CN}")
+        sub.setObjectName("WinSubtitle")
+        lay.addWidget(sub)
+
+        lay.addStretch(1)
+
+        self.min_btn = self._win_button("minus", "最小化")
+        self.min_btn.clicked.connect(self._window.showMinimized)
+        lay.addWidget(self.min_btn)
+
+        self.close_btn = self._win_button("close", "关闭", danger=True)
+        self.close_btn.clicked.connect(self._window.close)
+        lay.addWidget(self.close_btn)
+
+    def _win_button(self, icon_name: str, tip: str, danger: bool = False) -> QPushButton:
+        btn = QPushButton()
+        btn.setObjectName("WinBtnDanger" if danger else "WinBtn")
+        btn.setIcon(A.icon(icon_name, 14, P.TEXT_DIM))
+        btn.setFixedSize(34, 24)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setToolTip(tip)
+        return btn
+
+    # -- 拖动 ----------------------------------------------------------
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self._drag = event.globalPosition() - QPointF(self._window.pos())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag is not None and event.buttons() & Qt.LeftButton:
+            self._window.move((event.globalPosition() - self._drag).toPoint())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._drag = None
+        super().mouseReleaseEvent(event)
+
+
+class FramelessWindow(QWidget):
+    """圆角无边框窗口。子类用 `self.body_layout` 摆内容。"""
+
+    def __init__(self, width: int, height: int) -> None:
+        super().__init__()
+        self.setObjectName("Root")
+        self.setWindowTitle(BRAND_CN)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedSize(width, height)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self.titlebar = _TitleBar(self)
+        outer.addWidget(self.titlebar)
+
+        self.body = QWidget()
+        self.body.setObjectName("Body")
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
+        self.body_layout.setSpacing(0)
+        outer.addWidget(self.body, 1)
+
+    # -- 子类实现 ------------------------------------------------------
+    def paint_background(self, painter: QPainter, width: float, height: float) -> None:
+        """铺整窗底图。默认给个夜色，子类可覆盖。"""
+        A.paint_night(painter, width, height, horizon=0.72)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+
+        rect = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
+        rounded = QPainterPath()
+        rounded.addRoundedRect(rect, CORNER_RADIUS, CORNER_RADIUS)
+
+        # 底图裁进圆角里
+        p.save()
+        p.setClipPath(rounded)
+        self.paint_background(p, float(self.width()), float(self.height()))
+        p.restore()
+
+        # 蓝色描边
+        p.setPen(QPen(_BORDER, 1.0))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(rounded)
+        p.end()

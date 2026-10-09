@@ -1,4 +1,4 @@
-"""主界面 —— 启航 / 靠岸 + 工具按钮 + 输出日志。
+"""主界面（美化稿）—— 启航 / 靠岸 + 工具按钮 + 输出结果。
 
 需求：登录后主界面只显示三个东西 —— 节点名称、启航、靠岸。
 这里保留这三样作为主视觉，另外多了：
@@ -6,8 +6,9 @@
   · 一行状态（渡江中… / 已启航 / 已靠岸 / 风浪太大，请重试）
   · 一组可选设置（两排：分流/全局，系统代理/TUN）
   · 三个工具按钮：更新 / TCping / URL测试
-  · 输出日志面板（内核输出 + 程序事件）
+  · 输出结果（只显示最新一条，绝不显示内核日志）
   · 底部账号名 + 离舟
+  · 底部一条夜色水面，和登录页呼应
 
 **界面上永远不显示节点的地址、端口、协议、密码，也没有任何导出入口。**
 """
@@ -15,24 +16,21 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QTextCursor
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QIcon, QPainter
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
-    QRadioButton,
-    QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from canoe_core import BRAND_CN, VERSION, Text
+from canoe_core import BRAND_CN, VERSION, Palette as P, Text
 
 from .. import sysproxy
 from ..config import config
@@ -52,40 +50,47 @@ from ..testnodes import build_proxy_outbound, node_display_name, node_endpoint
 from ..tun import check_tun_ready, relaunch_as_admin
 from ..update import check as check_update
 from ..worker import Worker
+from . import artwork as A
+from .controls import CheckBox, RadioButton
+from .window_base import FramelessWindow
 
 LOG_POLL_MS = 300
 
-#: 主界面宽度。高度不写死 —— 用内容高度（见 MainView.__init__）。
-WINDOW_WIDTH = 440
+WINDOW_W = 420
+SIDE_PAD = 20            # 正文左右留白
+SCENE_BAND = 74          # 底部留给水面的高度
+TOOL_H = 66
+#: 三个工具按钮等宽：(窗口宽 - 两侧留白 - 两个间隔) / 3
+TOOL_W = (WINDOW_W - SIDE_PAD * 2 - 20) // 3
 
-#: 结果框高度（px）：**只留一行**。大字行高 32px，加上边框/内边距取 46，
-#: 正好一行，底下不再拖一大块空白。
-RESULT_BOX_HEIGHT = 46
+#: 结果默认绿色，失败用橙色
+RESULT_COLOR = P.GREEN
+TAG_COLORS = {TAG_RESULT: P.GREEN, TAG_ERROR: P.AMBER}
 
-#: 结果框最多保留几条 —— 只留最新一条。
-RESULT_MAX_LINES = 1
+#: 把结果里可能出现的域名打码，万一某条错误信息带了域名也不会漏出去
+_DOMAIN_RE = re.compile(
+    r"(https?://|\b)((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})"
+)
 
-#: 结果默认绿色大字，失败用橙色
-RESULT_COLOR = "#3FD07A"
-TAG_COLORS = {
-    TAG_RESULT: RESULT_COLOR,
-    TAG_ERROR: "#E0803C",
-}
+
+def _escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _mask_secrets(text: str) -> str:
+    """兜底遮罩：节点域名 -> 「节点」，其余域名 -> 打星。"""
+    try:
+        host, _ = node_endpoint()
+    except Exception:  # noqa: BLE001 - 遮罩本身不能把界面搞崩
+        host = ""
+    if host and host in text:
+        text = text.replace(host, "节点")
+    return _DOMAIN_RE.sub(lambda m: m.group(1) + "＊＊＊", text)
 
 
 def _result_line(result) -> str:
-    """把测试结果压成一行，格式固定：
-
-        TCP 延迟：38ms
-        URL 耗时：344ms
-
-    刻意不显示 target（那是 host:port，含节点域名）。
-    """
-    if isinstance(result, str):
-        return result
-
-    # PingResult
-    if hasattr(result, "times"):
+    """把测试结果压成一行。"""
+    if hasattr(result, "times"):        # PingResult
         if not result.times:
             return f"TCP 延迟：{result.error or '超时'}"
         avg = sum(result.times) / len(result.times)
@@ -93,46 +98,18 @@ def _result_line(result) -> str:
         if result.lost:
             text += f"（丢包 {result.lost}/{result.total}）"
         return text
-
-    # UrlResult
-    if hasattr(result, "elapsed_ms"):
+    if hasattr(result, "elapsed_ms"):   # UrlResult
         if not result.ok:
             return f"URL 耗时：{result.error or '失败'}"
         return f"URL 耗时：{result.elapsed_ms:.0f}ms"
-
     return str(result)
 
 
-def _mask_secrets(text: str) -> str:
-    """把可能出现的节点域名/地址遮掉。
-
-    结果行本身不含这些，但**错误信息**可能带（比如 requests 的报错里
-    会有完整 URL 和主机名）。宁可遮得狠一点，也不能让域名溜到界面上。
-    """
-    try:
-        host, _ = node_endpoint()
-    except Exception:  # noqa: BLE001
-        host = ""
-    if host and host in text:
-        text = text.replace(host, "节点")
-
-    # 再兜一层：任何 形如 xxx.yyy 的域名片段都打码
-    return _DOMAIN_RE.sub(lambda m: m.group(1) + "＊＊＊", text)
-
-
-#: 匹配 http(s)://host 或裸域名，保留前缀便于理解，主机部分打码
-_DOMAIN_RE = re.compile(
-    r"(https?://|\b)((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})"
-)
-
-
-class MainView(QWidget):
+class MainView(FramelessWindow):
     logged_out = Signal()
 
     def __init__(self) -> None:
-        super().__init__()
-        self.setObjectName("Root")
-        self.setWindowTitle(BRAND_CN)
+        super().__init__(WINDOW_W, 560)
 
         self._opts = RunOptions.from_dict(config["options"])
         self._result_seq = 0
@@ -142,12 +119,12 @@ class MainView(QWidget):
         self.refresh()
         self._set_state(STATE_DOCKED)
 
-        # 窗口高度 = 内容高度。布局里**没有任何 addStretch**，
-        # 所以不会有"兜底被推到底、中间空一条"的情况；
-        # 反过来这里也不能写死高度 —— 比内容矮就会挤压控件。
-        self.setFixedSize(WINDOW_WIDTH, self.sizeHint().height())
+        # 布局定型后再把窗口收到内容高度 —— 底下不留空白带
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        self.setFixedSize(WINDOW_W, self.sizeHint().height())
 
-        # 日志面板定时拉增量
+        # 结果框定时拉增量
         self._log_timer = QTimer(self)
         self._log_timer.timeout.connect(self._drain_log)
         self._log_timer.start(LOG_POLL_MS)
@@ -156,17 +133,58 @@ class MainView(QWidget):
         self._drain_log()
 
     # ==================================================================
+    # 背景
+    # ==================================================================
+    def paint_background(self, painter: QPainter, width: float, height: float) -> None:
+        """夜色水面：地平线压到最底下那条留白里（约 94.5% 处），
+
+        远山最高也就冒到账号行下沿附近，不会顶到内容上；
+        主界面不放月亮和小舟 —— 地方太窄，放上去只会和账号行打架。
+        """
+        A.paint_night(painter, width, height, horizon=0.945, mountain=0.62,
+                      boat=False, moon=False)
+
+    # ==================================================================
     # 界面
     # ==================================================================
+    def _rule(self) -> QFrame:
+        rule = QFrame()
+        rule.setObjectName("Rule")
+        rule.setFixedSize(46, 1)
+        return rule
+
+    def _kicker(self) -> QWidget:
+        """「轻舟」小标题，两侧各一条横线。"""
+        row = QWidget()
+        row.setAttribute(Qt.WA_TranslucentBackground, True)
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+        lay.addStretch(1)
+        lay.addWidget(self._rule())
+        label = QLabel(BRAND_CN)
+        label.setObjectName("Kicker")
+        lay.addWidget(label)
+        lay.addWidget(self._rule())
+        lay.addStretch(1)
+        return row
+
+    @staticmethod
+    def _centered_row(widgets: list) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(26)
+        row.addStretch(1)
+        for widget in widgets:
+            row.addWidget(widget)
+        row.addStretch(1)
+        return row
+
     def _build(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(22, 14, 22, 12)
+        root = self.body_layout
+        root.setContentsMargins(SIDE_PAD, 10, SIDE_PAD, 0)
         root.setSpacing(0)
 
-        brand = QLabel(BRAND_CN)
-        brand.setObjectName("Slogan")
-        brand.setAlignment(Qt.AlignCenter)
-        root.addWidget(brand)
+        root.addWidget(self._kicker())
         root.addSpacing(10)
 
         # --- 1) 节点名称 ---
@@ -178,22 +196,24 @@ class MainView(QWidget):
         self.status_label = QLabel(Text.ST_DISCONNECTED)
         self.status_label.setObjectName("Status")
         self.status_label.setAlignment(Qt.AlignCenter)
-        root.addSpacing(4)
+        root.addSpacing(2)
         root.addWidget(self.status_label)
 
-        root.addSpacing(12)
+        root.addSpacing(14)
 
         # --- 2) 启航  3) 靠岸 ---
         buttons = QHBoxLayout()
-        buttons.setSpacing(10)
+        buttons.setSpacing(12)
 
         self.launch_btn = QPushButton(Text.BTN_LAUNCH)
-        self.launch_btn.setObjectName("Launch")
+        self.launch_btn.setObjectName("Primary")
+        self.launch_btn.setMinimumHeight(56)
         self.launch_btn.setCursor(Qt.PointingHandCursor)
         self.launch_btn.clicked.connect(self._launch)
 
         self.dock_btn = QPushButton(Text.BTN_DOCK)
         self.dock_btn.setObjectName("Dock")
+        self.dock_btn.setMinimumHeight(56)
         self.dock_btn.setCursor(Qt.PointingHandCursor)
         self.dock_btn.clicked.connect(self._dock)
 
@@ -205,40 +225,39 @@ class MainView(QWidget):
         self.error_label.setObjectName("Error")
         self.error_label.setWordWrap(True)
         self.error_label.setAlignment(Qt.AlignCenter)
-        self.error_label.setMinimumHeight(26)
+        self.error_label.setMinimumHeight(24)
         root.addSpacing(4)
         root.addWidget(self.error_label)
 
-        root.addSpacing(4)
+        root.addSpacing(6)
 
         # --- 可选设置 ---
         root.addWidget(self._options_card())
-        root.addSpacing(8)
+        root.addSpacing(10)
 
         # --- 工具按钮 ---
         tools = QHBoxLayout()
-        tools.setSpacing(8)
-        self.update_btn = self._tool_button(Text.BTN_UPDATE, "ToolUpdate", self._do_update)
-        self.tcping_btn = self._tool_button(Text.BTN_TCPING, "ToolPing", self._do_tcping)
-        self.urltest_btn = self._tool_button(Text.BTN_URLTEST, "ToolUrl", self._do_urltest)
+        tools.setSpacing(10)
+        self.update_btn = self._tool_button(Text.BTN_UPDATE, "ToolUpdate", "refresh",
+                                            P.TOOL_UPDATE, self._do_update)
+        self.tcping_btn = self._tool_button(Text.BTN_TCPING, "ToolPing", "terminal",
+                                            P.TOOL_PING, self._do_tcping)
+        self.urltest_btn = self._tool_button(Text.BTN_URLTEST, "ToolUrl", "link",
+                                             P.TOOL_URL, self._do_urltest)
         tools.addWidget(self.update_btn)
         tools.addWidget(self.tcping_btn)
         tools.addWidget(self.urltest_btn)
         root.addLayout(tools)
 
-        root.addSpacing(8)
+        root.addSpacing(10)
 
-        # --- 结果框 ---
-        # 固定高度，**不给 stretch**：给 stretch 它会自己膨胀去填满，
-        # 结果框就变成一大块空白（实测会撑到 480px）。不拉伸、也不用
-        # 尾部 addStretch(1) 收尾 —— 那样会在它和账号行之间留一条空白。
-        # 窗口高度收到内容高度（见 __init__），自然就没有留白了。
+        # --- 输出结果 ---
         root.addWidget(self._result_card())
-
-        root.addSpacing(6)
+        root.addSpacing(8)
 
         # --- 账号 ---
         bottom = QHBoxLayout()
+        bottom.setContentsMargins(2, 0, 2, 0)
         self.account_label = QLabel("")
         self.account_label.setObjectName("Hint")
         bottom.addWidget(self.account_label)
@@ -250,10 +269,13 @@ class MainView(QWidget):
         bottom.addWidget(logout_btn)
         root.addLayout(bottom)
 
+        # --- 底部水面 ---
+        root.addSpacing(SCENE_BAND)
+
     def _options_card(self) -> QFrame:
         """两排，整体居中，不带行标签。
 
-            第一排（二选一）  ○ 分流        ○ 全局
+            第一排（二选一）  ● 分流        ○ 全局
             第二排（可并存）  ☑ 系统代理    ☐ TUN 模式
 
         两排的互斥性不同：分流/全局 是同一件事的两种模式，必须二选一；
@@ -262,12 +284,12 @@ class MainView(QWidget):
         card = QFrame()
         card.setObjectName("Card")
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(14, 10, 14, 12)
-        lay.setSpacing(10)
+        lay.setContentsMargins(14, 13, 14, 13)
+        lay.setSpacing(12)
 
         self._group_profile = QButtonGroup(self)
-        self.rb_split = QRadioButton(PROFILE_LABELS[PROFILE_SPLIT])
-        self.rb_global = QRadioButton(PROFILE_LABELS[PROFILE_GLOBAL])
+        self.rb_split = RadioButton(PROFILE_LABELS[PROFILE_SPLIT])
+        self.rb_global = RadioButton(PROFILE_LABELS[PROFILE_GLOBAL])
         self._group_profile.addButton(self.rb_split)
         self._group_profile.addButton(self.rb_global)
         self.rb_split.toggled.connect(self._on_options_changed)
@@ -275,8 +297,8 @@ class MainView(QWidget):
         self.rb_global.setToolTip("所有流量都走代理")
         lay.addLayout(self._centered_row([self.rb_split, self.rb_global]))
 
-        self.cb_system = QCheckBox(LABEL_SYSTEM_PROXY)
-        self.cb_tun = QCheckBox(LABEL_TUN)
+        self.cb_system = CheckBox(LABEL_SYSTEM_PROXY)
+        self.cb_tun = CheckBox(LABEL_TUN)
         self.cb_system.toggled.connect(self._on_options_changed)
         self.cb_tun.toggled.connect(self._on_options_changed)
         self.cb_system.setToolTip("把 Windows 系统代理指向本机端口，不需要管理员权限")
@@ -285,28 +307,25 @@ class MainView(QWidget):
 
         return card
 
-    @staticmethod
-    def _centered_row(widgets: list) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(18)
-        row.addStretch(1)
-        for widget in widgets:
-            row.addWidget(widget)
-        row.addStretch(1)
-        return row
-
-    def _tool_button(self, text: str, object_name: str, slot) -> QPushButton:
-        btn = QPushButton(text)
+    def _tool_button(self, text: str, object_name: str, icon_name: str,
+                     color: str, slot) -> QToolButton:
+        btn = QToolButton()
         btn.setObjectName(object_name)
+        btn.setText(text)
+        btn.setIcon(QIcon(A.icon(icon_name, 22, color)))
+        btn.setIconSize(QSize(22, 22))
+        btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        btn.setMinimumHeight(TOOL_H)
+        # 三个等宽 —— 不设死的话 Qt 会按 sizeHint 分，"TCping" 就比"更新"宽一截
+        btn.setFixedWidth(TOOL_W)
         btn.setCursor(Qt.PointingHandCursor)
-        btn.setMinimumHeight(56)
         btn.clicked.connect(slot)
         return btn
 
     def _result_card(self) -> QFrame:
-        """结果框：只显示 更新版本号 / TCping 毫秒 / URL 毫秒。
+        """输出结果：标题 + 一行（绿点 + 文本）。
 
-        **只有一行高** —— 新的结果顶掉旧的，底下不留空白块。
+        **只有一行**，新的结果顶掉旧的，底下不留空白块。
 
         **绝不显示内核日志** —— 那里面带节点域名，显示出来就是泄漏。
         详见 logbus.py 顶部的说明。
@@ -314,34 +333,47 @@ class MainView(QWidget):
         card = QFrame()
         card.setObjectName("Card")
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(12, 7, 12, 9)
-        lay.setSpacing(5)
+        lay.setContentsMargins(14, 12, 14, 14)
+        lay.setSpacing(10)
 
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        mark = QLabel()
+        mark.setPixmap(A.icon("doc", 17, P.TEXT))
+        mark.setFixedSize(17, 17)
+        head.addWidget(mark)
         title = QLabel(Text.LABEL_RESULT)
-        title.setObjectName("LogTitle")
-        lay.addWidget(title)
+        title.setObjectName("ResultTitle")
+        head.addWidget(title)
+        head.addStretch(1)
+        lay.addLayout(head)
 
-        self.result_view = QPlainTextEdit()
-        self.result_view.setObjectName("ResultView")
-        self.result_view.setReadOnly(True)
-        # 只留最新一条 —— 一行高，新的顶掉旧的
-        self.result_view.setMaximumBlockCount(RESULT_MAX_LINES)
-        self.result_view.setLineWrapMode(QPlainTextEdit.WidgetWidth)
-        self.result_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        # 本来就没几行，不要右边的拖动条
-        self.result_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        # 固定高度：正好一行大字。不固定的话 Qt 会按 sizePolicy 把它拉去
-        # 填满剩余空间，结果框就成了一大块空白。
-        self.result_view.setFixedHeight(RESULT_BOX_HEIGHT)
-        self.result_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        lay.addWidget(self.result_view)
+        row_frame = QFrame()
+        row_frame.setObjectName("ResultRow")
+        row_frame.setFixedHeight(40)
+        row = QHBoxLayout(row_frame)
+        row.setContentsMargins(12, 0, 12, 0)
+        row.setSpacing(10)
+
+        dot = QLabel()
+        dot.setObjectName("Dot")
+        dot.setFixedSize(9, 9)
+        row.addWidget(dot)
+
+        self.result_view = QLabel("—")
+        self.result_view.setObjectName("ResultText")
+        # 定死一行高 —— 不定的话未 show() 时是控件默认的 480，布局也不可控
+        self.result_view.setFixedHeight(22)
+        row.addWidget(self.result_view, 1)
+
+        lay.addWidget(row_frame)
         return card
 
     # ==================================================================
     # 日志
     # ==================================================================
     def _drain_log(self) -> None:
-        """把总线上新增的**可显示**结果追加到结果框。
+        """把总线上新增的**可显示**结果刷到输出行。
 
         用的是 visible_since() 而不是 since() —— 内核日志会被挡在外面，
         界面拿不到它，也就不可能显示出来。
@@ -351,20 +383,20 @@ class MainView(QWidget):
             return
         self._result_seq = new[-1].seq + 1
 
-        for line in new:
-            color = TAG_COLORS.get(line.tag, RESULT_COLOR)
-            # 结果行本身不含域名；错误行可能含，再过一道遮罩
-            text = _escape(_mask_secrets(line.message))
-            self.result_view.appendHtml(f'<span style="color:{color}">{text}</span>')
-        self.result_view.moveCursor(QTextCursor.End)
+        line = new[-1]
+        # 结果行本身不含域名；错误行可能含，再过一道遮罩
+        self.result_view.setText(_escape(_mask_secrets(line.message)))
+        color = TAG_COLORS.get(line.tag, RESULT_COLOR)
+        # 只改颜色，字号/字体仍由 app 级 QSS 的 #ResultText 决定
+        self.result_view.setStyleSheet(f"color: {color};")
 
     # ==================================================================
-    # 选项读写
+    # 选项
     # ==================================================================
     def _load_options_into_ui(self) -> None:
         self._loading = True
+        self.rb_split.setChecked(self._opts.profile == PROFILE_SPLIT)
         self.rb_global.setChecked(self._opts.profile == PROFILE_GLOBAL)
-        self.rb_split.setChecked(self._opts.profile != PROFILE_GLOBAL)
         self.cb_system.setChecked(self._opts.use_system_proxy)
         self.cb_tun.setChecked(self._opts.use_tun)
         self._loading = False
@@ -379,18 +411,14 @@ class MainView(QWidget):
         self._opts.profile = PROFILE_GLOBAL if self.rb_global.isChecked() else PROFILE_SPLIT
         self._opts.use_system_proxy = self.cb_system.isChecked()
         self._opts.use_tun = self.cb_tun.isChecked()
-        config.set_and_save(options=self._opts.to_dict())
         self._update_tun_tooltip()
+        config.set_and_save(options=self._opts.to_dict())
 
     def _update_tun_tooltip(self) -> None:
-        if not self._opts.use_tun:
+        if self.cb_tun.isChecked():
+            self.cb_tun.setToolTip("已开启：全部流量走 TUN，需要管理员权限")
+        else:
             self.cb_tun.setToolTip("接管全部流量（IPv4 + IPv6），需要管理员权限和 wintun.dll")
-            return
-        exe = config.find_singbox()
-        ready, reason = check_tun_ready(exe.parent if exe else None)
-        self.cb_tun.setToolTip(
-            "接管全部流量（IPv4 + IPv6）" if ready else f"暂时不可用：{reason}"
-        )
 
     # ==================================================================
     # 状态
@@ -540,15 +568,15 @@ class MainView(QWidget):
             self.tcping_btn.setEnabled(True)
             bus.error(f"TCP 延迟：{message}")
 
-        Worker(tcping, host, port).run_with(on_ok, on_err)
+        Worker(tcping, host, port, 4).run_with(on_ok, on_err)
 
     def _do_urltest(self) -> None:
         if not session.sailing:
-            bus.error("URL 耗时：需要先启航")
+            bus.error("URL测试  需要先启航")
             return
 
         self.urltest_btn.setEnabled(False)
-        pass
+        port = int(self._opts.mixed_port)
 
         def on_ok(result) -> None:
             self.urltest_btn.setEnabled(True)
@@ -558,17 +586,13 @@ class MainView(QWidget):
             self.urltest_btn.setEnabled(True)
             bus.error(f"URL 耗时：{message}")
 
-        Worker(url_test, int(self._opts.mixed_port)).run_with(on_ok, on_err)
+        Worker(url_test, port).run_with(on_ok, on_err)
 
     # ==================================================================
-    # 离舟 / 关窗
+    # 退出
     # ==================================================================
     def _logout(self) -> None:
-        answer = QMessageBox.question(
-            self, Text.BTN_LOGOUT, "确定要离舟吗？", QMessageBox.Yes | QMessageBox.No
-        )
-        if answer == QMessageBox.Yes:
-            self._do_logout()
+        self._do_logout()
 
     def _do_logout(self) -> None:
         if session.sailing:
@@ -590,9 +614,4 @@ class MainView(QWidget):
     def start_with_test_node(self, username: str) -> None:
         """阶段1：节点名来自写死的测试节点。阶段3 换成服务端下发的 node_name。"""
         session.login(username, node_display_name())
-
-
-def _escape(text: str) -> str:
-    return (
-        text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    )
+        self.refresh()

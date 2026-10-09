@@ -33,7 +33,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QToolButton  # noqa: E402
 
 from canoe_client import localauth  # noqa: E402
 from canoe_client.config import config  # noqa: E402
@@ -155,6 +155,7 @@ def main() -> int:
     # --- 2. 界面不该出现的东西 ---
     print("\n[2] 界面不该出现节点的敏感信息")
     button_texts = [b.text() for b in view.findChildren(QPushButton)]
+    button_texts += [b.text() for b in view.findChildren(QToolButton)]
     forbidden = ("导出", "查看", "配置", "地址", "端口", "复制", "链接", "二维码", "分享")
     check("★ 没有导出/查看配置类按钮",
           not any(any(f in t for f in forbidden) for t in button_texts), f"{button_texts}")
@@ -287,8 +288,9 @@ def main() -> int:
           getattr(view, "tcping_btn", None) and view.tcping_btn.text())
     check("★ 有「URL测试」按钮", hasattr(view, "urltest_btn") and "URL测试" in view.urltest_btn.text(),
           getattr(view, "urltest_btn", None) and view.urltest_btn.text())
-    check("★ 有测试结果框", hasattr(view, "result_view") and view.result_view is not None)
-    check("结果框只读", view.result_view.isReadOnly())
+    check("★ 有输出结果行", hasattr(view, "result_view") and view.result_view is not None)
+    check("结果行是只读展示（QLabel，不可编辑）",
+          isinstance(view.result_view, QLabel) and not hasattr(view.result_view, "setPlainText"))
     check("★ 启航/靠岸带图标", "🚀" in view.launch_btn.text() and "🚢" in view.dock_btn.text(),
           f"{view.launch_btn.text()!r} {view.dock_btn.text()!r}")
 
@@ -296,12 +298,15 @@ def main() -> int:
     names = [view.update_btn.objectName(), view.tcping_btn.objectName(), view.urltest_btn.objectName()]
     check("三个按钮样式名各不相同且正确",
           names == ["ToolUpdate", "ToolPing", "ToolUrl"], str(names))
+    check("★ 三个工具按钮等宽",
+          len({view.update_btn.width(), view.tcping_btn.width(), view.urltest_btn.width()}) == 1,
+          f"{view.update_btn.width()}/{view.tcping_btn.width()}/{view.urltest_btn.width()}")
 
     # --- 结果框的可见性规则（这是安全要求，不只是 UI 偏好）---
     from canoe_client.logbus import bus as log_bus
     log_bus.result("TCP 延迟：65ms")
     pump(app, 0.4)
-    shown = view.result_view.toPlainText()
+    shown = view.result_view.text()
     check("★ 结果行会显示", "TCP 延迟：65ms" in shown, shown[-160:])
 
     log_bus.system("这行是系统日志，不该显示")
@@ -309,7 +314,7 @@ def main() -> int:
     log_bus.error("URL测试  需要先启航")
     pump(app, 0.6)
 
-    shown = view.result_view.toPlainText()
+    shown = view.result_view.text()
     check("★ 失败提示会显示", "先启航" in shown, shown[-160:])
     check("★ 输出框只留一行（上一条被顶掉）",
           "TCP 延迟：65ms" not in shown, shown[-160:])
@@ -318,24 +323,18 @@ def main() -> int:
     check("★★ 结果框里不出现节点域名（防止泄漏）",
           "leycc" not in shown and "one." not in shown, shown[-200:])
 
-    # 结果框很小、无滚动条、字很大
-    check("★ 结果框是小框（高度 <= 150px）", view.result_view.height() <= 150,
+    # 结果行就一行高，不拖空白
+    check("★ 结果行只有一行高（<= 46px）", view.result_view.height() <= 46,
           str(view.result_view.height()))
-    check("★ 结果框不允许出现滚动条",
-          view.result_view.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOff,
-          str(view.result_view.verticalScrollBarPolicy()))
-    check("★ 结果框没有可见的滚动条",
-          not view.result_view.verticalScrollBar().isVisible())
-    check("★ 输出框只留一行",
-          view.result_view.maximumBlockCount() == 1,
-          str(view.result_view.maximumBlockCount()))
+    check("★ 结果行在卡片里，卡片本身也不高",
+          view.result_view.parentWidget() is not None)
 
     # URL 测试在未启航时应当给出提示而不是崩
     view.urltest_btn.click()
     pump(app, 0.6)
     check("★ 未启航时点 URL 测试有提示且不崩",
-          "先启航" in view.result_view.toPlainText(),
-          view.result_view.toPlainText()[-160:])
+          "先启航" in view.result_view.text(),
+          view.result_view.text()[-160:])
 
     # --- 6. 启航（真实） ---
     print("\n[6] 启航")

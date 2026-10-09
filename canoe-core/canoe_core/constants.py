@@ -45,11 +45,12 @@ class Text:
     BTN_LOGIN = "登 录"
     BTN_GUEST = "直接体验（跳过注册）"
 
-    # 工具按钮
-    BTN_UPDATE = "🔄\n更新"
-    BTN_TCPING = "📡\nTCping"
-    BTN_URLTEST = "🔗\nURL测试"
-    LABEL_RESULT = "📋  测试结果"
+    # 工具按钮。图标走 artwork.icon() 的线性图标，不再用 emoji ——
+    # 所以文案里只有字，图标由控件自己设。
+    BTN_UPDATE = "更新"
+    BTN_TCPING = "TCping"
+    BTN_URLTEST = "URL测试"
+    LABEL_RESULT = "输出结果"
 
     # 日志面板首行
     LOG_READY = "准备就绪，等待操作…"
@@ -107,6 +108,39 @@ class Palette:
     MUTED = "#7A8DA0"
     DIM = "#4A5A6B"
     WARN = "#C2603C"         # 风浪（错误）
+
+    # ---- 夜色主题（美化稿）------------------------------------------
+    # 天空自上而下
+    NIGHT_TOP = "#050A16"
+    NIGHT_MID = "#091529"
+    NIGHT_HORIZON = "#0C2040"
+    # 卡片 / 描边
+    CARD = "#0D1B33"
+    CARD_LINE = "#1C3358"
+    CARD_LINE_SOFT = "#152846"
+    # 主色：亮蓝 -> 青，用于渐变按钮与强调
+    ACCENT = "#2E8BFF"
+    ACCENT_DEEP = "#1668E3"
+    CYAN = "#22D3EE"
+    CYAN_DEEP = "#0EA5C6"
+    # 文字
+    TEXT = "#EAF2FF"
+    TEXT_DIM = "#8AA2C2"
+    TEXT_FAINT = "#5B7290"
+    # 结果绿 / 告警橙
+    GREEN = "#22C55E"
+    AMBER = "#F5A524"
+    # 山水三层（越近越深）
+    MOUNT_FAR = "#12355F"
+    MOUNT_MID = "#0D2647"
+    MOUNT_NEAR = "#081A33"
+    WATER = "#06132A"
+    WATER_DEEP = "#040D1E"
+    MOON = "#E4EEFF"
+    # 工具按钮三种色调
+    TOOL_UPDATE = "#4C9BFF"
+    TOOL_PING = "#22D3EE"
+    TOOL_URL = "#A78BFA"
 
 
 # --------------------------------------------------------------------------
