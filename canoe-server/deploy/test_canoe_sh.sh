@@ -379,6 +379,47 @@ check "帮助里说明了代码从哪来" "$(grep -q "代码从哪来" <<< "$HEL
 check "帮助里有 Deploy Key 的走法" "$(grep -q "Deploy keys" <<< "$HELP_I" && echo 0 || echo 1)"
 check "帮助里有 --token" "$(grep -q -- "--token" <<< "$HELP_I" && echo 0 || echo 1)"
 
+# ---------------------------------------------------------------------------
+printf '\n[11] 已经装过了就别再问一遍向导\n'
+# 用户的原话：「我都部署好了服务端 为什么还是要按照你的脚本来」——
+# 服务端明明跑着，重新执行一遍安装命令，迎面又是「[1/3] 域名」，
+# 看着像要把装好的东西推倒重来。其实他多半只是想打开管理菜单。
+#
+# 现在：检测到装完了就停下，把 `sudo canoe` 指给他；真要重装得显式说。
+check "★ install.sh 有「已经装过」的闸门" \
+      "$(grep -q '已经装过 Canoe' "$INSTALL" && echo 0 || echo 1)"
+check "★ 闸门里给出的是管理菜单那条命令（而不是继续问）" \
+      "$(grep -q '平时请用\*\*管理脚本\*\*' "$INSTALL" && echo 0 || echo 1)"
+# 这里踩过一次：提示里那条给用户复制的命令指到了 install.sh 自己 ——
+# 用户照着敲，又绕回同一个死循环。指过去的必须是菜单脚本。
+check "★ 那条命令指的是 canoe.sh，不是 install.sh 自己" \
+      "$(grep -q 'curl -fsSL \$MENU_RAW' "$INSTALL" && echo 0 || echo 1)"
+check "MENU_RAW 确实指向 canoe.sh" \
+      "$(grep -qE '^MENU_RAW=.*canoe\.sh' "$INSTALL" && echo 0 || echo 1)"
+# 判据必须是三个都齐 —— 只看 .venv 的话，上一轮装到一半崩掉的机器
+# 会被这条挡住，而那正是最该重跑的场合。
+# 先压成一行再匹配 —— 那条 if 用 \ 折了行，逐行 grep 看不全。
+INSTALL_FLAT="$(tr '\n' ' ' < "$INSTALL")"
+check "★ 判定「装完了」看的是 .venv + .env + systemd 单元三样齐全" \
+      "$(grep -qE 'SERVER_DIR/\.venv.*SERVER_DIR/\.env.*canoe-api\.service' <<< "$INSTALL_FLAT" \
+        && echo 0 || echo 1)"
+check "★ 闸门在参数校验之后就跑（不能等到装了一半才拦）" \
+      "$(grep -n '已经装过 Canoe' "$INSTALL" | head -1 | cut -d: -f1 | \
+        awk -v u="$(grep -n '0.1 交互向导' "$INSTALL" | head -1 | cut -d: -f1)" \
+            '{ print ($1 < u) ? 0 : 1 }')"
+check "★ 有 --reconfigure 这个显式出口" \
+      "$(grep -q -- '--reconfigure|--force' "$INSTALL" && echo 0 || echo 1)"
+check "环境变量 CANOE_RECONFIGURE 也能开（curl 那种写法传不进位置参数）" \
+      "$(grep -q 'CANOE_RECONFIGURE' "$INSTALL" && echo 0 || echo 1)"
+check "帮助里写了 --reconfigure" \
+      "$(grep -q -- '--reconfigure         已经装过的机器上' <<< "$HELP_I" && echo 0 || echo 1)"
+
+# 管理脚本自己走这两条路时得把闸门放开，否则会"静默不动"
+check "★ 「重新走安装向导」带 --reconfigure" \
+      "$(grep -A 4 'run_install_wizard()' "$TARGET" | grep -q -- '--reconfigure' && echo 0 || echo 1)"
+check "★ 菜单「安装」在已装机器上确认后也带 --reconfigure" \
+      "$(grep -q 'already -eq 1' "$TARGET" && echo 0 || echo 1)"
+
 printf '\n%s\n' "$(printf '=%.0s' {1..48})"
 printf '通过 %d 项，失败 %d 项\n' "$passed" "$failed"
 printf '%s\n\n' "$(printf '=%.0s' {1..48})"

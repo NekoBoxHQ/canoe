@@ -31,6 +31,13 @@ EMAIL=""
 REPO_URL=""
 REPO_TOKEN="${CANOE_TOKEN:-}"     # 环境变量也行，免得令牌出现在 ps 里
 DO_SEED=1
+#: 已经装过的机器要重走向导，必须显式点头（见下面 0.05 那段）
+RECONFIGURE="${CANOE_RECONFIGURE:-0}"
+
+#: 两个脚本在仓库里的地址。被 curl 起来跑时原生路径取不到，写死一份。
+RAW_BASE="https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy"
+SELF_RAW="$RAW_BASE/install.sh"
+MENU_RAW="$RAW_BASE/canoe.sh"
 
 #: 管理员账号。装的**时候**就问，不再自己随机生成塞进文件里 ——
 #: 之前那样用户装完满世界找密码，是真的难用。
@@ -108,6 +115,9 @@ usage() {
   --token TOKEN         GitHub 私有仓库用的访问令牌（PAT），只读权限即可。
                         只在克隆那一次用到，用完立刻从 remote 里擦掉。
   --no-seed             跳过种子数据
+  --reconfigure         已经装过的机器上，强制重走一遍向导。
+                        不加这个：检测到装完了就停下来，告诉你用 `sudo canoe`
+                        那个管理菜单 —— 免得每次改点东西都从「[1/3] 域名」问起。
   -h, --help            看这个
 
   --https 是 --cert-mode 的旧名字，仍然能用。
@@ -149,6 +159,7 @@ while [[ $# -gt 0 ]]; do
         --admin-user)           ADMIN_USER="${2:-}"; shift 2 ;;
         --admin-pass)           ADMIN_PASS="${2:-}"; shift 2 ;;
         --no-seed)              DO_SEED=0; shift ;;
+        --reconfigure|--force)  RECONFIGURE=1; shift ;;
         -h|--help)              usage; exit 0 ;;
         -*) die "未知选项：$1（-h 看用法）" ;;
         *)  [[ -z "$DOMAIN" ]] || die "域名只能给一个：$1"
@@ -171,6 +182,43 @@ if [[ "$CERT_MODE" == "existing" && ( -z "$CERT_FILE" || -z "$KEY_FILE" ) ]]; th
 fi
 
 [[ $EUID -eq 0 ]] || die "请用 root 跑：sudo bash deploy/install.sh（-h 看用法）"
+
+# ---------------------------------------------------------------------------
+# 0.05 已经装过就别再走一遍安装向导
+#
+# 这条是被用户骂出来的：服务端明明跑着了，重新执行一遍安装命令，迎面
+# 又是「[1/3] 域名」—— 看着像要把装好的东西推倒重来。其实他多半只是
+# 想打开管理菜单，只是不知道该敲哪条命令。
+#
+# 所以：检测到**装完了**就停下，把菜单那条命令给他；真要重装得显式说
+# （--reconfigure 或 CANOE_RECONFIGURE=1）。
+#
+# 判据故意取三个都齐 —— .venv + .env + systemd 单元。只看 .venv 的话，
+# 上一轮装到一半崩掉的机器会被这条挡住，而那正是最该重跑的场合。
+# ---------------------------------------------------------------------------
+if [[ -d "$SERVER_DIR/.venv" && -f "$SERVER_DIR/.env" \
+      && -f /etc/systemd/system/canoe-api.service && "$RECONFIGURE" != "1" ]]; then
+    cat <<TXT
+
+  这台机器上已经装过 Canoe 了（$APP_DIR）。
+  安装向导不再往下走 —— 它问的那些（域名 / 端口 / 证书）现在是好的。
+
+  平时请用**管理脚本**，安装 / 启动 / 停止 / 状态 / 配置 / 升级 / 卸载
+  都在那一个菜单里：
+
+      sudo canoe
+
+  菜单没装到 PATH 上？取一份来跑：
+
+      bash -c "\$(curl -fsSL $MENU_RAW)"
+
+  真要重走一遍安装向导（改域名 / 端口 / 证书；代码会被覆盖，数据不动）：
+
+      sudo CANOE_RECONFIGURE=1 bash -c "\$(curl -fsSL $SELF_RAW)"
+
+TXT
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # 0.1 交互向导：域名 / 管理面板端口 / 证书

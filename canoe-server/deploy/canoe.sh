@@ -206,7 +206,9 @@ find_installer() {
 cmd_install() {
     need_root
 
+    local already=0
     if installed; then
+        already=1
         warn "检测到已经装过了（$SERVER_DIR/.venv 存在）"
         dim "要改端口 / 证书，用「配置」→「重新走安装向导」；"
         dim "要更新代码，用「升级」。"
@@ -224,7 +226,14 @@ cmd_install() {
 
     # 不用 exec：装完要回到菜单，不能把用户丢回 shell 提示符 ——
     # 他可能还想顺手启动 / 看状态。
-    bash "$script" || rc=$?
+    #
+    # 已经装过（而且用户上面点了 y）-> 显式带上 --reconfigure。
+    # 安装向导自己也会拦"已经装过了"，不加这个参数它会直接退出。
+    if [[ $already -eq 1 ]]; then
+        bash "$script" --reconfigure || rc=$?
+    else
+        bash "$script" || rc=$?
+    fi
 
     [[ -n "$INSTALLER_TMP" ]] && { rm -f "$INSTALLER_TMP"; INSTALLER_TMP=""; }
 
@@ -473,7 +482,9 @@ run_install_wizard() {
     local script="$SERVER_DIR/deploy/install.sh"
     [[ -f "$script" ]] || { err "找不到 $script"; return 1; }
     log "重新走安装向导（现有配置会作为默认值）"
-    bash "$script"
+    # --reconfigure：这条路径本来就是在"已装好"的机器上重走，
+    # 安装向导里那道"已经装过了"的闸门得显式放开。
+    bash "$script" --reconfigure
 }
 
 restart_now() {
