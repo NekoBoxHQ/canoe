@@ -27,6 +27,7 @@ from .constants import (
 )
 from .models import (
     ApiError,
+    ClientReleaseResponse,
     ConfigResponse,
     DeviceInfo,
     EntryPayload,
@@ -39,6 +40,7 @@ from .models import (
     MeResponse,
     RegisterRequest,
     RegisterResponse,
+    SubscriptionResponse,
     UserInfo,
 )
 from .passwords import hash_password, new_token, token_hash, verify_password
@@ -56,4 +58,5 @@ __all__ = [
     "HeartbeatRequest", "HeartbeatResponse", "HealthResponse",
     "LoginRequest", "LoginResponse", "LogoutRequest", "MeResponse",
     "RegisterRequest", "RegisterResponse", "UserInfo",
+    "ClientReleaseResponse", "SubscriptionResponse",
 ]

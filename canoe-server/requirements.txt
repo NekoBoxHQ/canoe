@@ -5,3 +5,5 @@ uvicorn[standard]>=0.30,<0.35
 sqlalchemy>=2.0,<2.1
 pydantic>=2.7,<3
 pydantic-settings>=2.3,<3
+# 管理端上传安装包（multipart/form-data）需要它
+python-multipart>=0.0.9,<0.1

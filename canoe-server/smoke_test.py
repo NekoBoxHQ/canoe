@@ -1,18 +1,26 @@
 """轻舟 / Canoe Server —— 端到端冒烟测试。
 
-用法（先启动服务端：python run.py）：
-    python smoke_test.py [base_url]
+用法（先启动服务端：python run.py 或 python run_local_https.py）：
+    python smoke_test.py [base_url] [--insecure]
 
-覆盖：注册 -> 登录 -> /api/config -> 心跳 -> 登出 -> 封禁踢下线 -> 中转层配置，
-并断言 /api/config 的响应里**绝对不出现**真实节点信息。
+    --insecure  : 本地自签证书时跳过证书校验（只给本地调试用）
+
+覆盖：注册 -> 登录 -> /api/config -> 心跳 -> 登出 -> 封禁踢下线 -> 中转层配置
+      -> 客户端更新 -> 订阅更新 -> SSE 推送 -> 鉴权，
+并断言所有客户端可见的响应里**绝对不出现**真实节点信息。
 
 顺带验证 canoe-core 的两个自校验方法真的会拦截越界字段。
 """
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import sys
+import threading
+import time
 import uuid
+import zipfile
 
 import httpx
 
@@ -21,7 +29,17 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from canoe_core import ENTRY_FIELDS, Api, ConfigResponse, EntryPayload  # noqa: E402
 
-BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000").rstrip("/")
+_ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
+_FLAGS = {a for a in sys.argv[1:] if a.startswith("--")}
+
+BASE = (_ARGS[0] if _ARGS else "http://127.0.0.1:8000").rstrip("/")
+#: 本地自签证书才需要 --insecure，生产一律严格校验证书
+VERIFY = "--insecure" not in _FLAGS
+
+
+def new_client(**kwargs) -> httpx.Client:
+    kwargs.setdefault("timeout", 15)
+    return httpx.Client(base_url=BASE, verify=VERIFY, **kwargs)
 
 # 管理员建节点时用的真实节点值 —— 绝不能出现在任何客户端可见的响应里
 REAL_IP = "203.0.113.77"
@@ -64,7 +82,7 @@ def main() -> int:
     username = f"canoe_{suffix}"
     password = "canoe-pass-12345"
     device_id = f"dev-{uuid.uuid4()}"
-    client = httpx.Client(base_url=BASE, timeout=15)
+    client = new_client()
 
     print(f"\n== 轻舟 / Canoe 服务端冒烟测试 @ {BASE} ==\n")
 
@@ -295,7 +313,178 @@ def main() -> int:
     r = client.get(Api.ADMIN_STATS, headers=admin_h)
     check("统计接口 200", r.status_code == 200, r.text[:250])
 
+    # ======================================================================
+    # 13. 客户端更新（/api/client/latest + 管理端发布 + 自托管下载）
+    # ======================================================================
+    print("\n[13] 客户端更新")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("Canoe.exe", b"P" * (48 * 1024))
+    package = buf.getvalue()
+    digest = hashlib.sha256(package).hexdigest()
+    release_version = f"9.{uuid.uuid4().int % 90 + 10}.0"
+
+    r = client.post(
+        f"{Api.ADMIN_RELEASES}/upload",
+        headers=admin_h,
+        data={"version": release_version, "notes": "冒烟测试用版本", "min_version": "1.0.0"},
+        files={"file": ("Canoe-smoke.zip", package, "application/zip")},
+    )
+    check("上传发布安装包 201", r.status_code == 201, r.text[:250])
+    release_id = r.json().get("id") if r.status_code == 201 else None
+    check("登记了 sha256", r.status_code == 201 and r.json().get("sha256") == digest)
+
+    # 匿名取最新版本 —— 客户端得先能检查更新，才谈得上登舟
+    anon = new_client()
+    r = anon.get(Api.CLIENT_LATEST)
+    check(f"匿名 GET {Api.CLIENT_LATEST} 200", r.status_code == 200, r.text[:250])
+    latest = r.json() if r.status_code == 200 else {}
+    check("返回版本号", latest.get("version") == release_version, str(latest)[:200])
+    check("返回下载地址", str(latest.get("url", "")).endswith("Canoe-smoke.zip"))
+    check("返回 sha256", latest.get("sha256") == digest)
+    check("★ 更新响应里没有任何节点信息", not scan_real_keys(latest), str(latest)[:200])
+    check("★ 更新响应里没有 real_ 字样", "real_" not in json.dumps(latest))
+
+    # 静态托管：下载回来字节必须一致
+    if latest.get("url"):
+        r = anon.get(str(latest["url"]).replace(BASE, ""))
+        check("安装包可从 /downloads 下载", r.status_code == 200, str(r.status_code))
+        check("★ 下载内容 sha256 与登记一致",
+              hashlib.sha256(r.content).hexdigest() == digest)
+
+    # ======================================================================
+    # 14. 订阅更新（/api/subscription）
+    # ======================================================================
+    print("\n[14] 订阅更新")
+    # 上面那个账号已经登出/被封过，重新开一个干净账号
+    sub_name = f"sub_{uuid.uuid4().hex[:8]}"
+    client.post(
+        f"{Api.ADMIN_USERS}",
+        headers=admin_h,
+        json={"username": sub_name, "password": "canoe-pass-123", "expire_days": 3},
+    )
+    r = client.post(
+        f"{Api.LOGIN}",
+        json={
+            "username": sub_name,
+            "password": "canoe-pass-123",
+            "device_id": "smoke-sub-0001",
+            "device_name": "smoke",
+        },
+    )
+    sub_h = {"Authorization": f"Bearer {r.json()['token']}"} if r.status_code == 200 else {}
+    sub_uid = client.get(Api.ME, headers=sub_h).json().get("id") if sub_h else None
+
+    r = client.get(Api.SUBSCRIPTION, headers=sub_h)
+    check(f"GET {Api.SUBSCRIPTION} 200", r.status_code == 200, r.text[:250])
+    sub = r.json() if r.status_code == 200 else {}
+    first_revision = sub.get("revision", "")
+    check("返回订阅指纹 revision", bool(first_revision), str(sub)[:200])
+    check("返回 config_version", "config_version" in sub)
+    check("★ 订阅里没有 real_* 字段", not scan_real_keys(sub), str(scan_real_keys(sub)))
+    check("★ 订阅里没有 real_ 字样", "real_" not in json.dumps(sub))
+    check("订阅的 entry 也恰好是白名单 8 个字段",
+          sub.get("entry") is None or set(sub["entry"]) == set(ENTRY_FIELDS),
+          str(sorted(sub.get("entry") or {})))
+
+    # 改入口域名 -> 指纹必须变
+    r = client.get(f"{Api.ADMIN_NODES}", headers=admin_h)
+    nodes_now = r.json()["items"]
+    target = next((n for n in nodes_now if n["id"] == node_id), nodes_now[0])
+    patched = {
+        "name": target["name"], "remark": target["remark"], "enabled": True,
+        "sort_order": target["sort_order"],
+        "entry_host": "changed.example.com", "entry_port": target["entry"]["port"],
+        "entry_uuid": target["entry"]["uuid"], "entry_path": target["entry"]["path"],
+        "entry_sni": "changed.example.com",
+        "entry_transport": target["entry"]["transport"],
+        "entry_tls": target["entry"]["tls"],
+        "entry_insecure": target["entry"]["insecure"],
+        **{f"real_{k}": v for k, v in target["real"].items()},
+    }
+    r = client.patch(f"{Api.ADMIN_NODES}/{target['id']}", json=patched, headers=admin_h)
+    check("改节点入口 200", r.status_code == 200, r.text[:200])
+
+    r = client.get(Api.SUBSCRIPTION, headers=sub_h)
+    sub2 = r.json() if r.status_code == 200 else {}
+    check("★ 入口变了 -> 订阅指纹也变",
+          sub2.get("revision") != first_revision,
+          f"{first_revision} -> {sub2.get('revision')}")
+
+    # ======================================================================
+    # 15. 推送（SSE /api/events）
+    # ======================================================================
+    print("\n[15] 推送 SSE")
+    events: list[dict] = []
+    stop = threading.Event()
+
+    def _reader() -> None:
+        try:
+            with httpx.stream(
+                "GET", f"{BASE}{Api.EVENTS}", headers=sub_h,
+                timeout=httpx.Timeout(30, read=30), verify=VERIFY,
+            ) as resp:
+                if resp.status_code != 200:
+                    events.append({"type": "__http", "code": resp.status_code})
+                    return
+                for line in resp.iter_lines():
+                    if stop.is_set():
+                        break
+                    if line.startswith("data: "):
+                        events.append(json.loads(line[6:]))
+        except Exception as exc:  # noqa: BLE001
+            events.append({"type": "__error", "detail": str(exc)})
+
+    thread = threading.Thread(target=_reader, daemon=True)
+    thread.start()
+    time.sleep(2.5)
+    check("★ 连上就收到 hello", any(e.get("type") == "hello" for e in events),
+          str([e.get("type") for e in events]))
+    hello = next((e for e in events if e.get("type") == "hello"), {})
+    check("hello 带 config_version", "config_version" in hello, str(hello))
+    check("hello 里也没有真实节点字段", not scan_real_keys(hello), str(hello))
+
+    # 再改一次节点 -> config_changed
+    patched["entry_host"] = "changed2.example.com"
+    patched["entry_sni"] = "changed2.example.com"
+    client.patch(f"{Api.ADMIN_NODES}/{target['id']}", json=patched, headers=admin_h)
+    time.sleep(2.5)
+    check("★ 节点变更推来 config_changed",
+          any(e.get("type") == "config_changed" for e in events),
+          str([e.get("type") for e in events]))
+    changed = next((e for e in events if e.get("type") == "config_changed"), {})
+    check("★ 广播里不带节点名（免得把别人的节点泄露给所有人）",
+          "node_name" not in changed or not changed["node_name"], str(changed))
+
+    # 封禁 -> kick
+    if sub_uid:
+        client.post(f"{Api.ADMIN_USERS}/{sub_uid}/ban", headers=admin_h)
+        time.sleep(2.5)
+        check("★ 封禁推来 kick", any(e.get("type") == "kick" for e in events),
+              str([e.get("type") for e in events]))
+        client.post(f"{Api.ADMIN_USERS}/{sub_uid}/unban", headers=admin_h)
+
+    stop.set()
+
+    # ======================================================================
+    # 16. 推送与订阅的鉴权
+    # ======================================================================
+    print("\n[16] 推送 / 订阅的鉴权")
+    check("无令牌订阅 -> 401", anon.get(Api.SUBSCRIPTION).status_code == 401)
+    check("坏令牌订阅 -> 401",
+          anon.get(Api.SUBSCRIPTION, headers={"Authorization": "Bearer nope"}).status_code == 401)
+    check("无令牌连推送 -> 401", anon.get(Api.EVENTS).status_code == 401)
+    check("坏令牌连推送 -> 401",
+          anon.get(Api.EVENTS, headers={"Authorization": "Bearer nope"}).status_code == 401)
+    check("推送统计进了 /api/admin/stats",
+          "push" in client.get(Api.ADMIN_STATS, headers=admin_h).json())
+
     # 清理
+    if release_id:
+        client.delete(f"{Api.ADMIN_RELEASES}/{release_id}", params={"delete_file": "true"},
+                      headers=admin_h)
+    if sub_uid:
+        client.delete(f"{Api.ADMIN_USERS}/{sub_uid}", headers=admin_h)
     if node_id:
         client.delete(f"{Api.ADMIN_NODES}/{node_id}", headers=admin_h)
     client.delete(f"{Api.ADMIN_USERS}/{my_id}", headers=admin_h)

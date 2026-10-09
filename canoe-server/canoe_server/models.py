@@ -264,3 +264,27 @@ class ConfigMeta(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class ClientRelease(Base):
+    """客户端版本发布记录 —— 「客户端更新」的数据源。
+
+    一个 version 一行。安装包本体放在 release_dir 下，由 StaticFiles 提供下载；
+    这里只存元数据（版本 / 文件名 / 摘要 / 说明）。
+
+    `enabled=False` 可以临时把某个版本摘下来（比如发错包了），
+    /api/client/latest 只会返回 enabled 里版本号最大的那个。
+    """
+
+    __tablename__ = "client_releases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    sha256: Mapped[str] = mapped_column(String(64), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    #: 低于这个版本必须升级。空表示不强制。
+    min_version: Mapped[str] = mapped_column(String(32), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

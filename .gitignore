@@ -9,13 +9,17 @@ dist/
 *.spec.bak
 
 # ---- 运行时数据 ----
-canoe-server/data/*.db
-canoe-server/data/*.json
+canoe-server/data/
 canoe-client/*.log
+# 安装包由管理端上传，体积大，不进仓库
+canoe-server/releases/
 
 # ---- 密钥与本地配置 —— 绝对不要提交 ----
 .env
 .env.local
+*.pem
+*.key
+*.crt
 
 # ---- 二进制 / 大文件：不进仓库，由用户或脚本获取 ----
 # sing-box 内核约 82MB，放仓库不合适。获取方式见 canoe-client/bin/README.md

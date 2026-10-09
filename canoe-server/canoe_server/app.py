@@ -1,15 +1,20 @@
 """轻舟 / Canoe Server —— FastAPI 应用入口。"""
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from canoe_core import BRAND_CN, SLOGAN_CN, VERSION, Api
 
 from .config import settings
 from .database import init_db
 from .routers import admin, auth, client
+from .services.broadcast import hub
+from .services.updates import release_dir
 
 app = FastAPI(
     title=settings.app_name,
@@ -37,8 +42,18 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 
 @app.on_event("startup")
-def on_startup() -> None:
+async def on_startup() -> None:
     init_db()
+    # 推送是从同步路由（线程池）发起的，得先记住事件循环才能跨线程投递
+    hub.bind_loop(asyncio.get_running_loop())
+
+
+# 客户端安装包自托管：/api/client/latest 返回的下载地址就落在这里
+app.mount(
+    Api.DOWNLOAD_PREFIX,
+    StaticFiles(directory=str(release_dir())),
+    name="downloads",
+)
 
 
 # 路由挂在 /api 下；/api/health 由 client 路由提供

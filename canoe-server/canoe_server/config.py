@@ -35,6 +35,19 @@ class Settings(BaseSettings):
     ticket_secret: str = "CHANGE_ME_ticket_secret_before_production"
     entry_ticket_ttl: int = 300  # 入口凭证有效期（秒）
 
+    # --- 客户端更新（安装包自托管）---
+    # 对外可访问的站点根，用来拼安装包下载地址。
+    # 留空则按请求里的 Host 现算 —— 本地调试不用配，生产建议写死成
+    # https://canoe.example.com，免得被 Host 头带偏。
+    public_base_url: str = ""
+    release_dir: str = str(BASE_DIR / "releases")
+    max_release_mb: int = 300        # 单个安装包上限，防止把磁盘写满
+
+    # --- 推送（SSE）---
+    sse_keepalive: int = 20          # 保活注释间隔（秒）
+    sse_max_connections: int = 2000  # 同时在线长连接上限，防打满
+    sse_max_per_user: int = 5        # 单账号并发长连接上限
+
     # --- 业务策略 ---
     default_expire_days: int = 30
     default_max_devices: int = 3

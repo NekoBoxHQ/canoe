@@ -1,70 +1,157 @@
 # canoe-server
 
-**状态：阶段 3 才做。当前目录里有一份上一轮写的草稿，尚未按本次阶段计划review。**
+轻舟的服务端：用户系统、节点管理、配置下发、心跳、**更新通道**与**推送**。
 
-按你的阶段计划：
-
-| 阶段 | 内容 |
-|---|---|
-| 1 | 框架 + 测试节点 + 桌面端 ✅ 已完成 |
-| 2 | 推送到 git |
-| **3** | **服务端管理端（本目录）** |
-| 4 | 部署服务端管理界面 |
-| 5 | 客户端与服务端联调 |
+> 阶段状态：**阶段 3 已完成**（在原有草稿上按新要求扩展），阶段 4 的本地
+> HTTPS 部署已跑通，部署材料在 [`deploy/`](deploy/)。服务端与客户端的
+> 正式联调是阶段 5。
 
 ---
 
-## 目录里现在有什么
+## 快速开始（本地）
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ../canoe-core -r requirements.txt
+cp .env.example .env          # 至少改掉 TICKET_SECRET
+.venv/bin/python seed.py      # 建库 + 管理员 + 示例节点 + 测试用户
+
+.venv/bin/python run.py                 # HTTP  :8000
+.venv/bin/python run_local_https.py     # HTTPS :8443（自签证书，自动生成）
+```
+
+`run_local_https.py` 是为了让客户端能真的连上来 —— 客户端只在 HTTPS 下工作。
+
+接口文档：<http://127.0.0.1:8000/docs>（生产记得在 Nginx 上关掉）。
+
+---
+
+## 端点
+
+| 方法 | 路径 | 说明 | 登录 |
+|---|---|---|---|
+| POST | `/api/register` | 注册 | 否 |
+| POST | `/api/login` | 登录，返回 token | 否 |
+| GET | `/api/config` | ★ 拉配置（入口 + token + 节点名） | 是 |
+| POST | `/api/heartbeat` | 心跳 / 续期 | 是 |
+| POST | `/api/session/stop` | 靠岸（保留登录令牌） | 是 |
+| POST | `/api/logout` | 登出（吊销令牌） | 是 |
+| GET | `/api/me` | 当前用户 | 是 |
+| GET | `/api/health` | 健康检查 | 否 |
+| **GET** | **`/api/client/latest`** | **客户端更新**：最新版本 + 安装包地址 | **否** |
+| **GET** | **`/api/subscription`** | **订阅更新**：当前订阅 + 变更指纹 | **是** |
+| **GET** | **`/api/events`** | **推送**：SSE 长连接 | **是** |
+| — | `/api/admin/*` | 管理端（用户 / 节点 / 会话 / 统计 / 中转层 / 发布） | admin |
+| — | `/downloads/*` | 安装包静态下载 | 否 |
+
+完整约定见 [`../docs/02-api.md`](../docs/02-api.md)。
+
+### 客户端「更新」按钮对接的就是这两条
+
+```
+更新按钮
+  ├─ GET /api/client/latest   客户端更新：有没有新版本的 Canoe.exe
+  └─ GET /api/subscription    订阅更新：我这条订阅（节点 + 入口）变了没有
+```
+
+`/api/subscription` **不建会话、不发凭证**，只读，返回一个 `revision` 指纹。
+客户端把上一轮的指纹存下来，一比就知道要不要提示用户重新启航。
+
+两条都走和 `/api/config` 同一条白名单出口 —— 响应里只有 `EntryPayload`，
+**没有任何真实节点字段**。
+
+---
+
+## 推送（SSE）
+
+客户端启航后挂着 `GET /api/events`，服务端主动推事件：
+
+| 事件 | 触发时机 | 客户端该做什么 |
+|---|---|---|
+| `hello` | 一连上就发 | 对齐 `config_version` / `revision` |
+| `config_changed` | 节点/绑定变更 | 提示"配置已更新，请重新启航"（或自动刷新订阅） |
+| `release` | 发布了新客户端版本 | 结果框提示有新版本 |
+| `kick` | 管理员踢下线 / 封禁 | **立即靠岸** |
+| `ping` | 空闲保活 | 忽略 |
+
+> ⚠ **只能开 1 个 worker。** 推送中心是进程内的（`services/broadcast.py`），
+> 多 worker 时管理端的广播只在它自己那个进程里扩散。详见
+> [`deploy/README.md`](deploy/README.md) 开头。
+
+---
+
+## 安全约定（改代码前必读）
+
+这一节是整个项目的安全底线，**不是可选的**：
+
+1. **`/api/config` 与 `/api/subscription` 只能回 `EntryPayload`。**
+   序列化一律走 `services/nodes.to_entry_payload()`，
+   **绝不要用 `model_dump()` 全量序列化节点** —— 那样新加的 `real_*` 字段会顺带泄漏。
+2. 每个下发响应出网前都会调 `assert_no_real_fields()` / `assert_whitelisted()` 自检，
+   越界直接 500 而不是静默泄漏。新加下发接口时照做。
+3. `real_*` 只允许出现在 `/api/admin/nodes`，且需要 `role=admin`。
+4. 生产必须 HTTPS + HSTS；`entry.insecure` 保持 false。
+5. `/api/admin/*` 二次校验角色，不能只靠前端隐藏入口。
+
+详见 [`../docs/04-security.md`](../docs/04-security.md)。
+
+---
+
+## 测试
+
+```bash
+.venv/bin/python run.py &                  # 或 run_local_https.py
+.venv/bin/python smoke_test.py http://127.0.0.1:8000
+.venv/bin/python smoke_test.py https://127.0.0.1:8443 --insecure   # 自签证书
+```
+
+**85 项**，覆盖：注册 → 登录 → `/api/config`（核心安全断言）→ 心跳 →
+封禁踢下线 → 登出 → 中转层配置 → 客户端更新 → 订阅更新 → SSE 推送 → 鉴权。
+
+其中一批断言专门盯着"客户端可见的响应里绝不出现 `real_*`"。
+
+---
+
+## 目录
 
 ```
 canoe-server/
-├── canoe_server/          服务端代码（草稿）
-│   ├── app.py             FastAPI 入口
-│   ├── models.py          ORM：users / tokens / nodes / user_node / sessions
-│   ├── security.py        密码哈希、令牌、入口凭证
-│   ├── routers/           auth.py / client.py / admin.py
-│   └── services/          nodes.py（入口白名单）/ sessions.py / relay.py
-├── relay/                 中转层部署材料（Nginx / systemd）
-├── schema.sql             建表语句（由 ORM 模型自动生成）
-├── seed.py                建表 + 管理员 + 示例节点
-├── smoke_test.py          端到端冒烟测试（56 项）
-└── run.py
+├── canoe_server/
+│   ├── app.py              FastAPI 入口（含推送事件循环绑定、静态挂载）
+│   ├── config.py           配置（.env 覆盖）
+│   ├── models.py           ORM：users/tokens/nodes/user_node/sessions
+│   │                              + audit_logs/config_meta/client_releases
+│   ├── security.py         密码哈希、令牌、入口凭证
+│   ├── deps.py             鉴权（authenticate 可被长连接复用）
+│   ├── routers/            auth.py / client.py / admin.py
+│   └── services/
+│       ├── nodes.py        入口白名单序列化 ★安全核心
+│       ├── sessions.py     会话与心跳
+│       ├── relay.py        中转层配置渲染
+│       ├── updates.py      ★客户端更新 + 订阅更新
+│       └── broadcast.py    ★SSE 推送中心
+├── deploy/                 ★部署材料（systemd / Nginx / 一键脚本）
+├── relay/                  中转层部署材料
+├── releases/               上传的客户端安装包（不进仓库）
+├── data/                   SQLite 与生成的配置（不进仓库）
+├── seed.py                 建库 + 种子数据
+├── smoke_test.py           端到端冒烟测试（85 项）
+├── run.py                  HTTP 启动
+└── run_local_https.py      HTTPS 启动（自签证书，本地联调用）
 ```
 
-这份草稿已经实现了你阶段3 里要求的全部内容：
-
-| 你的阶段3 要求 | 草稿里的实现 |
-|---|---|
-| 用户系统：注册、登录、token 鉴权 | `routers/auth.py` + `deps.py` |
-| 管理客户端：在线状态、封禁、到期 | `routers/admin.py` |
-| 管理节点：后台配置真实节点 | `routers/admin.py`（`real_*` 字段） |
-| 配置下发 | `GET /api/config` |
-| 心跳 / 同步 | `POST /api/heartbeat` + `config_version` |
-| 数据库表 | `models.py`（5 张表都在，字段有取舍，见 `docs/03-database.md`） |
-| API 约定 | `docs/02-api.md` |
-
 ---
 
-## 阶段 3 开始时的三个选项
+## 与客户端的接线点（阶段 5）
 
-1. **直接 review 这份草稿**，按你的新要求调整后进入阶段4 —— 最省事
-2. **推倒重写** —— 如果你想自己掌控服务端的每一行
-3. **删掉重来** —— 说一声我就清空这个目录
+客户端里为服务端预留的位置：
 
-在你确认之前，我不会动这个目录。
-
----
-
-## 与阶段1 的接口
-
-阶段1 的客户端里，这两个位置是为阶段3 留的接线点：
-
-| 阶段1 的位置 | 阶段3 替换成 |
+| 客户端位置 | 换成 |
 |---|---|
-| `canoe_client/testnodes.build_proxy_outbound()` | 用 `api.fetch_config()` 返回的 `entry` 构造出站（指向**中转层入口**） |
-| `canoe_client/localauth.login()` / `register()` | 调 `api.login()` / `api.register()` |
-| `canoe_client/testnodes.py` | 删除 |
+| `testnodes.build_proxy_outbound()` | 用 `api.fetch_config()` 返回的 `entry` 构造出站 |
+| `localauth.login()` / `register()` | 调 `api.login()` / `api.register()` |
+| `testnodes.py` | 删除 |
+| `update.py` 的单一地址检查 | 加一条 `/api/subscription` 检查 |
+| 新增 | 启航后挂 `/api/events` 收推送 |
 
-界面代码（`ui/`）不用改 —— 这正是阶段1 把这两个函数单独抽出来的原因。
-
-客户端侧的 `canoe_client/api.py` 也已经写好了，现在没接线，阶段3 直接用。
+`canoe_client/api.py` 已经写好（登录、取配置、心跳、停会话），阶段 5 直接接线。

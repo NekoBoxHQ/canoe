@@ -26,7 +26,11 @@
 | POST | `/api/session/stop` | **本项目补充**：结束会话但保留令牌 | 见下方说明 |
 | GET | `/api/me` | 当前用户信息 | 辅助 |
 | GET | `/api/health` | 健康检查 | 辅助 |
+| GET | `/api/client/latest` | **客户端更新**：最新版本 + 安装包地址（**不需要登录**） | 更新通道 |
+| GET | `/api/subscription` | **订阅更新**：当前订阅 + 变更指纹 | 更新通道 |
+| GET | `/api/events` | **推送**：SSE 长连接 | 推送 |
 | — | `/api/admin/*` | 管理后台 | 辅助 |
+| — | `/downloads/*` | 安装包静态下载 | 更新通道 |
 
 > **关于 `/api/session/stop`**
 > 需求里只有 5 个端点。但「靠岸」和「登出」是两件事：靠岸只结束这次代理会话，
@@ -258,6 +262,111 @@ Authorization: Bearer <token>
              "grpc_service": "", "insecure": false, "extra": {} }
 }
 ```
+
+---
+
+## 8.5 GET /api/client/latest —— 客户端更新
+
+**不需要登录。** 客户端得先能检查更新，才谈得上登舟 —— 所以这个响应里
+只有版本号和安装包元信息，没有半点与账号相关的东西。
+
+**200**
+
+```json
+{
+  "version": "1.1.0",
+  "url": "https://api.canoe.example.com/downloads/Canoe-1.1.0-win64.zip",
+  "notes": "修复 TUN 快速重连卡顿",
+  "published_at": 1790000000,
+  "size": 83276159,
+  "sha256": "9f2c...ab",
+  "min_version": "1.0.0"
+}
+```
+
+- `url` 由服务端自托管（挂在 `/downloads/` 上），文件名来自管理端上传时的原始文件名。
+- `sha256` 供客户端校验下载完整性。
+- `min_version` 非空且当前版本低于它时，客户端应引导**强制**升级。
+- 没发布过任何版本时返回 `404 not_found`。
+
+管理端发布：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/admin/releases` | 版本列表 + 当前最新 |
+| POST | `/api/admin/releases` | 只登记版本（包自己放进 `releases/`） |
+| POST | `/api/admin/releases/upload` | multipart 上传安装包并发布 |
+| GET | `/api/admin/releases/latest-preview` | 预览客户端会拿到什么 |
+| DELETE | `/api/admin/releases/{id}?delete_file=true` | 撤版本 |
+
+---
+
+## 8.6 GET /api/subscription —— 订阅更新
+
+需要登录。**不建会话、不发凭证**，只读 —— 客户端可以在没启航的时候随手调。
+
+**200**
+
+```json
+{
+  "protocol": 1,
+  "config_version": 7,
+  "node_name": "香港-01",
+  "entry": { "transport": "ws", "host": "canoe.example.com", "port": 443,
+             "uuid": "b8f1...", "path": "/e/hk01", "sni": "canoe.example.com",
+             "tls": true, "insecure": false },
+  "expires_at": 1799000000,
+  "heartbeat_interval": 30,
+  "revision": "3f9c1e0a2b7d4e51"
+}
+```
+
+`revision` 是**订阅指纹**：`config_version`、节点、入口域名/端口/UUID/路径/SNI
+任一变化都会让它变。客户端存住上一轮的字符串比一比即可：
+
+```
+revision 没变 -> 订阅已是最新
+revision 变了 -> 订阅有更新，提示"配置已更新，请重新启航"
+```
+
+和 `/api/config` 一样，`entry` 走 `EntryPayload` 白名单，没有真实节点字段。
+
+---
+
+## 8.7 GET /api/events —— 推送（SSE）
+
+需要登录。`Authorization: Bearer <token>` 走请求头（客户端是桌面程序，能设头）。
+
+一条 `text/event-stream` 长连接，事件体是 JSON：
+
+```
+data: {"type":"hello","config_version":7,"revision":"3f9c...","node_name":"香港-01"}
+
+data: {"type":"config_changed","config_version":8,"revision":"","node_name":""}
+
+data: {"type":"release","version":"1.1.0","url":"...","notes":"..."}
+
+data: {"type":"kick","user_id":12,"reason":"账号已被封禁"}
+```
+
+| 事件 | 客户端该做什么 |
+|---|---|
+| `hello` | 连上就发。对齐 `config_version` / `revision` |
+| `config_changed` | 提示"配置已更新，请重新启航"，或自动重拉 `/api/subscription` |
+| `release` | 结果框提示有新版本 |
+| `kick` | **立即靠岸**，不用等心跳 |
+| `ping` | 保活注释，忽略 |
+
+约定：
+
+- `config_changed` **不带节点名** —— 每个用户分配到的节点不同，带上就把别人的
+  节点泄露给所有人了。客户端收到后自己去拉 `/api/subscription`。
+- 断线要自动重连（指数退避）。重连后先靠 `hello` 对齐，漏掉的事件不必补。
+- 服务端有连接数上限（默认全局 2000 / 单账号 5），超了返回 `429`。
+- 空闲时服务端每 20 秒发一个注释帧保活，中间的反代会掐掉沉默连接。
+
+> **服务端只能开 1 个 worker** —— 推送中心是进程内的内存结构，多 worker 时
+> 管理端的广播只在它自己那个进程里扩散。见 `canoe-server/deploy/README.md`。
 
 ---
 

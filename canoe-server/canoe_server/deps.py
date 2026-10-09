@@ -22,15 +22,19 @@ def _err(http_status: int, code: str, detail: str) -> HTTPException:
 UNAUTHORIZED = _err(status.HTTP_401_UNAUTHORIZED, ErrorCode.UNAUTHORIZED, "令牌无效或已过期")
 
 
-def get_current_user(
-    creds: HTTPAuthorizationCredentials | None = Depends(bearer),
-    db: DBSession = Depends(get_db),
-) -> User:
-    if creds is None or not creds.credentials:
+def authenticate(db: DBSession, raw_token: str | None) -> User:
+    """把原始 Bearer 令牌换成用户，顺带做完所有账号级校验。
+
+    单独抽出来是因为 SSE 那条长连接**不能用 Depends(get_db)** ——
+    FastAPI 的 yield 依赖要等响应结束才回收，一条挂几小时的长连接
+    就会一直占着一个数据库会话，把连接池耗干。
+    长连接那边自己开一个短会话调这个函数即可。
+    """
+    if not raw_token:
         raise UNAUTHORIZED
 
     record = db.scalars(
-        select(Token).where(Token.token_hash == token_hash(creds.credentials))
+        select(Token).where(Token.token_hash == token_hash(raw_token))
     ).first()
 
     # 顺序很重要：先查令牌是否存在，再看账号状态，最后才判令牌有效性。
@@ -60,6 +64,23 @@ def get_current_user(
 
     user.last_login_at = user.last_login_at or utcnow()
     return user
+
+
+def bearer_token(request: Request) -> str | None:
+    """从 Authorization 头里取原始令牌。"""
+    raw = request.headers.get("authorization") or ""
+    if not raw.lower().startswith("bearer "):
+        return None
+    return raw[7:].strip() or None
+
+
+def get_current_user(
+    creds: HTTPAuthorizationCredentials | None = Depends(bearer),
+    db: DBSession = Depends(get_db),
+) -> User:
+    if creds is None or not creds.credentials:
+        raise UNAUTHORIZED
+    return authenticate(db, creds.credentials)
 
 
 def get_current_admin(user: User = Depends(get_current_user)) -> User:

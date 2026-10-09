@@ -111,6 +111,20 @@ class EntryPayload(BaseModel):
 # --------------------------------------------------------------------------
 
 
+def _assert_no_real_fields(blob: Any) -> None:
+    """递归找 real_* 键。任何下发模型的出网自检都走这里。"""
+    stack: list[Any] = [blob]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                if k.startswith("real_"):
+                    raise AssertionError(f"响应体泄漏真实节点字段: {k}")
+                stack.append(v)
+        elif isinstance(cur, list):
+            stack.extend(cur)
+
+
 class ConfigResponse(BaseModel):
     """/api/config 的响应体。
 
@@ -129,17 +143,68 @@ class ConfigResponse(BaseModel):
 
     def assert_no_real_fields(self) -> None:
         """防御性断言：序列化结果里不能出现 real_* 字段，也不能出现入口之外的东西。"""
-        blob = self.model_dump()
-        stack: list[Any] = [blob]
-        while stack:
-            cur = stack.pop()
-            if isinstance(cur, dict):
-                for k, v in cur.items():
-                    if k.startswith("real_"):
-                        raise AssertionError(f"响应体泄漏真实节点字段: {k}")
-                    stack.append(v)
-            elif isinstance(cur, list):
-                stack.extend(cur)
+        _assert_no_real_fields(self.model_dump())
+
+
+# --------------------------------------------------------------------------
+# /api/subscription  —— 订阅更新
+# --------------------------------------------------------------------------
+
+
+class SubscriptionResponse(BaseModel):
+    """/api/subscription 的响应体 —— 「订阅更新」用的。
+
+    和 /api/config 的区别：**不建会话、不发凭证**，只告诉客户端
+    「你当前的订阅长什么样、变了没有」。
+
+    客户端「更新」按钮拿它和本地记住的 revision 比：
+        revision 没变 -> 订阅已是最新
+        revision 变了 -> 订阅有更新，提示用户重新启航
+
+    和 /api/config 一样，这里也只有 EntryPayload —— 没有真实节点。
+    """
+
+    protocol: int = PROTOCOL_VERSION
+    config_version: int = 0
+    node_name: str | None = Field(default=None, description="当前会分配到的节点显示名")
+    entry: EntryPayload | None = Field(default=None, description="当前入口（非会话凭证）")
+    expires_at: int | None = Field(default=None, description="账号到期时间")
+    heartbeat_interval: int = 30
+    revision: str = Field(
+        default="",
+        description="订阅指纹。入口/节点/配置版本任一变化都会变，客户端拿它判断要不要更新",
+    )
+
+    def assert_no_real_fields(self) -> None:
+        _assert_no_real_fields(self.model_dump())
+
+
+# --------------------------------------------------------------------------
+# /api/client/latest  —— 客户端更新
+# --------------------------------------------------------------------------
+
+
+class ClientReleaseResponse(BaseModel):
+    """/api/client/latest 的响应体 —— 「客户端更新」用的。
+
+    注意：这条**不要求登录**（客户端得先能检查更新，才谈得上登录），
+    所以里面不能有任何与账号相关的东西。
+    """
+
+    version: str = Field(description="最新版本号，如 1.1.0")
+    url: str = Field(default="", description="安装包下载地址（服务端自托管）")
+    notes: str = Field(default="", description="更新说明，纯文本")
+    published_at: int = 0
+    size: int = Field(default=0, description="安装包字节数")
+    sha256: str = Field(default="", description="安装包摘要，客户端可校验")
+    min_version: str = Field(
+        default="",
+        description="低于这个版本必须升级（服务端可强制）。空表示不强制",
+    )
+
+    @property
+    def notes_lines(self) -> list[str]:
+        return [ln.strip() for ln in (self.notes or "").splitlines() if ln.strip()]
 
 
 # --------------------------------------------------------------------------

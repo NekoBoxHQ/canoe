@@ -167,6 +167,18 @@ class Api:
     ME = "/api/me"
     HEALTH = "/api/health"
 
+    # 更新通道（客户端「更新」按钮对接这两条）
+    #   客户端更新：有没有新版本的 Canoe.exe
+    CLIENT_LATEST = "/api/client/latest"
+    #   订阅更新：我这条订阅（节点 + 入口）变了没有
+    SUBSCRIPTION = "/api/subscription"
+
+    # 推送：SSE 长连接，服务端主动告知配置变更
+    EVENTS = "/api/events"
+
+    # 安装包下载（服务端自托管，挂在 StaticFiles 上）
+    DOWNLOAD_PREFIX = "/downloads"
+
     # 管理后台
     ADMIN_USERS = "/api/admin/users"
     ADMIN_NODES = "/api/admin/nodes"
@@ -174,6 +186,8 @@ class Api:
     ADMIN_STATS = "/api/admin/stats"
     ADMIN_RELAY_CONFIG = "/api/admin/relay/config"
     ADMIN_RELAY_RELOAD = "/api/admin/relay/reload"
+    # 发布新版本（含上传安装包）
+    ADMIN_RELEASES = "/api/admin/releases"
 
 
 # --------------------------------------------------------------------------

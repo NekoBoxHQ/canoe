@@ -4,10 +4,22 @@
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
@@ -18,15 +30,39 @@ from canoe_core import Api
 from ..config import settings
 from ..database import get_db
 from ..deps import client_ip, get_current_admin
-from ..models import AuditLog, Node, Session as SessionRow, User, epoch, utcnow
+from ..models import AuditLog, ClientRelease, Node, Session as SessionRow, User, epoch, utcnow
 from ..security import gen_entry_uuid, hash_password
+from ..services.broadcast import hub, notify_config_changed, notify_kick, notify_release
 from ..services.nodes import bump_config_version, get_config_version, to_admin_payload
 from ..services.relay import dump_singbox, render_nginx, render_singbox
 from ..services.sessions import revoke_user_sessions, revoke_user_tokens
+from ..services.updates import (
+    latest_release,
+    list_releases,
+    publish_release,
+    release_dir,
+    safe_filename,
+    sha256_file,
+    to_release_payload,
+)
 
 # 不设 prefix：Api.* 常量里已经是完整路径（/api/admin/...），
 # 再加 prefix 会拼成 /api/admin/api/admin/...
 router = APIRouter(tags=["admin"])
+
+
+# ==========================================================================
+# 推送辅助
+# ==========================================================================
+
+
+def _broadcast_config(db: DBSession) -> int:
+    """节点/绑定变更后通知在线客户端。
+
+    广播里**不带节点名** —— 每个用户被分配到的节点不一样，带了就会把
+    别人的节点泄露给所有人。只说"配置变了"，客户端自己回头拉自己的订阅。
+    """
+    return notify_config_changed(get_config_version(db))
 
 
 # ==========================================================================
@@ -208,7 +244,13 @@ def ban_user(
         )
     )
     db.commit()
-    return {"ok": True, "revoked_tokens": tokens, "revoked_sessions": sessions}
+    pushed = notify_kick(user_id, "账号已被封禁")
+    return {
+        "ok": True,
+        "revoked_tokens": tokens,
+        "revoked_sessions": sessions,
+        "pushed": pushed,
+    }
 
 
 @router.post(Api.ADMIN_USERS + "/{user_id}/unban")
@@ -304,7 +346,8 @@ def create_node(
     version = bump_config_version(db)
     db.add(AuditLog(user_id=admin.id, action="node_create", detail=node.name))
     db.commit()
-    return {"id": node.id, "config_version": version}
+    pushed = _broadcast_config(db)
+    return {"id": node.id, "config_version": version, "pushed": pushed}
 
 
 @router.patch(Api.ADMIN_NODES + "/{node_id}")
@@ -322,7 +365,8 @@ def update_node(
     version = bump_config_version(db)
     db.add(AuditLog(user_id=admin.id, action="node_update", detail=node.name))
     db.commit()
-    return {"ok": True, "config_version": version}
+    pushed = _broadcast_config(db)
+    return {"ok": True, "config_version": version, "pushed": pushed}
 
 
 @router.delete(Api.ADMIN_NODES + "/{node_id}")
@@ -337,7 +381,8 @@ def delete_node(
     bump_config_version(db)
     db.add(AuditLog(user_id=admin.id, action="node_delete", detail=str(node_id)))
     db.commit()
-    return {"ok": True}
+    pushed = _broadcast_config(db)
+    return {"ok": True, "pushed": pushed}
 
 
 @router.post(Api.ADMIN_NODES + "/{node_id}/bind")
@@ -363,7 +408,8 @@ def bind_node(
         db.add(UserNode(user_id=uid, node_id=node_id))
         added += 1
     db.commit()
-    return {"ok": True, "added": added}
+    pushed = _broadcast_config(db) if added else 0
+    return {"ok": True, "added": added, "pushed": pushed}
 
 
 # ==========================================================================
@@ -419,7 +465,9 @@ def kick_session(
     db.commit()
     db.add(AuditLog(user_id=admin.id, action="kick", detail=session_id))
     db.commit()
-    return {"ok": True}
+    # 推送一条 kick，客户端不用等下一次心跳就能立刻靠岸
+    pushed = notify_kick(row.user_id, "管理员把你踢下线了")
+    return {"ok": True, "pushed": pushed}
 
 
 @router.get(Api.ADMIN_STATS)
@@ -438,6 +486,8 @@ def stats(_: User = Depends(get_current_admin), db: DBSession = Depends(get_db))
         "sessions_total": len(sessions),
         "sessions_online": sum(1 for s in sessions if s.online),
         "config_version": get_config_version(db),
+        # 推送连接数：排查"为什么客户端没收到推送"时先看这里
+        "push": hub.stats(),
     }
 
 
@@ -480,3 +530,155 @@ def relay_reload(admin: User = Depends(get_current_admin), db: DBSession = Depen
         "returncode": proc.returncode,
         "stderr": proc.stderr[-2000:],
     }
+
+
+# ==========================================================================
+# 客户端版本发布（「客户端更新」的数据源）
+# ==========================================================================
+
+
+class ReleasePublish(BaseModel):
+    version: str = Field(min_length=1, max_length=32)
+    notes: str = ""
+    min_version: str = ""
+
+
+def _release_view(row: ClientRelease) -> dict:
+    return {
+        "id": row.id,
+        "version": row.version,
+        "filename": row.filename,
+        "size": row.size,
+        "sha256": row.sha256,
+        "notes": row.notes,
+        "min_version": row.min_version,
+        "enabled": row.enabled,
+        "published_at": epoch(row.published_at) or 0,
+    }
+
+
+@router.get(Api.ADMIN_RELEASES)
+def admin_list_releases(
+    _: User = Depends(get_current_admin), db: DBSession = Depends(get_db)
+):
+    items = [_release_view(r) for r in list_releases(db)]
+    current = latest_release(db)
+    return {
+        "items": items,
+        "latest": current.version if current else None,
+        "download_prefix": Api.DOWNLOAD_PREFIX,
+    }
+
+
+@router.post(Api.ADMIN_RELEASES, status_code=status.HTTP_201_CREATED)
+def admin_publish_release(
+    body: ReleasePublish,
+    admin: User = Depends(get_current_admin),
+    db: DBSession = Depends(get_db),
+):
+    """只登记版本信息 —— 安装包你自己已经放进 releases/ 了。"""
+    row = publish_release(
+        db, version=body.version, notes=body.notes, min_version=body.min_version
+    )
+    db.add(AuditLog(user_id=admin.id, action="release_publish", detail=row.version))
+    db.commit()
+    pushed = notify_release(row.version, notes=row.notes)
+    return {**_release_view(row), "pushed": pushed}
+
+
+@router.post(Api.ADMIN_RELEASES + "/upload", status_code=status.HTTP_201_CREATED)
+def admin_upload_release(
+    version: str = Form(..., min_length=1, max_length=32),
+    notes: str = Form(""),
+    min_version: str = Form(""),
+    file: UploadFile = File(...),
+    admin: User = Depends(get_current_admin),
+    db: DBSession = Depends(get_db),
+):
+    """上传安装包并发布。
+
+    包落到 releases/ 下，由 StaticFiles 对外提供下载；
+    /api/client/latest 会把地址拼成 <站点>/downloads/<文件名>。
+    """
+    filename = safe_filename(file.filename or "Canoe.zip")
+    dest = release_dir() / filename
+    limit = settings.max_release_mb * 1024 * 1024
+
+    size = 0
+    try:
+        with dest.open("wb") as out:
+            while True:
+                chunk = file.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > limit:
+                    raise HTTPException(
+                        413,
+                        {
+                            "code": "too_large",
+                            "detail": f"安装包超过 {settings.max_release_mb} MB 上限",
+                        },
+                    )
+                out.write(chunk)
+    except HTTPException:
+        dest.unlink(missing_ok=True)     # 别把半个包留在磁盘上
+        raise
+    except OSError as exc:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(500, {"code": "io_error", "detail": f"写文件失败：{exc}"}) from exc
+    finally:
+        file.file.close()
+
+    digest = sha256_file(dest)
+    row = publish_release(
+        db,
+        version=version,
+        filename=filename,
+        size=size,
+        sha256=digest,
+        notes=notes,
+        min_version=min_version,
+    )
+    db.add(
+        AuditLog(user_id=admin.id, action="release_upload", detail=f"{version} {filename} {size}B")
+    )
+    db.commit()
+    pushed = notify_release(row.version, notes=row.notes)
+    return {**_release_view(row), "pushed": pushed}
+
+
+@router.delete(Api.ADMIN_RELEASES + "/{release_id}")
+def admin_delete_release(
+    release_id: int,
+    delete_file: bool = False,
+    admin: User = Depends(get_current_admin),
+    db: DBSession = Depends(get_db),
+):
+    """撤下一个版本。默认只删记录（安装包留着），delete_file=true 连包一起删。"""
+    row = db.get(ClientRelease, release_id)
+    if row is None:
+        raise HTTPException(404, {"code": "not_found", "detail": "版本不存在"})
+
+    version, filename = row.version, row.filename
+    if delete_file and filename:
+        (release_dir() / filename).unlink(missing_ok=True)
+    db.delete(row)
+    db.commit()
+    db.add(AuditLog(user_id=admin.id, action="release_delete", detail=version))
+    db.commit()
+    return {"ok": True, "version": version, "file_deleted": bool(delete_file and filename)}
+
+
+@router.get(Api.ADMIN_RELEASES + "/latest-preview")
+def admin_latest_preview(
+    request: Request,
+    _: User = Depends(get_current_admin),
+    db: DBSession = Depends(get_db),
+):
+    """预览客户端调 /api/client/latest 会拿到什么 —— 发布完不用真去装一次才知道。"""
+    row = latest_release(db)
+    if row is None:
+        return {"latest": None, "hint": "还没有发布任何版本"}
+    base = settings.public_base_url.rstrip("/") or str(request.base_url).rstrip("/")
+    return to_release_payload(row, base).model_dump()
