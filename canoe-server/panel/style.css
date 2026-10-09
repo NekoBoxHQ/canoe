@@ -89,6 +89,15 @@ html.booting #login-screen { display: none; }
   background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.45);
   color: #ffb4b4; font-size: 13px; text-align: left;
 }
+/* 登录按钮跟上面两个输入框**同宽同高**。
+ *
+ * .btn 本身是 padding 撑出来的行内块，宽度跟着文字走 —— 搁在居中的卡片里
+ * 就成了窄窄一小条悬在中间，跟满宽的输入框对不齐，看着像没做完。
+ * 这里把宽度和内边距都对齐到 .field 的 input（11px 12px + 1px 边框），
+ * 高度自然也就一样了。 */
+#login-form > .btn-primary {
+  width: 100%; padding: 11px 12px; border-radius: 10px;
+}
 
 .field { display: block; text-align: left; margin-bottom: 14px; }
 .field > span { display: block; margin-bottom: 6px; font-size: 12px; color: var(--dim); }

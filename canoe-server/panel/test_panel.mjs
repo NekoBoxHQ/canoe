@@ -338,5 +338,13 @@ check('★ CSS: 启动屏默认藏着（不然没令牌时也会露一下）',
 check('启动屏没用 hidden 属性（会被 [hidden]{display:none!important} 锁死）',
       !/<div id="boot-screen"[^>]*\shidden/.test(bootHtml));
 
+// 登录按钮要跟上面两个输入框同宽同理。.btn 是靠 padding 撑出来的行内块，
+// 宽度跟着文字走 —— 搁在居中的卡片里就成了窄窄一条悬在中间，跟满宽的
+// 输入框对不齐。linkedom 不做布局，量不了实际宽度，只能查样式表。
+check('★ CSS: 登录按钮满宽（跟输入框对齐）',
+      /#login-form\s*>\s*\.btn-primary\s*\{[^}]*width\s*:\s*100%/.test(bootCss), '没找到这条规则');
+check('★ CSS: 登录按钮的内边距跟 input 一致（高度才会齐）',
+      /#login-form\s*>\s*\.btn-primary\s*\{[^}]*padding\s*:\s*11px\s+12px/.test(bootCss), '没找到');
+
 console.log(`\n${'='.repeat(48)}\n通过 ${pass} 项，失败 ${fail} 项\n${'='.repeat(48)}\n`);
 process.exit(fail ? 1 : 0);
