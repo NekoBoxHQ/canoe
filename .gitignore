@@ -52,3 +52,4 @@ Thumbs.db
 # 6 张 _lights*.png 和 _shot.py 跟着发布提交上了生产）。
 _*.py
 _*.png
+_sshlib/
