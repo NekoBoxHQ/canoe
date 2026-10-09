@@ -561,6 +561,15 @@ async function pageSessions(root) {
   root.append(h('div', { class: 'card' }, renderTable(sessionCols(), rows, '当前没有在线会话')));
 }
 
+//: 接管方式的显示名。客户端报的是机器码，面板上给人看得是中文。
+//: 两种接管方式**可以同时开**（客户端 options.py 里写明了），所以第三档
+//: 是"叠加"不是二选一 —— 只写"TUN 模式"会让管理员以为系统代理没开。
+const MODE_LABELS = {
+  system_proxy: '系统代理',
+  tun: 'TUN 模式',
+  'system_proxy+tun': '系统代理+TUN模式',
+};
+
 function sessionCols() {
   return [
     { title: '会话 ID', render: (r) => h('span', { class: 'mono', text: r.session_id.slice(0, 12) + '…' }) },
@@ -568,7 +577,8 @@ function sessionCols() {
     { title: '节点', key: 'node_name' },
     { title: '设备', key: 'device_id' },
     { title: '来源 IP', key: 'client_ip' },
-    { title: '模式', key: 'mode' },
+    // 认不出来的原样显示 —— 以后客户端加了新组合，面板不会变成一片空白
+    { title: '模式', render: (r) => h('span', { text: MODE_LABELS[r.mode] || r.mode || '—' }) },
     { title: '状态', render: (r) => r.revoked ? tag('已吊销', 'bad') : (r.online ? tag('在线', 'ok') : tag('离线')) },
     { title: '最后心跳', render: (r) => fmtTime(r.last_seen) },
     {

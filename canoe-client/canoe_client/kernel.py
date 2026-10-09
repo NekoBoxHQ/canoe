@@ -38,6 +38,9 @@ CONFIG_CLEANUP_DELAY = 2.0
 # 实测：不等的话，紧接着再启航会卡在 "open interface take too much time to finish!"。
 TUN_TEARDOWN_GRACE = 2.0
 
+#: TUN 虚拟网卡的名字。自己定，见 _inbounds 里的说明。
+TUN_INTERFACE_NAME = "canoe"
+
 #: 匹配 ANSI 转义序列（内核输出里的颜色码）
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -76,6 +79,78 @@ class KernelError(Exception):
 # --------------------------------------------------------------------------
 # 配置生成
 # --------------------------------------------------------------------------
+
+
+#: 收拾 TUN 残局用的 PowerShell。一次调用干完两件事：杀掉上次留下的**孤儿**
+#: sing-box、删掉还占着名字的虚拟网卡（先杀进程再删网卡 —— 网卡被进程
+#: 攥着的时候删不掉）。
+#:
+#: ⚠ 两道保险，缺一不可：
+#:
+#:   1. **只杀孤儿**。进程必须是从 %TEMP%\_MEI*（打包解压出来的那份）或者
+#:      仓库 bin/ 目录起的，**而且父进程已经没了**。少了后半句就会误杀
+#:      另一个还在跑的轻舟实例的内核 —— 那是把人家正在用的代理掐了。
+#:   2. **网卡只认名字叫 canoe 的那张**。绝不能按"描述里带 Wintun"去挑，
+#:      那会连带删掉用户装的 WireGuard。
+_HEAL_PS = r"""
+$killed = 0
+Get-CimInstance Win32_Process -Filter "Name='sing-box.exe'" -ErrorAction SilentlyContinue |
+  Where-Object {
+    $_.ExecutablePath -and (
+      $_.ExecutablePath -like "$env:TEMP\_MEI*\bin\sing-box.exe" -or
+      $_.ExecutablePath -like "*\canoe-client\bin\sing-box.exe"
+    )
+  } |
+  ForEach-Object {
+    $parent = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $_.ParentProcessId) -ErrorAction SilentlyContinue
+    if (-not $parent) {
+      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+      $killed++
+    }
+  }
+if ($killed -gt 0) { Start-Sleep -Milliseconds 600 }
+Get-NetAdapter -Name 'canoe' -ErrorAction SilentlyContinue |
+  Remove-NetAdapter -Confirm:$false -ErrorAction SilentlyContinue
+$killed
+"""
+
+
+def heal_leftovers() -> int:
+    """清掉上一次没收干净留下的 TUN 残局，返回杀掉的孤儿进程数。
+
+    为什么需要它：崩溃、被任务管理器强杀、更新时来不及收尾 —— 这些情况下
+    sing-box 会变成**孤儿进程**活下来，wintun 网卡也跟着留在系统里。之后
+    每次开 TUN 都会撞上：
+
+        configure tun interface: set ipv4 address: The object already exists
+
+    界面上只表现为"TUN 不生效"，那行 FATAL 没人看得懂，也没有任何提示告诉
+    用户该怎么办。（系统代理早就有 heal_on_start 了，TUN 这边一直漏着。）
+
+    只在两条路上调：启动时（且配了 TUN）、以及 TUN 启动失败之后重试前。
+    平时不调 —— 起一次 PowerShell 要小一秒，不值当。
+    """
+    if os.name != "nt":
+        return 0
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", _HEAL_PS],
+            capture_output=True, text=True, timeout=25,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    lines = (proc.stdout or "").strip().splitlines()
+    try:
+        return int(lines[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
+def _tun_unavailable(detail: str) -> bool:
+    """内核这几行报错，是不是"网卡还占着"这一类？"""
+    low = detail.lower()
+    return ("already exists" in low) or ("take too much time" in low)
 
 
 def _ruleset_defs(opts: RunOptions) -> list[dict[str, Any]]:
@@ -213,6 +288,11 @@ def _inbounds(opts: RunOptions) -> list[dict[str, Any]]:
             {
                 "type": "tun",
                 "tag": "tun-in",
+                # ★ 网卡名字必须自己定。不写的话 sing-box 用它的默认名，
+                #   我们就没法在收拾残局时把**自己那张**网卡挑出来 ——
+                #   只能按"描述里带 Wintun"去猜，那会连带删掉别人家的
+                #   WireGuard。名字写死，清理才敢下手。
+                "interface_name": TUN_INTERFACE_NAME,
                 "address": address,
                 "mtu": 9000,
                 "auto_route": True,
@@ -268,7 +348,12 @@ class SingBoxKernel:
         return self._proc is not None and self._proc.poll() is None
 
     # -- 启动 -----------------------------------------------------------
-    def start(self, proxy_outbound: dict[str, Any], opts: RunOptions) -> None:
+    def start(
+        self,
+        proxy_outbound: dict[str, Any],
+        opts: RunOptions,
+        _healed: bool = False,
+    ) -> None:
         if self.running:
             raise KernelError("内核已在运行")
 
@@ -281,6 +366,18 @@ class SingBoxKernel:
         cfg = build_config(proxy_outbound, opts)
         self._had_tun = any(i.get("type") == "tun" for i in cfg.get("inbounds", []))
         text = json.dumps(cfg, indent=2, ensure_ascii=False)
+
+        # TUN 起来之前先清一遍残局。
+        #
+        # 不清的话会出现一种很阴的状态：同名网卡还占着，新内核**把网卡建出来
+        # 却配不上** —— 控制面板里看得见这张卡、状态是空的、一条路由都没有。
+        # 表面看"TUN 开起来了"，实际什么都没接管，用户那边就是"网页打不开"。
+        # 用户报的"先系统代理、再切 TUN 就不行，整个退出重来才行"就是它：
+        # 重启之后残局才被清掉。
+        if self._had_tun and not _healed:
+            cleared = heal_leftovers()
+            if cleared:
+                bus.system(f"启航前清掉了 {cleared} 个上次没退干净的内核进程")
         del cfg
 
         # 内核只能从文件读配置，所以写临时文件；读完立刻删
@@ -324,6 +421,21 @@ class SingBoxKernel:
             self._proc = None
             self._remove_config()
             detail = _ANSI_RE.sub("", output)[-800:]
+
+            # TUN 网卡还占着 —— 上次崩溃 / 被强杀 / 更新来不及收尾留下的。
+            # 清掉残局再来一次。用户报的"TUN 不生效"十有八九是这条：
+            # 界面上只看到一句 FATAL，重启程序也不管用，因为残局是留在
+            # 系统里的，不在我们这个进程里。
+            #
+            # 只重试**一次**。清完还起不来就是别的问题（没管理员权限、
+            # 缺 wintun.dll），再试只是让用户多等两秒。
+            if self._had_tun and not _healed and _tun_unavailable(detail):
+                bus.system("TUN 网卡被上次的残留占着，清理后重试…")
+                killed = heal_leftovers()
+                if killed:
+                    bus.system(f"已清掉 {killed} 个上次没退干净的内核进程")
+                return self.start(proxy_outbound, opts, _healed=True)
+
             raise KernelError(
                 f"sing-box 启动后立即退出（退出码 {code}）。"
                 + (f"\n内核输出：\n{detail}" if detail else "通常是配置有问题或内核版本不匹配。")

@@ -40,6 +40,9 @@ class CanoeApp:
             self.tray.show_requested.connect(self._show_window)
             self.tray.quit_requested.connect(self.quit)
             self.main.close_to_tray = True
+            # TUN 接管全部流量，而关窗之后程序就缩在托盘里 —— 图标上那颗
+            # 红点就是给这个状态用的，别让它悄悄跑着没人知道。
+            self.main.tun_active_changed.connect(self.tray.set_tun)
             self.tray.show()
 
     def start(self) -> None:
@@ -247,12 +250,24 @@ def main() -> int:
         # 关窗只是收起来，窗口全没了也不许 Qt 自己退出 —— 退出由托盘菜单说了算
         app.setQuitOnLastWindowClosed(False)
 
-    # 启动自愈：上次如果是崩溃退出的，注册表里可能留着"代理开着但指向死端口"
-    # 的脏状态 —— 那会让用户从打开程序到点启航的这段时间完全没网。先修好它。
+    # 启动自愈。这一类问题都是"残局留在系统里、不在我们进程里"，重启程序
+    # 也不管用，所以每次启动都得先收拾一遍：
+    #
+    #   1. 注册表里留着"代理开着但指向死端口" —— 用户从打开程序到启航这段
+    #      时间完全没网
+    #   2. 上次崩溃/被强杀留下的孤儿 sing-box + wintun 网卡 —— 之后每次
+    #      开 TUN 都撞 "The object already exists"，界面上只是"TUN 不生效"
+    #
+    # 第 2 条只在配了 TUN 时才做：起一次 PowerShell 要小一秒，没开 TUN 的
+    # 用户白等。
     try:
         opts = RunOptions.from_dict(config["options"])
         if sysproxy.heal_on_start(int(opts.mixed_port)):
             print("[canoe] 已清理上次异常退出残留的系统代理设置")
+        if opts.use_tun:
+            cleared = kernel.heal_leftovers()
+            if cleared:
+                print(f"[canoe] 已清理 {cleared} 个上次没退干净的内核进程")
     except Exception:  # noqa: BLE001 - 自愈失败不能拦住启动
         pass
 

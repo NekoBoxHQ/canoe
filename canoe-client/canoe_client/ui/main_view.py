@@ -122,6 +122,10 @@ def _result_line(result) -> str:
 
 class MainView(FramelessWindow):
     logged_out = Signal()
+    #: 「TUN 是不是真的在跑」变了。托盘靠它决定要不要给图标点红点。
+    #: 注意口径是**正在跑**，不是"勾选框被勾上了" —— 靠岸之后勾还在，
+    #: 但那时没有接管任何流量，点红点就是骗人。
+    tun_active_changed = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__(WINDOW_W, 560)
@@ -157,6 +161,8 @@ class MainView(FramelessWindow):
         #: 下载的取消开关。**每次开下都换一个新的** —— 复用的话上次
         #: 按过取消，这次一进来就是置位状态，下载立刻自己掐掉。
         self._update_cancel = threading.Event()
+        #: TUN 当前是不是真的在跑（给托盘那颗红点用的）
+        self._tun_active = False
 
         self._build()
         self._load_options_into_ui()
@@ -469,6 +475,9 @@ class MainView(FramelessWindow):
         self._opts.use_system_proxy = self.cb_system.isChecked()
         self._opts.use_tun = self.cb_tun.isChecked()
         self._update_tun_tooltip()
+        # 上面那句 _dock() 已经刷过一次状态，但那会儿 use_tun 还是旧值 ——
+        # 改完得再同步一次，不然"在航时勾上 TUN"这条路上红点不会亮。
+        self._sync_tun_indicator()
         config.set_and_save(options=self._opts.to_dict())
 
     def _update_tun_tooltip(self) -> None:
@@ -498,6 +507,14 @@ class MainView(FramelessWindow):
         self.dock_btn.setEnabled(sailing)
         self.launch_btn.setText(Text.BTN_LAUNCH)
         self.dock_btn.setText(Text.BTN_DOCK)
+        self._sync_tun_indicator()
+
+    def _sync_tun_indicator(self) -> None:
+        """TUN 是不是真的在跑 —— 变了才发信号，免得托盘图标一直被重画。"""
+        active = session.sailing and self._opts.use_tun
+        if active != self._tun_active:
+            self._tun_active = active
+            self.tun_active_changed.emit(active)
 
     # ==================================================================
     # 服务端推送（SSE）
@@ -729,7 +746,15 @@ class MainView(FramelessWindow):
         ★ 服务端不下发节点，也无从知道客户端连的是哪台 ——
           节点全在客户端解密出来的订阅里。
         """
-        mode = "tun" if self._opts.use_tun else "system_proxy"
+        # 报给服务端的接管方式。两种**可以同时开**（见 options.py），所以不是
+        # 二选一 —— 只报 "tun" 的话，面板上看不出这台机器还挂着系统代理。
+        # 服务端那个字段是自由字符串，不校验，所以叠加值直接发得过去。
+        if self._opts.use_tun and self._opts.use_system_proxy:
+            mode = "system_proxy+tun"
+        elif self._opts.use_tun:
+            mode = "tun"
+        else:
+            mode = "system_proxy"
         # 先建会话：被封/到期在这里就会被挡下，不用等到启航一半
         cfg = api.fetch_config(mode)
 
@@ -753,7 +778,6 @@ class MainView(FramelessWindow):
         self._session_id = cfg.session_id
         self._node_name = link.name
         self._heartbeat_seconds = max(10, int(cfg.heartbeat_interval or 30))
-        import sys as _s; print('DBG 出站=', __import__('json').dumps(link.outbound, ensure_ascii=False), file=_s.stderr, flush=True)
         kernel.start(link.outbound, self._opts)
         return cfg, found, index
 

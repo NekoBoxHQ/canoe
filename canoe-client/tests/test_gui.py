@@ -673,6 +673,80 @@ def main() -> int:
     t._quit_action.trigger()
     check("★ 点「退出」发出 quit_requested", seen == ["quit"], str(seen))
 
+    # ---- TUN：托盘红点 ----
+    # 用户要求：TUN 模式时给任务栏小图标加一个红点。
+    # TUN 接管**全部**流量，而关窗之后程序就缩在托盘里 —— 得让人一眼
+    # 看出来现在不只是挂了个系统代理。
+    print("\n[TUN 模式的红点]")
+    from PySide6.QtGui import QColor, QIcon, QPixmap
+
+    from canoe_client import kernel as k_mod
+    from canoe_client.options import RunOptions
+    from canoe_client.ui import tray as tray_mod
+
+    # 网卡名字必须自己定。不写的话清理残局时挑不出"自己那张网卡"，
+    # 只能按"描述里带 Wintun"去猜 —— 那会把用户的 WireGuard 也删了。
+    check("★ TUN 网卡名字写死了（清理残局才敢下手）",
+          k_mod.TUN_INTERFACE_NAME == "canoe", k_mod.TUN_INTERFACE_NAME)
+    tun_in = next(i for i in k_mod._inbounds(RunOptions(use_tun=True, use_system_proxy=True))
+                  if i["type"] == "tun")
+    check("★ TUN 入站带上了 interface_name",
+          tun_in.get("interface_name") == "canoe", str(tun_in))
+    check("★ 系统代理和 TUN 同时勾选时两个入站都在（不是二选一）",
+          [i["type"] for i in k_mod._inbounds(
+              RunOptions(use_tun=True, use_system_proxy=True))] == ["mixed", "tun"])
+    check("都不勾时兜底给一个 mixed（内核起来总得有个口子）",
+          [i["type"] for i in k_mod._inbounds(
+              RunOptions(use_tun=False, use_system_proxy=False))] == ["mixed"])
+
+    # 「TUN 不生效」那个坑：上一次没收干净留下的孤儿内核 + 残留网卡。
+    check("★ 认得「网卡已存在」这类报错",
+          k_mod._tun_unavailable(
+              "configure tun interface: set ipv4 address: The object already exists"))
+    check("★ 认得「网卡迟迟收不回去」这类报错",
+          k_mod._tun_unavailable("open interface take too much time to finish!"))
+    check("别的报错不算网卡冲突（不然白清一次）",
+          not k_mod._tun_unavailable("bad key length, required 16, got 3"))
+
+    pm = QPixmap(32, 32)
+    pm.fill(QColor("#2E8BFF"))
+    base = QIcon(pm)
+    dotted = tray_mod.with_dot(base)
+    img_plain = base.pixmap(32, 32).toImage()
+    img_dot = dotted.pixmap(32, 32).toImage()
+    dot_px = img_dot.pixelColor(24, 8)
+    check("★ 右上角真的点上了红点",
+          dot_px.red() > 150 and dot_px.green() < 110, dot_px.name())
+    check("原图同一个位置不是红的",
+          img_plain.pixelColor(24, 8).name() != dot_px.name(),
+          img_plain.pixelColor(24, 8).name())
+
+    t2 = Tray(base)
+    plain_key = t2.icon.icon().cacheKey()
+    t2.set_tun(True)
+    check("★ TUN 起效时图标换成带红点的那张",
+          t2.icon.icon().cacheKey() != plain_key)
+    check("★ 提示语点明在接管全部流量", "TUN" in t2.icon.toolTip(), t2.icon.toolTip())
+    t2.set_tun(False)
+    check("★ 不跑了就换回去（红点不能一直挂着）",
+          t2.icon.icon().cacheKey() == plain_key and "TUN" not in t2.icon.toolTip())
+
+    # 信号口径：是"TUN 真的在跑"，不是"勾选框被勾上了"
+    print("\n[TUN 红点的触发口径]")
+    fired: list[bool] = []
+    view.tun_active_changed.connect(lambda on: fired.append(on))
+    saved_state = session.state
+    view._opts.use_tun = True
+    view._set_state(STATE_SAILED)
+    check("★ 在航 + TUN -> 发 True（红点亮）", fired == [True], str(fired))
+    view._set_state(STATE_DOCKED)
+    check("★ 靠岸 -> 发 False（红点灭）", fired == [True, False], str(fired))
+    check("★ 只是勾着但没启航，不算「TUN 在跑」（点红点就是骗人）",
+          fired[-1] is False, str(fired))
+    view._set_state(saved_state)
+    view._opts.use_tun = False
+    view._sync_tun_indicator()
+
     # ---- 更新弹窗 ----
     # 以前"有新版本"是个 QMessageBox：只有 OK，点完什么也不发生，
     # 而且浅色底配近白字，整框的字都糊了。现在换成自家的无边框窗口，

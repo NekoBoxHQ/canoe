@@ -78,6 +78,9 @@ const FIXTURES = [
   ]}],
   [/\/api\/admin\/sessions/, { items: [
     { session_id: 'abcdef0123456789', user_id: 2, username: 'demo', node_name: '香港-01', device_id: 'dev-1', client_ip: '1.2.3.4', mode: 'system_proxy', online: true, revoked: false, created_at: 0, last_seen: 1790000000 },
+    { session_id: 'beef0123456789ab', user_id: 2, username: 'demo', node_name: '香港-01', device_id: 'dev-2', client_ip: '5.6.7.8', mode: 'tun', online: true, revoked: false, created_at: 0, last_seen: 1790000000 },
+    { session_id: 'cafe0123456789ab', user_id: 2, username: 'demo', node_name: '香港-01', device_id: 'dev-3', client_ip: '9.9.9.9', mode: 'system_proxy+tun', online: true, revoked: false, created_at: 0, last_seen: 1790000000 },
+    { session_id: 'dead0123456789ab', user_id: 2, username: 'demo', node_name: '香港-01', device_id: 'dev-4', client_ip: '1.1.1.1', mode: '某种还没见过的方式', online: true, revoked: false, created_at: 0, last_seen: 1790000000 },
   ]}],
   [/\/api\/admin\/releases$/, { items: [
     { id: 1, version: '1.1.0', filename: 'Canoe-1.1.0.zip', size: 83276159, sha256: 'a'.repeat(64), notes: 'x', min_version: '1.0.0', enabled: true, published_at: 1790000000 },
@@ -442,6 +445,23 @@ check('★ CSS: 登录按钮满宽（跟输入框对齐）',
       /#login-form\s*>\s*\.btn-primary\s*\{[^}]*width\s*:\s*100%/.test(bootCss), '没找到这条规则');
 check('★ CSS: 登录按钮的内边距跟 input 一致（高度才会齐）',
       /#login-form\s*>\s*\.btn-primary\s*\{[^}]*padding\s*:\s*11px\s+12px/.test(bootCss), '没找到');
+
+// 会话页的「模式」要写得像人话。
+// 客户端报上来的是机器码（system_proxy / tun），面板上得给人看中文。
+// 两种接管方式**可以同时开**，所以第三档是叠加，不是二选一。
+console.log('\n[11] 会话页的「模式」显示成中文');
+navItems[2].dispatchEvent(new window.Event('click', { bubbles: true }));  // 会话页
+await settle();
+{
+  const txt = document.querySelector('#page').textContent;
+  check('★ system_proxy 显示「系统代理」', txt.includes('系统代理'), txt.slice(0, 240));
+  check('★ 机器码本身不再露出来', !txt.includes('system_proxy'), txt.slice(0, 240));
+  check('★ tun 显示「TUN 模式」', txt.includes('TUN 模式'), txt.slice(0, 240));
+  check('★ 两个都开时显示「系统代理+TUN模式」（叠加不是二选一）',
+        txt.includes('系统代理+TUN模式'), txt.slice(0, 240));
+  check('★ 认不出来的值原样显示（以后加新组合不会变空白）',
+        txt.includes('某种还没见过的方式'), txt.slice(0, 240));
+}
 
 console.log(`\n${'='.repeat(48)}\n通过 ${pass} 项，失败 ${fail} 项\n${'='.repeat(48)}\n`);
 process.exit(fail ? 1 : 0);
