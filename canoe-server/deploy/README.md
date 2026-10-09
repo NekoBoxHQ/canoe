@@ -43,7 +43,29 @@ uvicorn canoe_server.app:app --workers 1     # ← 必须
 
 ## 2. 安装向导（推荐）
 
+**在服务器上一条命令搞定**（脚本会自己把代码从项目拉下来）：
+
 ```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/install.sh)"
+```
+
+> ⚠️ 一定要用 `bash -c "$(curl …)"` 这个写法，**不要**用 `curl … | sudo bash`。
+> 管道会把 stdin 占掉，向导的问答就再也读不到你敲的字了 ——
+> 表现是它卡在那里等输入，或者直接读到你上一条命令的残留。
+> `bash -c "$(...)"` 把脚本当参数传进去，stdin 留给你。
+
+如果你想自己先看一眼脚本再跑（推荐第一次这么做）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/install.sh -o install.sh
+less install.sh          # 看一眼
+sudo bash install.sh
+```
+
+本文档就在仓库里，clone 下来跑也行：
+
+```bash
+git clone https://github.com/NekoBoxHQ/canoe.git && cd canoe
 sudo bash canoe-server/deploy/install.sh
 ```
 

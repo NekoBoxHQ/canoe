@@ -174,8 +174,20 @@ set CANOE_CA_BUNDLE=canoe-server\data\certs\local-cert.pem
 
 ### 部署到服务器
 
+**在服务器上一条命令**（脚本自己把代码从项目拉下来）：
+
 ```bash
-sudo ./deploy/install.sh
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/install.sh)"
+```
+
+> 用 `bash -c "$(curl …)"`，**不要**用 `curl … | sudo bash` ——
+> 管道会占掉 stdin，安装向导就再也读不到你敲的字了。
+
+或者在本地 clone 下来跑：
+
+```bash
+git clone https://github.com/NekoBoxHQ/canoe.git && cd canoe
+sudo ./canoe-server/deploy/install.sh
 ```
 
 安装向导会依次问：域名、客户端端口（默认 `58588`）、面板端口、证书方式

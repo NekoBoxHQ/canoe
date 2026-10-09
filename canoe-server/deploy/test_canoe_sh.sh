@@ -178,6 +178,14 @@ check "--token 配非 https 地址会明确报错" \
 check "★ 声明了 safe.directory（否则 pull 会被 git 拒）" \
       "$(grep -q 'safe.directory' "$INSTALL" && echo 0 || echo 1)"
 
+# curl | bash 这条路：管道执行时没有"来源文件"，BASH_SOURCE 是空的。
+# 曾经直接取 ${BASH_SOURCE[0]}，被 set -u 判成 unbound variable ——
+# 表现是一行输出都没有就退出，用户完全看不出为什么。
+# 断言：把定位脚本目录那段单独喂给 bash 的标准输入，不许报 unbound。
+PIPED="$(sed -n '/^_SELF=/,/^REPO_ROOT=/p' "$INSTALL" | bash 2>&1)"
+check "★ 管道执行（curl | bash）时不会炸" \
+      "$(grep -q "unbound variable" <<< "$PIPED" && echo 1 || echo 0)" "$PIPED"
+
 HELP_I="$(bash "$INSTALL" --help 2>&1)"
 check "--help 能跑" "$(grep -q "安装向导" <<< "$HELP_I" && echo 0 || echo 1)"
 check "帮助里说明了代码从哪来" "$(grep -q "代码从哪来" <<< "$HELP_I" && echo 0 || echo 1)"

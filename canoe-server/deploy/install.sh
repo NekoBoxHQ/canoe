@@ -229,8 +229,18 @@ if [[ "$CERT_MODE" == "existing" ]]; then
 fi
 
 SCHEME="https"; [[ "$CERT_MODE" == "none" ]] && SCHEME="http"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# 脚本自己在哪。
+# ⚠️ 用 curl | bash 跑时没有"来源文件"，BASH_SOURCE 是空的 ——
+#    直接取下标会被 set -u 判成 unbound variable，一行都执行不到。
+#    这种情况就把当前目录当脚本目录，反正下面的 IN_CHECKOUT 会
+#    认出"这不是检出目录"，改去仓库拉代码。
+_SELF="${BASH_SOURCE[0]:-}"
+if [[ -n "$_SELF" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "$_SELF")" 2>/dev/null && pwd)" || SCRIPT_DIR="$(pwd)"
+else
+    SCRIPT_DIR="$(pwd)"
+fi
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd)" || REPO_ROOT="/nonexistent"
 
 CERT_DESC="$CERT_MODE"
 [[ "$CERT_MODE" == "existing" ]] && CERT_DESC="已有证书（$CERT_FILE）"
