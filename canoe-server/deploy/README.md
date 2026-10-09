@@ -74,7 +74,8 @@ sudo bash deploy/install.sh --domain x.com --cert-mode existing \
 | 选项 | 说明 |
 |---|---|
 | `--domain NAME` | 域名。留空则用 IP 访问，证书只能自签 |
-| `--port N` | **Web 端口**，面板与 API 共用，默认 **58588** |
+| `--port N` | **客户端口**。客户端固定拿它取更新和订阅，对所有人开放。默认 **58588** |
+| `--panel-port N` | **管理面板口**。留空 = 和客户端同口；填别的则另开口（见下） |
 | `--cert-mode le` | Let's Encrypt 自动申请（需域名已解析、80 端口空闲）。**推荐** |
 | `--cert-mode self` | 自签证书。浏览器会警告 |
 | `--cert-mode existing` | 用你已有的证书，配 `--cert` / `--key`。**不自动续期** |
@@ -120,6 +121,29 @@ curl -s https://canoe.s-ui.com:58588/api/health
 Let's Encrypt 续期后会由 `/etc/letsencrypt/renewal-hooks/deploy/canoe.sh`
 自动重发布证书并重启服务，不用你管。**已有证书模式不会自动续期**，
 到期前自己换掉再重跑脚本。
+
+### 把管理面板挪到另一个端口（可选）
+
+客户端口 `--port` 必须对所有用户开放，管理面板没必要。给面板另开一个口，
+你就能在安全组/防火墙里只放行自己的 IP：
+
+```bash
+sudo bash deploy/install.sh --domain x.com --port 58588 --panel-port 58589 --cert-mode le
+```
+
+效果：
+
+| 端口 | 谁能连 | `/panel` | `/api/*` |
+|---|---|---|---|
+| 58588（客户端口） | 所有用户 | **404** | ✅ |
+| 58589（面板口） | 只放行你自己 | ✅ | ✅（面板自己要调，同源不用 CORS） |
+
+**两个端口是同一个进程在监听**，不是两个进程 —— 推送中心是进程内的内存结构，
+拆成两个进程的话，你在面板上点的「踢下线」就传不到客户端的长连接上。
+这一点有专门的跨端口测试守着。
+
+改完 `.env` 里的 `PANEL_PORT` 后 `systemctl restart canoe-api` 即可。
+`PANEL_PORT=0` 表示回到与客户端同口。
 
 ### 改端口 / 换证书
 

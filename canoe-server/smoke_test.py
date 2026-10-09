@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import sys
 import threading
 import time
@@ -39,7 +40,8 @@ VERIFY = "--insecure" not in _FLAGS
 
 def new_client(**kwargs) -> httpx.Client:
     kwargs.setdefault("timeout", 15)
-    return httpx.Client(base_url=BASE, verify=VERIFY, **kwargs)
+    kwargs.setdefault("base_url", BASE)
+    return httpx.Client(verify=VERIFY, **kwargs)
 
 # 管理员建节点时用的真实节点值 —— 绝不能出现在任何客户端可见的响应里
 REAL_IP = "203.0.113.77"
@@ -484,18 +486,33 @@ def main() -> int:
     # ======================================================================
     print("\n[17] Web 管理面板")
 
-    r = client.get("/", follow_redirects=False)
-    check("根路径跳到面板", r.status_code in (301, 302, 307, 308), str(r.status_code))
-    check("跳转目标是 /panel", "/panel" in (r.headers.get("location") or ""),
-          str(r.headers.get("location")))
+    # 面板可以另开一个端口（PANEL_PORT）。另开的话，客户端口不该响应 /panel。
+    # 用 CANOE_PANEL_URL 告诉测试面板在哪；不设就当同口。
+    panel_base = (os.environ.get("CANOE_PANEL_URL") or BASE).rstrip("/")
+    panel_client = client if panel_base == BASE else new_client(base_url=panel_base)
+    split_ports = panel_base != BASE
+
+    if split_ports:
+        r = client.get("/panel/")
+        check("★ 面板另开口时，客户端口不响应 /panel", r.status_code == 404,
+              f"实际 {r.status_code}")
+        r = client.get("/panel/app.js")
+        check("★ 客户端口也不漏面板的静态文件", r.status_code == 404, str(r.status_code))
+        check("★ 客户端口本身仍然正常（只是藏了面板）",
+              client.get(Api.HEALTH).status_code == 200)
+    else:
+        r = client.get("/", follow_redirects=False)
+        check("根路径跳到面板", r.status_code in (301, 302, 307, 308), str(r.status_code))
+        check("跳转目标是 /panel", "/panel" in (r.headers.get("location") or ""),
+              str(r.headers.get("location")))
 
     for path, what in (("/panel/", "面板首页"), ("/panel/index.html", "index.html"),
                        ("/panel/app.js", "app.js"), ("/panel/style.css", "style.css"),
                        ("/panel/logo.png", "logo.png")):
-        r = client.get(path)
+        r = panel_client.get(path)
         check(f"{what} 可访问", r.status_code == 200, f"{path} -> {r.status_code}")
 
-    r = client.get("/panel/")
+    r = panel_client.get("/panel/")
     check("面板页面带品牌名", "轻舟" in r.text, r.text[:120])
     check("面板引用了 app.js 和 style.css",
           "app.js" in r.text and "style.css" in r.text)
@@ -503,7 +520,7 @@ def main() -> int:
     # ★ 面板不该引用任何外部资源 —— 一个代理服务的后台不该去 ping 第三方
     external = []
     for path in ("/panel/", "/panel/app.js", "/panel/style.css"):
-        page = client.get(path).text
+        page = panel_client.get(path).text
         for token in ("http://", "https://", "//cdn", "//unpkg", "//fonts."):
             for chunk in page.split(token)[1:]:
                 host = chunk.split("/")[0].split('"')[0].split("'")[0].split(")")[0]
@@ -514,7 +531,73 @@ def main() -> int:
     # 面板本身不需要令牌就能下载（它只是个前端），
     # 真正的权限在 /api/admin/* —— 这一条确认"藏 HTML"不是我们的防护手段
     check("★ 面板静态文件不需要登录（防护在 API 层，不是藏页面）",
-          client.get("/panel/app.js").status_code == 200)
+          panel_client.get("/panel/app.js").status_code == 200)
+    check("面板口也能调 API（同源，面板要用）",
+          panel_client.get(Api.HEALTH).status_code == 200)
+
+    if split_ports:
+        # ★ 这条是"面板另开口"这个功能的核心不变式：
+        #   两个端口必须是**同一个进程**在听（共享推送中心），
+        #   否则你在面板上点的「踢下线」永远传不到客户端的长连接上。
+        #   拆成两个进程的话，下面这条会红。
+        cross_name = f"xp_{uuid.uuid4().hex[:8]}"
+        client.post(Api.ADMIN_USERS, headers=admin_h,
+                    json={"username": cross_name, "password": "canoe-pass-123",
+                          "expire_days": 3})
+        r = client.post(Api.LOGIN, json={
+            "username": cross_name, "password": "canoe-pass-123",
+            "device_id": "smoke-cross-0001", "device_name": "smoke"})
+        cross_h = {"Authorization": f"Bearer {r.json()['token']}"} if r.status_code == 200 else {}
+        cross_uid = client.get(Api.ME, headers=cross_h).json().get("id") if cross_h else None
+
+        cross_events: list[dict] = []
+        cross_stop = threading.Event()
+
+        def _cross_reader() -> None:
+            try:
+                with httpx.stream("GET", f"{BASE}{Api.EVENTS}", headers=cross_h,
+                                  timeout=httpx.Timeout(30, read=30), verify=VERIFY) as resp:
+                    for line in resp.iter_lines():
+                        if cross_stop.is_set():
+                            break
+                        if line.startswith("data: "):
+                            cross_events.append(json.loads(line[6:]))
+            except Exception:  # noqa: BLE001
+                pass
+
+        cross_thread = threading.Thread(target=_cross_reader, daemon=True)
+        cross_thread.start()
+        time.sleep(2.5)
+
+        # 用**面板口**建个节点：广播应当打到客户端口的这条连接上
+        r = panel_client.post(
+            Api.ADMIN_NODES, headers=admin_h,
+            json={
+                "name": "跨端口测试", "remark": "", "enabled": True, "sort_order": 900,
+                "entry_host": "cross.example.com", "entry_port": 443, "entry_uuid": "",
+                "entry_path": "/e/cross", "entry_sni": "cross.example.com",
+                "entry_transport": "ws", "entry_tls": True, "entry_insecure": False,
+                "real_protocol": "vless", "real_host": "198.51.100.9", "real_port": 8443,
+                "real_uuid": "11111111-2222-3333-4444-555555555555", "real_flow": "",
+                "real_tls": True, "real_sni": "real.invalid", "real_fingerprint": "chrome",
+                "real_network": "tcp", "real_ws_path": "", "real_ws_host": "",
+                "real_grpc_service": "", "real_insecure": False, "real_extra": {},
+            })
+        check("面板口能建节点", r.status_code == 201, r.text[:200])
+        cross_node = r.json().get("id") if r.status_code == 201 else None
+        time.sleep(2.5)
+        check("★ 面板口建的节点 -> 客户端口收到 config_changed",
+              any(e.get("type") == "config_changed" for e in cross_events),
+              str([e.get("type") for e in cross_events]))
+
+        if cross_node:
+            panel_client.delete(f"{Api.ADMIN_NODES}/{cross_node}", headers=admin_h)
+        cross_stop.set()
+        if cross_uid:
+            client.delete(f"{Api.ADMIN_USERS}/{cross_uid}", headers=admin_h)
+
+    if panel_client is not client:
+        panel_client.close()
 
     # 清理
     if release_id:

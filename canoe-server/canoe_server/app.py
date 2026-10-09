@@ -42,6 +42,30 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 
+#: 面板**实际**监听的端口，由 serve.py 在启动前填。0 = 与客户端同口（不拦截）。
+#:
+#: 为什么不用 settings.panel_port：那个值可能被命令行 --panel-port 覆盖，
+#: 拿配置值去比对会得出错误结论（表现为"拦不住"）。这里要的是事实，不是配置。
+PANEL_LISTEN_PORT: int = 0
+
+
+@app.middleware("http")
+async def panel_port_guard(request: Request, call_next):
+    """面板另开了端口时，其它端口就不响应 /panel。
+
+    客户端固定拿一个口取更新和订阅，那个口必须对所有用户开放；
+    管理面板没必要让所有人看到 —— 扫描器少一个入口是一个。
+    面板口仍然提供 /api/*，因为面板自己要调（同源，不需要 CORS）。
+
+    本地端口从 scope["server"] 拿（uvicorn 会填）。
+    """
+    if PANEL_LISTEN_PORT:
+        local_port = (request.scope.get("server") or ("", 0))[1]
+        if local_port != PANEL_LISTEN_PORT and request.url.path.startswith(settings.panel_path):
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    return await call_next(request)
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     init_db()

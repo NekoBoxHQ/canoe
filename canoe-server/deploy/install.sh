@@ -19,9 +19,11 @@ APP_DIR="/opt/canoe"
 SERVER_DIR="$APP_DIR/canoe-server"
 CERT_DIR="/etc/canoe"
 LIVE_DIR="$CERT_DIR/live"
+PANEL_PATH="/panel"
 
 DOMAIN=""
 PORT=""
+PANEL_PORT=""      # 空 = 和 PORT 同口
 CERT_MODE=""       # le | self | existing | none
 CERT_FILE=""
 KEY_FILE=""
@@ -39,8 +41,9 @@ usage() {
 
   sudo bash deploy/install.sh
   sudo bash deploy/install.sh --domain canoe.s-ui.com --port 58588 --cert-mode le
+  sudo bash deploy/install.sh --domain x.com --port 58588 --panel-port 58589
 
-不带参数会一项一项问你：域名 / Web 端口 / 证书。
+不带参数会一项一项问你：域名 / 客户端口 / 面板端口 / 证书。
 
 默认是**直连模式**：uvicorn 自己监听在指定端口上做 HTTPS，不需要 Nginx。
 
@@ -48,7 +51,10 @@ usage() {
 
 选项：
   --domain NAME         域名（用于证书和客户端下载地址；没有就留空）
-  --port N              Web 端口，面板和 API 共用（默认 58588）
+  --port N              **客户端口**，客户端固定拿它取更新和订阅（默认 58588）
+  --panel-port N        **管理面板口**。留空 = 和客户端同口；
+                        填别的则另开一个口，客户端口不再响应 /panel。
+                        两个口由同一个进程监听，推送照常互通。
   --cert-mode MODE      证书来源：
                           le       = Let's Encrypt 自动申请（需域名已解析、80 空闲）
                           self     = 自签证书（浏览器会警告）
@@ -72,6 +78,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --domain)               DOMAIN="${2:-}"; shift 2 ;;
         --port)                 PORT="${2:-}"; shift 2 ;;
+        --panel-port)           PANEL_PORT="${2:-}"; shift 2 ;;
         --cert-mode|--https)    CERT_MODE="${2:-}"; shift 2 ;;
         --cert)                 CERT_FILE="${2:-}"; shift 2 ;;
         --key)                  KEY_FILE="${2:-}"; shift 2 ;;
@@ -87,6 +94,7 @@ done
 
 # ---- 参数先校验：跟有没有 root 无关，早点报错 ----
 [[ -z "$PORT" ]] || [[ "$PORT" =~ ^[0-9]+$ ]] || die "端口必须是数字：$PORT"
+[[ -z "$PANEL_PORT" ]] || [[ "$PANEL_PORT" =~ ^[0-9]+$ ]] || die "面板端口必须是数字：$PANEL_PORT"
 if [[ -n "$CERT_MODE" ]]; then
     case "$CERT_MODE" in
         le|self|existing|none) ;;
@@ -117,16 +125,26 @@ TXT
 
     if [[ -z "$PORT" ]]; then
         cat <<'TXT'
-[2/3] Web 端口
-      管理面板和 API 共用这一个端口，客户端也用它取更新和订阅。
+[2/4] 客户端口
+      客户端固定拿这个口取更新和订阅，**必须对所有用户开放**。
 TXT
-        read -rp "      Web 端口 [58588]: " PORT || true
+        read -rp "      客户端口 [58588]: " PORT || true
         PORT="${PORT:-58588}"
+    fi
+
+    if [[ -z "$PANEL_PORT" ]]; then
+        cat <<'TXT'
+[3/4] 管理面板端口
+      想只对自己开放的话，给面板另开一个口 —— 然后在防火墙/安全组里
+      只放行你自己的 IP。那样客户端那个口就**不再响应 /panel**。
+      两个口是同一个进程在听，推送照常互通。
+TXT
+        read -rp "      面板端口（回车 = 和客户端同口）: " PANEL_PORT || true
     fi
 
     if [[ -z "$CERT_MODE" ]]; then
         cat <<'TXT'
-[3/3] 证书
+[4/4] 证书
       1) Let's Encrypt 自动申请   推荐。要域名已解析到本机，且 80 端口空闲
       2) 自签证书                 自己用够了；浏览器会警告
       3) 我已有证书               你把证书和私钥文件给我
@@ -194,14 +212,21 @@ CERT_DESC="$CERT_MODE"
 [[ "$CERT_MODE" == "le" ]]       && CERT_DESC="Let's Encrypt"
 [[ "$CERT_MODE" == "self" ]]     && CERT_DESC="自签证书"
 
+HOST_DISPLAY="${DOMAIN:-<本机IP>}"
+if [[ -z "$PANEL_PORT" || "$PANEL_PORT" == "$PORT" ]]; then
+    PANEL_DESC="与客户端同口（$SCHEME://$HOST_DISPLAY:$PORT$PANEL_PATH）"
+else
+    PANEL_DESC="$SCHEME://$HOST_DISPLAY:$PANEL_PORT （客户端口不响应 $PANEL_PATH）"
+fi
+
 cat <<EOF
 
   轻舟 / Canoe Server 安装
   ────────────────────────────────
-  域名       ${DOMAIN:-<无，用 IP 访问>}
-  Web 端口   $PORT
-  证书       $CERT_DESC
-  访问       $SCHEME://${DOMAIN:-<本机IP>}:$PORT
+  域名         ${DOMAIN:-<无，用 IP 访问>}
+  客户端口     $PORT          ← 更新 / 订阅 / API，对所有人开放
+  管理面板     $PANEL_DESC
+  证书         $CERT_DESC
 
 EOF
 if [[ -t 0 ]]; then read -rp "确认开始？[Y/n] " ok; [[ "${ok:-y}" =~ ^[Yy]?$ ]] || exit 0; fi
@@ -372,7 +397,10 @@ PY
 # 由 deploy/install.sh 生成于 $(date -Is) —— 改端口/证书改这里就行
 DEBUG=false
 HOST=0.0.0.0
+# 客户端固定拿这个口取更新和订阅
 PORT=$PORT
+# 0 = 和 PORT 同口；填了别的就另开一个面板口
+PANEL_PORT=${PANEL_PORT:-0}
 TLS_CERT=$TLS_CERT
 TLS_KEY=$TLS_KEY
 
@@ -466,16 +494,22 @@ fi
 BASE_SHOWN="${SCHEME}://${DOMAIN:-<本机IP>}"
 [[ "$PORT" != "443" && "$PORT" != "80" ]] && BASE_SHOWN="$BASE_SHOWN:$PORT"
 
+if [[ -z "$PANEL_PORT" || "$PANEL_PORT" == "$PORT" ]]; then
+    PANEL_URL="$BASE_SHOWN$PANEL_PATH"
+else
+    PANEL_URL="${SCHEME}://${DOMAIN:-<本机IP>}:$PANEL_PORT$PANEL_PATH"
+fi
+
 cat <<EOF
 
 ============================================================
   装好了
 ============================================================
 
-  管理面板 : $BASE_SHOWN/panel
+  管理面板       : $PANEL_URL
   客户端更新接口 : $BASE_SHOWN/api/client/latest
   客户端订阅接口 : $BASE_SHOWN/api/subscription
-  健康检查 : $BASE_SHOWN/api/health
+  健康检查       : $BASE_SHOWN/api/health
 
   日志     : journalctl -u canoe-api -f
   配置     : $SERVER_DIR/.env   （改端口/证书只改这里，然后 systemctl restart canoe-api）
@@ -485,7 +519,27 @@ cat <<EOF
     1. 打开面板登录，改掉管理员密码
     2. 面板「节点」里加一个节点，再去中转层机器部署 relay（见 relay/README.md）
     3. 面板「发布」里上传客户端安装包 —— 客户端点「更新」就能看到
+    4. 客户端那边把 update_url 指到 $BASE_SHOWN/api/client/latest
 
+EOF
+
+if [[ -n "$PANEL_PORT" && "$PANEL_PORT" != "$PORT" ]]; then
+cat <<EOF
+  ⚠ 面板另开了 $PANEL_PORT 口。记得在防火墙/安全组里：
+       · $PORT      对所有用户开放（客户端要用）
+       · $PANEL_PORT 只放行你自己的 IP
+     本机 ufw 已自动放行；云厂商的安全组要你自己加。
+
+EOF
+else
+cat <<EOF
+  ⚠ 面板和客户端共用一个口，所以 $PANEL_PATH 是公网可访问的。
+     想只对自己开放，重跑本脚本时把面板端口填成别的（例如 58589）。
+
+EOF
+fi
+
+cat <<EOF
   ⚠ 服务端只开 1 个 worker（推送是进程内的，多 worker 会收不到）。
     详见 deploy/README.md 开头。
 
