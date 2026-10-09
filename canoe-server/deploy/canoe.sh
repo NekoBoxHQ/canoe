@@ -747,6 +747,11 @@ cmd_release() {
         err "发布没成功（退出码 $rc）—— 上面那几行就是原因"
         return $rc
     fi
+
+    # --list 只是看一眼，别报"发布完成" —— 那会让人以为刚才真发了东西
+    if [[ " $quoted " == *" --list "* ]]; then
+        return 0
+    fi
     ok "发布完成 —— 客户端点「更新」就能看到了"
 }
 

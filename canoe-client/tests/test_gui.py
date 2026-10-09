@@ -252,6 +252,14 @@ def main() -> int:
     cfg_mod.CONFIG_FILE = tmp / "client.json"
     cfg_mod.config._data["device_id"] = "test-device-0001"
 
+    # ⚠ 光改 CONFIG_FILE 不够。`config` 是模块级单例，import 的时候就把
+    #   **真实那份 client.json** 读进内存了 —— 改 CONFIG_FILE 只影响之后
+    #   往哪写，内存里那份还在。于是开发机上真勾过「记住账号密码」的话，
+    #   登舟页一构造就被回填了，下面"默认不勾""一个字都不留"两条必红。
+    #   （更糟的是：那意味着测试把开发者真实的账号密码读进了内存。）
+    #   所以内存里这份也要清干净，测试从确定的状态起步。
+    cfg_mod.config["remember"] = {"enabled": False, "username": "", "secret": ""}
+
     # --- 1. 界面构造 ---
     print("[1] 界面")
     auth = AuthView()
