@@ -390,7 +390,7 @@ cmd_config() {
         printf '%s\n' "$MENU_RULE"
         printf '   1  查看当前配置\n'
         printf '   2  改管理面板端口\n'
-        printf '   3  改管理员密码\n'
+        printf '   3  改管理员账号\n'
         printf '   4  用编辑器打开 .env（高级）\n'
         printf '   5  重新走安装向导（域名 / 端口 / 证书）\n'
         printf '   0  返回\n'
@@ -604,7 +604,7 @@ cmd_uninstall() {
 }
 
 # ---------------------------------------------------------------------------
-# 附加：日志 / 改管理员密码 / 版本
+# 附加：日志 / 改管理员账号 / 版本
 # ---------------------------------------------------------------------------
 cmd_logs() {
     require_installed
@@ -612,40 +612,78 @@ cmd_logs() {
     journalctl -u "$UNIT" -f -n 50
 }
 
+#: 管理员账号 = 用户名 + 密码，一起改。两样都留空就直接返回，
+#: 免得手滑回车把账号改成空字符串。
 cmd_passwd() {
     need_root; require_installed
-    printf '  新管理员密码（至少 8 位）: '
-    local p1; read -rs p1; printf '\n'
-    printf '  再输一遍: '
-    local p2; read -rs p2; printf '\n'
 
-    [[ ${#p1} -ge 8 ]] || die "太短了，至少 8 位"
-    [[ "$p1" == "$p2" ]] || die "两次输入不一致"
+    local cur user p1 p2
+    cur="$(env_get ADMIN_USERNAME)"; cur="${cur:-admin}"
 
-    local admin_env user
-    user="$(env_get ADMIN_USERNAME)"; user="${user:-admin}"
+    printf '  现在的管理员账号：%s\n' "$cur"
+    printf '  新用户名（3-32 位字母数字下划线，回车不改）[%s]: ' "$cur"
+    read -r user; user="${user:-$cur}"
+
+    printf '  新密码（至少 8 位，回车不改）: '
+    read -rs p1; printf '\n'
+    if [[ -n "$p1" ]]; then
+        printf '  再输一遍: '
+        read -rs p2; printf '\n'
+    fi
+
+    if [[ "$user" == "$cur" && -z "$p1" ]]; then
+        warn "用户名和密码都没改，返回"; return 0
+    fi
+    if [[ ! "$user" =~ ^[A-Za-z0-9_-]{3,32}$ ]]; then
+        die "用户名只能是 3-32 位的字母、数字、下划线或减号"
+    fi
+    if [[ -n "$p1" ]]; then
+        [[ ${#p1} -ge 8 ]] || die "密码太短了，至少 8 位"
+        [[ "$p1" == "$p2" ]] || die "两次密码不一致"
+    fi
 
     as_user "
-        cd '$SERVER_DIR' && CO_CHANGE_PW='$p1' CO_CHANGE_USER='$user' .venv/bin/python - <<'PY'
+        cd '$SERVER_DIR' && \
+        CO_OLD_USER='$cur' CO_NEW_USER='$user' CO_NEW_PW='$p1' .venv/bin/python - <<'PY'
 import os
+
+from sqlalchemy import select
+
 from canoe_server.database import SessionLocal
 from canoe_server.models import User
 from canoe_server.security import hash_password
 
-pw = os.environ['CO_CHANGE_PW']
-name = os.environ['CO_CHANGE_USER']
+old, new = os.environ['CO_OLD_USER'], os.environ['CO_NEW_USER']
+pw = os.environ.get('CO_NEW_PW') or ''
 
 with SessionLocal() as db:
-    u = db.query(User).filter(User.username == name).one_or_none()
+    u = db.scalars(select(User).where(User.username == old)).first()
     if u is None:
-        raise SystemExit(f'找不到管理员 {name}')
-    u.password_hash = hash_password(pw)
+        raise SystemExit(f'找不到管理员 {old}')
+    if new != old:
+        taken = db.scalars(select(User).where(User.username == new)).first()
+        if taken is not None:
+            raise SystemExit(f'用户名 {new} 已经被占用了')
+        u.username = new
+    if pw:
+        u.password_hash = hash_password(pw)
     db.commit()
-print(f'    管理员 {name} 的密码已更新')
-PY
-" || die "改密码失败"
 
-    ok "改好了 —— 旧令牌不会自动失效，要踢掉所有登录用「面板 → 用户 → 封禁再解封」"
+done = []
+if new != old:
+    done.append(f'用户名 {old} -> {new}')
+if pw:
+    done.append('密码已更新')
+print('    ' + '；'.join(done))
+PY
+" || die "没改成 —— 上面应该有原因"
+
+    # .env 里那份是给 seed.py 初次建号用的，跟着改掉免得对不上。
+    # （账号已经在库里了，改这里不会新建一个。）
+    env_set ADMIN_USERNAME "$user"
+
+    ok "改好了。下次登面板用新账号。"
+    dim "旧令牌不会自动失效 —— 要踢掉所有已登录的会话，用「面板 → 用户 → 封禁再解封」。"
 }
 
 cmd_version() {
@@ -704,8 +742,6 @@ menu() {
             6) cmd_config ;;
             7) cmd_upgrade ;;
             8) cmd_uninstall ;;
-            l|L) cmd_logs ;;
-            p|P) cmd_passwd ;;
             0|q|Q) printf '\n  再见。\n\n'; return 0 ;;
             "") ;;
             *) warn "没有这一项：$choice" ;;
@@ -737,7 +773,7 @@ usage() {
     upgrade     拉代码 + 更新依赖 + 对齐表结构 + 重启
     uninstall   卸载（会删 systemd 单元；数据是否保留会单独问）
     logs        跟随日志
-    passwd      改管理员密码
+    passwd      改管理员账号（用户名 / 密码）
     version     版本
     help        这份帮助
 
@@ -771,7 +807,7 @@ main() {
         upgrade|update) cmd_upgrade ;;
         uninstall|remove) cmd_uninstall ;;
         logs|log)  cmd_logs ;;
-        passwd)    cmd_passwd ;;
+        passwd|admin) cmd_passwd ;;
         version|-v|--version) cmd_version ;;
         help|-h|--help) usage ;;
         *) err "不认识的命令：$cmd"; printf '\n'; usage; exit 1 ;;

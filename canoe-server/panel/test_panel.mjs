@@ -47,6 +47,8 @@ globalThis.confirm = () => true;
 
 // ---------- fetch 假实现 ----------
 const calls = [];
+//: 请求体也留一份 —— 光看"调了 PATCH"不够，得看它到底改了什么。
+const bodies = [];
 const FIXTURES = [
   [/\/api\/login$/, { token: 'tok-admin', user: { id: 1, username: 'admin', role: 'admin' } }],
   [/\/api\/me$/, { id: 1, username: 'admin', role: 'admin', status: 'active' }],
@@ -76,6 +78,10 @@ const FIXTURES = [
 
 globalThis.fetch = async (path, opts = {}) => {
   calls.push(`${opts.method || 'GET'} ${path}`);
+  if (opts.body) {
+    try { bodies.push({ method: opts.method || 'GET', path, body: JSON.parse(opts.body) }); }
+    catch (_) { /* 传的是 FormData 之类，不看 */ }
+  }
   const hit = FIXTURES.find(([re]) => re.test(path));
   const body = hit ? hit[1] : {};
   return {
@@ -205,6 +211,39 @@ check('★ 回填了当前已绑的节点（demo 绑了 #3）',
       !!bindModal.querySelector('input[type=checkbox]'),
       bindModal.textContent.slice(0, 120));
 document.querySelector('#modal-close').dispatchEvent(new window.Event('click', { bubbles: true }));
+
+console.log('\n[8] 改用户名');
+// 回到用户页，打开 demo 那一行的「编辑」
+navItems[1].dispatchEvent(new window.Event('click', { bubbles: true }));
+await tick(); await tick(); await tick();
+const editBtn = [...document.querySelector('#page').querySelectorAll('button')]
+  .find((b) => b.textContent.trim() === '编辑');
+check('用户行有「编辑」按钮', !!editBtn);
+editBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
+await tick();
+
+const userModal = document.querySelector('#modal-body');
+check('★ 编辑弹窗里有用户名输入框', !!userModal.querySelector('#f_username'),
+      userModal.textContent.slice(0, 160));
+check('★ 用户名回填了当前值',
+      userModal.querySelector('#f_username')?.value === 'admin',
+      String(userModal.querySelector('#f_username')?.value));
+
+// 改个名字提交，看看请求体里到底带了什么
+bodies.length = 0;
+userModal.querySelector('#f_username').value = 'captain';
+userModal.querySelector('#f_password').value = '';
+document.querySelector('#modal-ok').dispatchEvent(new window.Event('click', { bubbles: true }));
+await tick(); await tick(); await tick();
+
+const patch = bodies.find((b) => b.method === 'PATCH' && /\/api\/admin\/users\/\d+/.test(b.path));
+check('★ 提交时发的是 PATCH', !!patch, JSON.stringify(bodies));
+check('★ 请求体里带着新用户名', patch?.body?.username === 'captain', JSON.stringify(patch));
+check('没填密码就不发 password（不会把密码清空）',
+      patch && !('password' in patch.body), JSON.stringify(patch));
+check('★ 管理员改自己的名字后，侧边栏跟着换（不是登出前的旧快照）',
+      document.querySelector('#whoami').textContent.includes('captain'),
+      document.querySelector('#whoami').textContent);
 
 console.log(`\n${'='.repeat(48)}\n通过 ${pass} 项，失败 ${fail} 项\n${'='.repeat(48)}\n`);
 process.exit(fail ? 1 : 0);

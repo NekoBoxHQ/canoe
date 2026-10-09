@@ -220,6 +220,46 @@ def main() -> int:
     r = client.get(Api.ADMIN_NODES, headers=admin_h)
     check("admin 节点列表能看到链接", NODE_LINK[:30] in r.text, r.text[:200])
 
+    # 5.5 改账号 —— 用户名是能改的（管理员把自己改名也要行）
+    # 这一段是因为踩过：update_user 里引用了一个早就删掉的变量
+    # （subscription_changed），PATCH 一调就 500，面板的「编辑」按钮等于坏的。
+    print("\n[5.5] 改账号（用户名 / 密码）")
+    uid = client.get(Api.ME, headers=H).json()["id"]
+    renamed = f"canoe2_{suffix}"
+
+    r = client.patch(f"{Api.ADMIN_USERS}/{uid}", headers=admin_h, json={"username": renamed})
+    check("★ 改用户名 200", r.status_code == 200, r.text[:250])
+    check("★ 响应里回报了新名字", r.json().get("username") == renamed, r.text[:200])
+
+    r = client.get(Api.ADMIN_USERS, params={"q": renamed}, headers=admin_h)
+    check("★ 列表里按新名字能搜到", r.status_code == 200 and len(r.json()["items"]) >= 1, r.text[:200])
+
+    # 令牌按 user_id 记，改名不该把人踢下线
+    r = client.get(Api.ME, headers=H)
+    check("★ 改名后旧令牌照样能用（令牌不绑用户名）", r.status_code == 200, r.text[:200])
+    check("★ /api/me 里已经是新名字", r.json().get("username") == renamed, r.text[:200])
+
+    # 改成别人已经占了的名字 -> 409，而不是两个同名账号
+    r = client.patch(f"{Api.ADMIN_USERS}/{uid}", headers=admin_h, json={"username": admin_user})
+    check("★ 改成已存在的用户名 -> 409", r.status_code == 409, f"got {r.status_code}")
+
+    # 非法用户名 -> 422（长度 / 字符集）
+    r = client.patch(f"{Api.ADMIN_USERS}/{uid}", headers=admin_h, json={"username": "ab"})
+    check("用户名过短 422", r.status_code == 422, f"got {r.status_code}")
+    r = client.patch(f"{Api.ADMIN_USERS}/{uid}", headers=admin_h, json={"username": "有 空格"})
+    check("用户名带空格 422", r.status_code == 422, f"got {r.status_code}")
+
+    # 只改密码 / 只改备注，别的字段不动
+    r = client.patch(f"{Api.ADMIN_USERS}/{uid}", headers=admin_h, json={"remark": "冒烟改过"})
+    check("只改备注 200（其余字段不被动）", r.status_code == 200, r.text[:200])
+    check("备注确实写进去了",
+          any(u["remark"] == "冒烟改过"
+              for u in client.get(Api.ADMIN_USERS, params={"q": renamed}, headers=admin_h).json()["items"]))
+
+    # 改回去 —— 后面的段落还按原名找这个账号
+    r = client.patch(f"{Api.ADMIN_USERS}/{uid}", headers=admin_h, json={"username": username})
+    check("改回来 200", r.status_code == 200, r.text[:200])
+
     # 6. /api/config —— 核心安全断言
     print("\n[6] /api/config（核心安全断言）")
     r = client.get(Api.CONFIG, params={"device_id": device_id, "mode": "system_proxy"}, headers=H)

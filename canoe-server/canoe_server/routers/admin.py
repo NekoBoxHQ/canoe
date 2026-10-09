@@ -112,6 +112,15 @@ class UserCreate(BaseModel):
 
 
 class UserUpdate(BaseModel):
+    """改一个账号。全部可选 —— 只改传上来的那几项。
+
+    改用户名是允许的（管理员把自己改成别的名字也要行）：令牌按 user_id
+    记，改完不用重新登录，只是下次 /api/me 显示新名字。
+    """
+
+    username: str | None = Field(
+        default=None, min_length=3, max_length=32, pattern=r"^[A-Za-z0-9_-]+$"
+    )
     password: str | None = Field(default=None, min_length=8, max_length=128)
     expire_at: int | None = None      # 0 = 永不过期
     max_devices: int | None = None
@@ -208,37 +217,45 @@ def update_user(
     if user is None:
         raise HTTPException(404, {"code": "not_found", "detail": "用户不存在"})
 
+    changes: list[str] = []
+
+    # 改名要查重 —— 不然两个同名账号在登录那里就成了"先到先得"，
+    # 谁也别想弄清楚自己登的是哪一个。
+    if body.username is not None and body.username != user.username:
+        taken = db.scalars(
+            select(User).where(User.username == body.username, User.id != user.id)
+        ).first()
+        if taken is not None:
+            raise HTTPException(409, {"code": "username_taken", "detail": "用户名已存在"})
+        changes.append(f"用户名 {user.username} → {body.username}")
+        user.username = body.username
+
     if body.password:
         user.password_hash = hash_password(body.password)
+        changes.append("改了密码")
     if body.expire_at is not None:
         user.expire_at = (
             None if body.expire_at == 0 else datetime.fromtimestamp(body.expire_at, tz=timezone.utc)
         )
+        changes.append("改了到期时间")
     if body.max_devices is not None:
         user.max_devices = body.max_devices
     if body.remark is not None:
         user.remark = body.remark
     if body.role in {"user", "admin"}:
         user.role = body.role
+        changes.append(f"角色 → {body.role}")
 
     db.commit()
     db.add(
         AuditLog(
             user_id=admin.id,
             action="user_update",
-            detail=user.username + ("（改了订阅）" if subscription_changed else ""),
+            detail=f"{user.username}：" + ("、".join(changes) or "无改动"),
         )
     )
     db.commit()
-
-    # 改了就推一下：在线的客户端收到后会重新拉订阅，
-    # 订阅被清空的话客户端那边会当场销毁本地订阅。
-    if subscription_changed:
-        from ..services.broadcast import notify_subscription_changed
-
-        notify_subscription_changed(user.id, subscription_revision(user, subscription_text_for(db, user)))
-
-    return {"ok": True, "subscription_changed": subscription_changed}
+    return {"ok": True, "username": user.username, "changed": changes}
 
 
 @router.post(Api.ADMIN_USERS + "/{user_id}/ban")

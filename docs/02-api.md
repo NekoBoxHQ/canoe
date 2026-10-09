@@ -229,10 +229,32 @@ Authorization: Bearer <token>
 |---|---|---|
 | GET | `/api/admin/users?page=1&size=50&q=` | 用户列表（含在线状态） |
 | POST | `/api/admin/users` | 建号 |
-| PATCH | `/api/admin/users/{id}` | 改密码 / 到期 / 设备上限 / 备注 / 角色 |
+| PATCH | `/api/admin/users/{id}` | 改用户名 / 密码 / 到期 / 设备上限 / 备注 / 角色 |
 | POST | `/api/admin/users/{id}/ban` | 封禁 → 立即吊销令牌与会话 |
 | POST | `/api/admin/users/{id}/unban` | 解封 |
 | DELETE | `/api/admin/users/{id}` | 删号 |
+
+### 改账号
+
+```http
+PATCH /api/admin/users/12
+{ "username": "新名字", "password": "新密码", "remark": "备注" }
+```
+
+字段全部可选，只改传上来的那几项。**用户名是可以改的**，包括管理员把自己
+改名 —— 令牌按 `user_id` 记，改完不用重新登录，只是 `/api/me` 里显示新名字。
+
+- 改名会查重：撞上已有的名字返回 `409 username_taken`（不是静默变成两个同名账号）
+- 格式 `3-32` 位字母、数字、下划线或减号，不合规 `422`
+- 改名 / 改密码 / 改角色都写审计（`audit_logs.detail` 里是「用户名 A → B」）
+
+服务端上还有个不用开面板的入口：`sudo canoe passwd`，或者菜单里
+「6 Canoe 配置 → 3 改管理员账号」—— 改的就是管理员自己的用户名和密码。
+
+### 节点
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
 | GET | `/api/admin/nodes` | 节点列表 |
 | POST | `/api/admin/nodes` | 建节点（贴一行链接 + 备注） |
 | PATCH | `/api/admin/nodes/{id}` | 改节点 |

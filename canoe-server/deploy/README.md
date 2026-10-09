@@ -125,7 +125,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/mai
 忘了密码随时可以改：
 
 ```bash
-sudo canoe config      # -> 3 改管理员密码
+sudo canoe config      # -> 3 改管理员账号
 ```
 
 > **客户端口（58588）不问**：客户端把服务端地址写死在代码里了，
@@ -354,7 +354,7 @@ sudo canoe status      # 端口 / 健康检查 / 账号数 / 在线会话 / 最�
 sudo canoe config      # 改端口、换证书、编辑 .env（会问要不要重启）
 sudo canoe upgrade     # 拉代码 -> 更新依赖 -> 对齐数据库 -> 重启 -> 健康检查
 sudo canoe logs        # 跟随日志
-sudo canoe passwd      # 改管理员密码
+sudo canoe passwd      # 改管理员账号（用户名 / 密码）
 ```
 
 `canoe upgrade` 不用手动 `git pull` + `pip install` + 重启那一串，

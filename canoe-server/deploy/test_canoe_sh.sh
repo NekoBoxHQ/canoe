@@ -135,6 +135,9 @@ check "标题是「服务端管理脚本」" \
       "$(grep -q "服务端管理脚本" <<< "$MENU" && echo 0 || echo 1)" "$MENU"
 check "★ 菜单里不掺状态/版本/快捷键这些杂项" \
       "$(grep -qE "运行中|已停止|版本|l  看日志|p  改管理员密" <<< "$MENU" && echo 1 || echo 0)" "$MENU"
+# 那两个隐藏快捷键（l / p）用户点名说多余，已经从菜单循环里删掉了
+check "★ 顶层菜单不再吃 l/p 这种隐藏快捷键" \
+      "$(grep -qE '^[[:space:]]*[lpLP]?\|?[lLpP]\) cmd_' "$TARGET" && echo 1 || echo 0)"
 check "菜单只有 9 行选项（1-8 加 0）" \
       "$([[ "$(grep -cE '^[[:space:]]+[0-9]  ' <<< "$MENU")" == "9" ]] && echo 0 || echo 1)" \
       "实际 $(grep -cE '^[[:space:]]+[0-9]  ' <<< "$MENU") 行"
@@ -146,12 +149,24 @@ CONFIG_MENU="$(printf '0\n' | bash -c "
     require_installed() { :; }
     cmd_config
 " 2>&1)"
-check "配置子菜单里有「改管理员密码」" \
-      "$(grep -q "改管理员密码" <<< "$CONFIG_MENU" && echo 0 || echo 1)" "$CONFIG_MENU"
+check "配置子菜单里有「改管理员账号」" \
+      "$(grep -q "改管理员账号" <<< "$CONFIG_MENU" && echo 0 || echo 1)" "$CONFIG_MENU"
 check "配置子菜单里有「查看当前配置」" \
       "$(grep -q "查看当前配置" <<< "$CONFIG_MENU" && echo 0 || echo 1)"
 check "★ 配置子菜单里不再有「改客户端口」（客户端写死，不该给这个选项）" \
       "$(grep -q "改客户端口" <<< "$CONFIG_MENU" && echo 1 || echo 0)" "$CONFIG_MENU"
+
+# 管理员账号 = 用户名 + 密码，两样都要能改（用户点名要求用户名可改）。
+check "★ 改管理员账号会问新用户名" \
+      "$(grep -q '新用户名' "$TARGET" && echo 0 || echo 1)"
+check "★ 用户名有格式校验（3-32 位字母数字下划线）" \
+      "$(grep -qE 'A-Za-z0-9_-\]\{3,32\}' "$TARGET" && echo 0 || echo 1)"
+check "★ 改名会查重（不让人改成已存在的名字）" \
+      "$(grep -q '已经被占用' "$TARGET" && echo 0 || echo 1)"
+check "★ 改完把 .env 里的 ADMIN_USERNAME 也对齐" \
+      "$(grep -q 'env_set ADMIN_USERNAME' "$TARGET" && echo 0 || echo 1)"
+check "两样都留空时不误改成空账号" \
+      "$(grep -q '都没改，返回' "$TARGET" && echo 0 || echo 1)"
 
 # 「看日志」归到状态里，不再单列 —— 用户明确说 l/p 那两个是多余的。
 check "★ 状态里带最近日志（所以不需要单独的「看日志」项）" \

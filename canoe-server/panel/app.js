@@ -178,7 +178,16 @@ function openModal({ title, fields = [], values = {}, submitText = '确定', wid
 
     if (f.type !== 'file') {
       const v = values[f.key];
-      input.value = (v === null || v === undefined) ? (f.default ?? '') : v;
+      const val = (v === null || v === undefined) ? (f.default ?? '') : v;
+      if (f.type === 'select') {
+        // 用 option.selected 标，别写 select.value —— 有的 DOM 实现
+        // （比如测试环境用的 linkedom）上 value 是只读的，一写就抛。
+        for (const opt of input.options) {
+          opt.selected = opt.value === String(val);
+        }
+      } else {
+        input.value = val;
+      }
     }
 
     body.append(h('label', { class: 'field' },
@@ -339,6 +348,9 @@ function editUser(r) {
   openModal({
     title: '编辑用户 · ' + r.username,
     fields: [
+      { key: 'username', label: '用户名', required: true,
+        placeholder: '3-32 位字母数字下划线',
+        help: '改了不影响已登录的令牌，只是下次登录要用新名字' },
       { key: 'password', label: '改密码', type: 'password', help: '留空表示不改' },
       { key: 'expire_date', label: '到期日期', type: 'date', help: '留空 = 永不过期' },
       { key: 'max_devices', label: '设备数上限', type: 'number' },
@@ -346,12 +358,19 @@ function editUser(r) {
       { key: 'role', label: '角色', type: 'select', options: [
         { value: 'user', label: '普通用户' }, { value: 'admin', label: '管理员' }] },
     ],
-    values: { max_devices: r.max_devices, remark: r.remark, role: r.role, expire_date: expire },
+    values: { username: r.username, max_devices: r.max_devices, remark: r.remark,
+              role: r.role, expire_date: expire },
     onSubmit: async (v) => {
       const body = { max_devices: Number(v.max_devices) || 0, remark: v.remark || '', role: v.role };
+      if (v.username && v.username !== r.username) body.username = v.username;
       if (v.password) body.password = v.password;
       body.expire_at = v.expire_date ? Math.floor(new Date(v.expire_date + 'T23:59:59').getTime() / 1000) : 0;
       await api('/api/admin/users/' + r.id, { method: 'PATCH', body });
+      // 把自己改了名：侧边栏那份是登录时的快照，得跟着换
+      if (body.username && r.id === state.me?.id) {
+        state.me.username = body.username;
+        renderWhoami();
+      }
       toast('已保存', 'ok'); closeModal(); render();
     },
   });
@@ -603,11 +622,22 @@ function showLogin(message) {
   $('#login-pass').value = '';
 }
 
+//: 侧边栏底部那个「我是谁」。单独拎出来是因为改名之后要重画一次 ——
+//: state.me 是登录那一刻的快照，改完名字它还留着旧的。
+function renderWhoami() {
+  const el = $('#whoami');
+  el.textContent = '';
+  el.append(
+    h('b', { text: state.me.username }),
+    h('br'),
+    document.createTextNode(state.me.role === 'admin' ? '管理员' : state.me.role),
+  );
+}
+
 async function showApp() {
   $('#login-screen').hidden = true;
   $('#app-screen').hidden = false;
-  $('#whoami').append(h('b', { text: state.me.username }),
-    h('br'), document.createTextNode(state.me.role === 'admin' ? '管理员' : state.me.role));
+  renderWhoami();
   buildNav();
   await render();
   pollHealth();
