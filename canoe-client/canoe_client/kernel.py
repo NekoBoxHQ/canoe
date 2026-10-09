@@ -211,6 +211,24 @@ def _live_kernel_count() -> int:
         return 0
 
 
+def _port_taken(port: int) -> bool:
+    """127.0.0.1:port 上是不是已经有人了。
+
+    拿一个**真的 bind** 去问 —— 我们关心的本来就是"这个端口还绑不绑得上"，
+    比去查进程表又便宜又准（一次 socket 调用，几微秒）。
+    """
+    import socket
+
+    probe = socket.socket()
+    try:
+        probe.bind(("127.0.0.1", int(port)))
+        return False
+    except OSError:
+        return True
+    finally:
+        probe.close()
+
+
 def _ruleset_defs(opts: RunOptions) -> list[dict[str, Any]]:
     """大陆分流用的规则集。
 
@@ -428,14 +446,27 @@ class SingBoxKernel:
         self._had_tun = any(i.get("type") == "tun" for i in cfg.get("inbounds", []))
         text = json.dumps(cfg, indent=2, ensure_ascii=False)
 
-        # TUN 起来之前先清一遍残局。
+        # 起内核之前先清一遍残局。
         #
         # 不清的话会出现一种很阴的状态：同名网卡还占着，新内核**把网卡建出来
         # 却配不上** —— 控制面板里看得见这张卡、状态是空的、一条路由都没有。
         # 表面看"TUN 开起来了"，实际什么都没接管，用户那边就是"网页打不开"。
         # 用户报的"先系统代理、再切 TUN 就不行，整个退出重来才行"就是它：
         # 重启之后残局才被清掉。
-        if self._had_tun and not _healed:
+        #
+        # ⚠ **不能只在 TUN 时才清**。用户报过另一种：纯系统代理模式点启航，
+        #   直接失败 —— 上次被强杀留下的**孤儿内核**还占着 20818，新内核当然
+        #   绑不上：
+        #       FATAL start inbound/mixed[mixed-in]: listen tcp 127.0.0.1:20818:
+        #       bind: Only one usage of each socket address ... is normally permitted
+        #   更坑的是"控制面板里 canoe 网卡还在" —— 因为那个孤儿内核还活着，
+        #   网卡是它的。以前这句写成 `if self._had_tun`，于是系统代理模式下
+        #   这个孤儿永远没人管，启航一直失败，而界面上只表现为"点了没反应"。
+        #
+        # 清理要起一次 PowerShell（WMI + PnP 查询，一两秒），不能每次启航都白花。
+        # 所以非 TUN 的情况先用一次 bind **几微秒**问一句"端口还占着吗" ——
+        # 没占着就说明系统是干净的，直接跳过。
+        if not _healed and (self._had_tun or _port_taken(opts.mixed_port)):
             cleared = heal_leftovers()
             if cleared:
                 bus.system(f"启航前清掉了 {cleared} 个上次没退干净的内核进程")

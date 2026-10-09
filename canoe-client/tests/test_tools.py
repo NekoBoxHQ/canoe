@@ -275,6 +275,34 @@ def main() -> int:
     except CanoeApiError as exc:
         check("★ 抖动过去之后照样成功（用户根本看不到报错）", False, exc.message)
 
+    # --- 8. 端口占没占用的判断 ---
+    #
+    # 用户报过：纯系统代理模式点启航直接失败 ——
+    #     listen tcp 127.0.0.1:20818: bind: Only one usage of each socket address
+    # 上次被强杀留下的**孤儿内核**还占着端口。启航前的自愈以前写成
+    # `if self._had_tun`，于是系统代理模式下这个孤儿永远没人管。
+    # 现在非 TUN 也会先花几微秒 bind 一下问一句"端口还占着吗"。
+    print("\n[8] 启航前的残局判断")
+    import socket as _socket  # noqa: PLC0415
+
+    from canoe_client.kernel import _port_taken  # noqa: PLC0415
+
+    # 注意：探测用的 socket 得**先关掉**再问。留着它绑在上面，问出来的
+    # 当然是"被占着"—— 第一版就是这么把自己测挂的。
+    tmp = _socket.socket()
+    tmp.bind(("127.0.0.1", 0))
+    free_port = tmp.getsockname()[1]
+    tmp.close()
+    check("没人占的端口 -> 不用清理", not _port_taken(free_port), str(free_port))
+
+    held = _socket.socket()
+    held.bind(("127.0.0.1", 0))
+    held.listen(1)
+    held_port = held.getsockname()[1]
+    check("★ 被占着的端口 -> 该去清残局（用户撞的就是这个）",
+          _port_taken(held_port), str(held_port))
+    held.close()
+
     print(f"\n{'=' * 48}")
     print(f"通过 {passed} 项，失败 {failed} 项，跳过 {skipped} 项")
     print(f"{'=' * 48}\n")
