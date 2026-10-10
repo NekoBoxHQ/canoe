@@ -25,6 +25,7 @@ import os
 import shutil
 import subprocess
 import sys
+import atexit
 import tempfile
 import zipfile
 from pathlib import Path
@@ -76,6 +77,7 @@ def run_cli(args: list[str], env_extra: dict[str, str]) -> subprocess.CompletedP
 
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="canoe-reltest-"))
+    atexit.register(shutil.rmtree, tmp, ignore_errors=True)
     releases = tmp / "releases"
     releases.mkdir()
     env = {

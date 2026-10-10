@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import os
 import sys
+import atexit
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -258,6 +260,9 @@ def main() -> int:
 
     # 用独立的配置文件，别污染真实用户数据
     tmp = Path(tempfile.mkdtemp(prefix="canoe-test-"))
+    # 跑完自己收掉：这个目录里有 84MB 的假 exe，不收的话每跑一轮
+    # 就在 %TEMP% 里留一份（攒了 500 多 MB 才被发现）。
+    atexit.register(shutil.rmtree, tmp, ignore_errors=True)
     from canoe_client import config as cfg_mod
     cfg_mod.CONFIG_FILE = tmp / "client.json"
     cfg_mod.config._data["device_id"] = "test-device-0001"

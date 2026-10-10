@@ -20,11 +20,13 @@ import json
 import os
 import shutil
 import sys
+import atexit
 import tempfile
 from pathlib import Path
 
 # ⚠ 必须在 import config **之前**改 APPDATA：配置目录是模块加载时算出来的。
 _TMP = Path(tempfile.mkdtemp(prefix="canoe-remember-"))
+atexit.register(shutil.rmtree, _TMP, ignore_errors=True)
 os.environ["APPDATA"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

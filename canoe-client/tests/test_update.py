@@ -18,6 +18,8 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
+import atexit
+import shutil
 import tempfile
 import threading
 import time
@@ -86,6 +88,8 @@ class _Handler(BaseHTTPRequestHandler):
 def main() -> int:
     print("\n== 轻舟 · 客户端自更新测试 ==\n")
     tmp = Path(tempfile.mkdtemp(prefix="canoe-update-test-"))
+    # 同上：更新测试会往里复制整个 exe，不收就是几十上百 MB 一次。
+    atexit.register(shutil.rmtree, tmp, ignore_errors=True)
 
     # --- 1. 版本比较 / 大小显示 ---
     print("[1] 版本与大小")
