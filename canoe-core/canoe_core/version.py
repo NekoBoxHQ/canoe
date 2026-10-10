@@ -1,5 +1,5 @@
 """版本号。"""
 from __future__ import annotations
 
-__version__ = "1.0.35"
+__version__ = "1.0.36"
 VERSION = __version__
