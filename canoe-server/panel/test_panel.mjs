@@ -506,5 +506,20 @@ await settle();
         txt.includes('某种还没见过的方式'), txt.slice(0, 240));
 }
 
+// 底部正中那行版本号（用户要的：「面板底下居中要搞个版本号显示，这样方便点」）。
+// 数从 /api/health 来 —— 面板里不写死，写死迟早跟服务端对不上。
+console.log('\n[12] 底部版本号');
+{
+  const footer = document.querySelector('#app-version');
+  check('★ 面板底下有一行版本号', !!footer, document.body.innerHTML.slice(-200));
+  check('★ 数是从 /api/health 抄来的（不是写死的）',
+        (footer?.textContent || '').includes('版本:V1.0.0'), footer?.textContent || '空');
+  check('★ 它在主区里、不是塞在侧边栏',
+        !!document.querySelector('.main > #app-version'),
+        footer?.parentElement?.className || '');
+  check('★ CSS: 居中显示',
+        /\.app-version\s*\{[^}]*text-align\s*:\s*center/.test(css), '没找到这条规则');
+}
+
 console.log(`\n${'='.repeat(48)}\n通过 ${pass} 项，失败 ${fail} 项\n${'='.repeat(48)}\n`);
 process.exit(fail ? 1 : 0);

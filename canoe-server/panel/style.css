@@ -215,6 +215,12 @@ html.booting #login-screen { display: none; }
 .dot.bad { background: var(--red); box-shadow: 0 0 8px rgba(239,68,68,.7); }
 
 .page { padding: 20px 22px 40px; overflow-y: auto; flex: 1; }
+/* 底部正中那行版本号。跟客户端底下那行一样的意思：一眼能报出版本。
+   .page 是 flex:1，所以这行永远贴在主区最底下，不跟着内容滚。 */
+.app-version {
+  padding: 8px 0 12px; text-align: center;
+  font-size: 12px; color: var(--faint); letter-spacing: 1px;
+}
 
 /* ---------------- 卡片 / 统计 ---------------- */
 .card {

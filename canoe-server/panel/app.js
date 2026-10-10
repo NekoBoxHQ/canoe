@@ -819,8 +819,14 @@ async function showApp() {
 
 async function pollHealth() {
   const dot = $('#health-dot');
-  try { await api('/api/health'); dot.className = 'dot ok'; dot.title = '服务端正常'; }
-  catch (_) { dot.className = 'dot bad'; dot.title = '连不上'; }
+  try {
+    // 顺便把服务端版本号抄到页脚 —— 同一份响应里就有，不用再要一次。
+    const info = await api('/api/health');
+    dot.className = 'dot ok'; dot.title = '服务端正常';
+    if (info && info.version) $('#app-version').textContent = '版本:V' + info.version;
+  } catch (_) {
+    dot.className = 'dot bad'; dot.title = '连不上';
+  }
   setTimeout(pollHealth, 15000);
 }
 
