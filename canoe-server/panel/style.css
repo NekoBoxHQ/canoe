@@ -241,18 +241,19 @@ html.booting #login-screen { display: none; }
   background: rgba(9,21,41,.85); border-right: 1px solid var(--line-soft);
   height: 100vh; position: sticky; top: 0;
 }
-.brand { display: flex; align-items: center; gap: 10px; padding: 18px 18px 14px; }
-.brand img { width: 34px; height: 34px; }
-/* 「轻舟」居中在「Canoe Server」正上方。
+/* 侧边栏顶上的品牌：只有「轻舟 / Canoe Server」两行字，**居中在侧边栏的
+ * 中线上** —— 跟登录卡同一个规矩。
  *
- * strong 是 block，宽度被撑到跟 small 一样（70px），所以 text-align:center
- * 居的就是 Canoe Server 的中线。
- *
- * ⚠ text-indent 是补 letter-spacing 的账：字距会在**最后一个字后面**也留
+ * 这里原来是「logo 在左、文字在右」的一行，后来 logo 被用户去掉了
+ * （"徽标都要"→不要），于是整块就是这两行字，居中即可。
+ * ⚠ 别再把 flex 那套搬回来：只剩一个 div 时 `align-items:center` 不管水平
+ *   方向，文字会贴到左边（试过）。
+ * （两行**彼此**本来是对齐的：实测 96.2 vs 97.0 CSS px，问题从来不在这。） */
+.brand { padding: 18px 18px 14px; text-align: center; }
+/* ⚠ text-indent 是补 letter-spacing 的账：字距会在**最后一个字后面**也留
  *   一截虚宽，居中时它也算进去，字形就偏左半个字距。
  *   这里是"盒子比文字宽"（宽度由 small 撑的），补**一半**字距 = 1.5px；
  *   补整个字距是"盒子跟着文字走"那种情况的算法（见 .login-foot）。
- *   （原来写的 3px 是补多了一倍 —— 1.5px 肉眼看不出来，但账要对。）
  *   改字距时这个值要一起改。 */
 .brand strong {
   display: block; font-size: 15px; letter-spacing: 3px;
@@ -334,7 +335,12 @@ th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--lin
 th { color: var(--dim); font-weight: 600; font-size: 12px; position: sticky; top: 0; background: var(--card); }
 tbody tr:hover { background: rgba(46,139,255,.06); }
 td.actions { display: flex; gap: 6px; }
-td.wrap, th.wrap { white-space: normal; max-width: 260px; }
+/* 「备注」这类长文本列：允许折行，但**必须给个下限**。
+ *
+ * ⚠ 原来只有 max-width，没有 min-width —— 在十几列的表格里，浏览器会把这列
+ *   一路挤到两三个字宽，"内置管理员"竖着折成五行，那一行被撑得老高
+ *   （本机起服务真登录看出来的）。max-width 管的是"最长"，管不了"最窄"。 */
+td.wrap, th.wrap { white-space: normal; min-width: 110px; max-width: 260px; }
 
 .tag {
   display: inline-block; padding: 2px 8px; border-radius: 20px;
