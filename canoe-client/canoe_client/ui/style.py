@@ -67,6 +67,34 @@ def qss() -> str:
         padding: 5px 8px;
     }}
 
+    /* ---------------- 系统消息框（QMessageBox）----------------
+     * 跟上面 QMenu / QToolTip 是**同一个病**：头一条 `* {{ color: 近白 }}`
+     * 照样作用到 QMessageBox 上，而它的底是系统默认的浅色 —— 白字浅底，
+     * "轻舟已经在运行了"那几句几乎看不见（用户截图报的）。
+     *
+     * 这里把整框拉成夜色，跟主界面一套配色。**每一个可见的东西都要给**：
+     * 对话框底、正文 QLabel、按钮 —— 按钮不给的话就是白字浅底，照样看不清。
+     *
+     * ⚠ 单实例提示（app.py）和提权询问（main_view.py）走的都是 QMessageBox，
+     *   规则写在这儿一次管住；以后谁再弹一个也自动是对的。
+     */
+    QMessageBox {{ background: {P.CARD}; }}
+    QMessageBox QLabel {{ color: {P.TEXT}; }}
+    QMessageBox QPushButton {{
+        color: {P.TEXT};
+        background: rgba(255, 255, 255, 18);
+        border: 1px solid {P.CARD_LINE};
+        border-radius: 8px;
+        padding: 6px 18px;
+        min-width: 64px;
+    }}
+    QMessageBox QPushButton:hover {{ background: rgba(255, 255, 255, 34); }}
+    QMessageBox QPushButton:default {{
+        background: {P.ACCENT_DEEP};
+        border-color: {P.ACCENT_DEEP};
+        color: #FFFFFF;
+    }}
+
     /* ---------------- 卡片 ---------------- */
     QFrame#Card {{
         background: rgba(13, 27, 51, 214);

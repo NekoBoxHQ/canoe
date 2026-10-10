@@ -662,8 +662,11 @@ async function pageReleases(root) {
       onclick: () => openModal({
         title: '从 GitHub 拉最新版并发布',
         fields: [
-          { key: 'tag', label: '标签', placeholder: 'v1.0.29',
-            help: '留空 = 拉最新的那个 Release；要发回旧版就填它的 tag' },
+          // ⚠ 这个框**不要 placeholder**：写了 "v1.0.29" 这种示例，用户会
+          //   以为是预填好的值，每次都要先删掉。留空就是默认行为（拉最新），
+          //   示例挪到下面的说明里。
+          { key: 'tag', label: '标签',
+            help: '留空 = 拉最新的那个 Release；要发回旧版才填它的 tag（形如 v1.0.30）' },
           { key: 'version', label: '版本号',
             help: '留空就自动从安装包文件名里认（Canoe-1.0.29-win64.zip → 1.0.29）' },
           { key: 'min_version', label: '最低要求版本',

@@ -256,6 +256,13 @@ const modalTxt = document.querySelector('#modal-body').textContent;
 check('弹窗里有标签/版本号/说明字段',
       modalTxt.includes('标签') && modalTxt.includes('版本号') && modalTxt.includes('更新说明'),
       modalTxt.slice(0, 160));
+// 用户原话："服务端拉取页面 里面留空 现在始终显示 V1.2.29"。
+// 那其实是 placeholder 示例文字，但看着像**预填好的值**，每次都得先删掉。
+// 「标签」框必须是真·空的。
+const tagInput = document.querySelector('#modal-body input');
+check('★「标签」框是空的（连 placeholder 示例都不要）',
+      !!tagInput && tagInput.value === '' && !tagInput.getAttribute('placeholder'),
+      tagInput ? `value=${JSON.stringify(tagInput.value)} placeholder=${JSON.stringify(tagInput.getAttribute('placeholder'))}` : '没找到输入框');
 // 包不再从这台机器上传 —— 服务端自己去 GitHub 拉。所以弹窗里不该有文件框。
 check('没有文件选择框了（不再本地上传）',
       !document.querySelector('#modal-body input[type=file]'), '还有 file 输入');

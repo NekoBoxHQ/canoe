@@ -595,6 +595,18 @@ def main() -> int:
     check("★ QToolTip 也铺了底（Windows 上的应用内提示同理）",
           bool(_re.search(r"QToolTip\s*\{[^}]*background", sheet, _re.S)))
 
+    # --- 5.7 全局 QSS：系统消息框 ----------------
+    # 同一个病，QMessageBox 也一样。用户截图里那个"轻舟已经在运行了"
+    # （单实例提示，app.py）整框的字都是浅灰，几乎看不见 —— 就是白字浅底。
+    # 对话框底、正文、**按钮**三样都得给：按钮不给的话照样是白字浅底。
+    print("\n[5.7] 系统消息框的配色")
+    mb = _re.search(r"QMessageBox\s*\{(.*?)\}", sheet, _re.S)
+    check("★ QSS 里有 QMessageBox 规则并铺了底色",
+          bool(mb) and "background" in mb.group(1), (mb.group(1)[:90] if mb else "没找到"))
+    check("★ 消息框正文给了字色", "QMessageBox QLabel" in sheet)
+    check("★ 消息框的按钮也铺了底（不然白字浅底照样看不清）",
+          bool(_re.search(r"QMessageBox QPushButton\s*\{[^}]*background", sheet, _re.S)))
+
     # --- 6. 启航（真起内核）---
     print("\n[6] 启航")
     if mv.config.find_singbox() is None:
