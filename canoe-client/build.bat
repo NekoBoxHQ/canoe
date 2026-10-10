@@ -59,13 +59,15 @@ if not exist "bin\wintun.dll" (
 )
 
 REM ---- 3.5 检查旧产物是否被占用 ----
-REM 上一次打包出来的 Canoe.exe 如果还在运行，--clean 删不掉 dist，
-REM 会以 PermissionError 中断。这里提前给出可读的提示。
-tasklist /FI "IMAGENAME eq Canoe.exe" 2>nul | find /I "Canoe.exe" >nul
-if not errorlevel 1 (
+REM 上一次打包出来的 dist\Canoe.exe 如果还开着，--clean 删不掉它，
+REM PyInstaller 会以 PermissionError 中断。
+REM ★ 只看 dist 里那一个：桌面上那个客户天天开着，不能因此拦下打包
+REM   （拿 tasklist 按进程名一棍子打死，就是会这样）。
+powershell -NoProfile -Command "$p = Get-Process Canoe -ErrorAction SilentlyContinue; $t = Join-Path $PWD 'dist\Canoe.exe'; if ($p) { foreach ($x in @($p)) { if ($x.Path -and $x.Path -ieq $t) { exit 1 } } }" >nul 2>&1
+if errorlevel 1 (
     echo.
-    echo [错误] 检测到 Canoe.exe 正在运行。
-    echo        请先退出程序再打包 —— 否则 PyInstaller 无法清理 dist 目录。
+    echo [错误] dist\Canoe.exe 正在运行（就是上次打出来那个）。
+    echo        先退出它再打包 —— 否则 PyInstaller 删不掉旧产物。
     goto :err
 )
 
@@ -77,14 +79,16 @@ python -m PyInstaller canoe.spec --noconfirm --clean || goto :err
 REM ---- 5. 自检 ----
 REM canoe.spec 已经把整个 bin\ 递归打包进去了（含 ruleset\ 子目录），
 REM 所以这里不用再手工 copy。直接跑产物自检，确认内核和规则集都在。
-REM 产物是 dist\Canoe\ 这个**目录**（onedir），exe 在里面。
+REM ★ onefile：产物就是 dist\Canoe.exe **一个文件**。
+REM   （以前这里写的是 dist\Canoe\Canoe.exe —— 那是 onedir 时代的，
+REM    早就不走那条路了，留着只会让一次成功的打包在这里报"失败"。）
 echo.
 echo [5/5] 自检打包产物...
-if not exist "dist\Canoe\Canoe.exe" (
-    echo       [错误] 没生成 dist\Canoe\Canoe.exe
+if not exist "dist\Canoe.exe" (
+    echo       [错误] 没生成 dist\Canoe.exe
     goto :err
 )
-"dist\Canoe\Canoe.exe" --selftest >nul 2>&1
+"dist\Canoe.exe" --selftest >nul 2>&1
 if errorlevel 2 (
     echo       [警告] 自检未通过 —— 通常是缺 sing-box.exe 或 wintun.dll
     echo              详情见 %%APPDATA%%\Canoe\selftest.txt
@@ -96,7 +100,7 @@ echo.
 echo ==========================================
 echo   完成
 echo ==========================================
-echo   产物:   dist\Canoe\   （整个目录，装到 C:\Canoe\）
+echo   产物:   dist\Canoe.exe   （单文件，拖到桌面双击即用）
 echo.
 echo   打包发布： python scripts\package_release.py
 echo   目标机器不需要装 Python。
