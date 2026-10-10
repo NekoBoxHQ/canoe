@@ -46,11 +46,96 @@ try {
 </div>
 
 <!-- ================= 登录 ================= -->
+<!--
+  背景是**代码画的**（内联 SVG）：夜空 + 月亮 + 两层山脊 + 水面 + 月光柱，
+  跟客户端那套夜色是一回事 —— 打开面板和打开客户端，看着得是同一个产品。
+
+  为什么画 SVG 而不是放一张背景图：面板是纯静态、不引外部资源的（见文件头），
+  一张大图等于多一个要传、要缓存、还可能失真的文件；而且它得跟着窗口缩放。
+  inline SVG 自带 viewBox，怎么拉都不糊。
+-->
 <div id="login-screen" class="screen">
+  <div class="login-scene" aria-hidden="true">
+    <svg viewBox="0 0 1440 820" preserveAspectRatio="xMidYMid slice">
+      <defs>
+        <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#050a16"/>
+          <stop offset="0.55" stop-color="#081428"/>
+          <stop offset="1" stop-color="#0a1a34"/>
+        </linearGradient>
+        <radialGradient id="halo">
+          <stop offset="0" stop-color="#e4eeff" stop-opacity="0.34"/>
+          <stop offset="0.45" stop-color="#9dc4ff" stop-opacity="0.12"/>
+          <stop offset="1" stop-color="#9dc4ff" stop-opacity="0"/>
+        </radialGradient>
+        <linearGradient id="water" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#0a1c38"/>
+          <stop offset="1" stop-color="#040d1e"/>
+        </linearGradient>
+        <!-- 月光落在水面上那道柱。
+             ⚠ 别做成一块实心梯形：第一版就是这么干的（0.15 的白蓝），
+               渲染出来是**一条灰色马路**，比没有还难看。要让它像光，
+               得靠"边缘化开 + 越往下越淡"：横向也在渐变里收窄，
+               再叠几道碎光。 -->
+        <linearGradient id="beam" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#cfe0ff" stop-opacity="0.10"/>
+          <stop offset="0.35" stop-color="#bcd4ff" stop-opacity="0.06"/>
+          <stop offset="1" stop-color="#9dc4ff" stop-opacity="0"/>
+        </linearGradient>
+        <linearGradient id="beam-fade" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="#000" stop-opacity="1"/>
+          <stop offset="0.5" stop-color="#fff" stop-opacity="1"/>
+          <stop offset="1" stop-color="#000" stop-opacity="1"/>
+        </linearGradient>
+        <mask id="beam-mask">
+          <rect x="1030" y="700" width="170" height="120" fill="url(#beam-fade)"/>
+        </mask>
+      </defs>
+
+      <rect width="1440" height="820" fill="url(#sky)"/>
+      <circle cx="1112" cy="196" r="260" fill="url(#halo)"/>
+      <circle cx="1112" cy="196" r="42" fill="#e4eeff" opacity="0.9"/>
+
+      <!-- 星：坐标写死，别用随机 —— 每次打开得是同一片天 -->
+      <g fill="#e4eeff">
+        <circle cx="180" cy="120" r="1.4" opacity=".5"/><circle cx="330" cy="70" r="1.1" opacity=".35"/>
+        <circle cx="520" cy="160" r="1.6" opacity=".55"/><circle cx="700" cy="90" r="1.1" opacity=".3"/>
+        <circle cx="880" cy="140" r="1.3" opacity=".45"/><circle cx="1250" cy="80" r="1.5" opacity=".5"/>
+        <circle cx="1360" cy="220" r="1.2" opacity=".35"/><circle cx="60" cy="240" r="1.2" opacity=".3"/>
+        <circle cx="980" cy="60" r="1" opacity=".25"/><circle cx="430" cy="250" r="1" opacity=".28"/>
+      </g>
+
+      <!-- 远山（淡）与近山（深），上沿压一道月光边 -->
+      <path id="ridge-far" d="M0 596 L150 520 L300 574 L470 480 L640 566 L820 496 L980 570 L1160 512 L1300 578 L1440 540 L1440 820 L0 820 Z"
+            fill="#12355f" opacity="0.55"/>
+      <use href="#ridge-far" fill="none" stroke="#2f6ba8" stroke-width="1.6" opacity="0.5"/>
+      <path id="ridge-near" d="M0 676 L200 598 L400 662 L600 566 L800 664 L1000 604 L1200 678 L1440 626 L1440 820 L0 820 Z"
+            fill="#081a33"/>
+      <use href="#ridge-near" fill="none" stroke="#3d7cbd" stroke-width="1.6" opacity="0.45"/>
+
+      <rect y="700" width="1440" height="120" fill="url(#water)"/>
+      <g mask="url(#beam-mask)">
+        <polygon points="1074,700 1150,700 1180,820 1044,820" fill="url(#beam)"/>
+      </g>
+      <g stroke="#8fb6e8" stroke-width="1.2" opacity="0.16">
+        <line x1="1080" y1="726" x2="1146" y2="726"/>
+        <line x1="1072" y1="748" x2="1154" y2="748" opacity=".8"/>
+        <line x1="1062" y1="770" x2="1164" y2="770" opacity=".6"/>
+        <line x1="240" y1="742" x2="470" y2="742" opacity=".5"/>
+        <line x1="620" y1="762" x2="880" y2="762" opacity=".45"/>
+      </g>
+    </svg>
+  </div>
+
   <form id="login-form" class="login-card" autocomplete="on">
-    <img class="login-logo" src="logo.png" alt="">
-    <h1>轻舟 <span>Canoe</span></h1>
-    <p class="login-sub">轻舟已过万重山 · 管理面板</p>
+    <div class="login-head">
+      <span class="login-id">
+        <h1>轻舟</h1>
+        <small>CANOE SERVER</small>
+      </span>
+    </div>
+
+    <div class="login-hr"></div>
 
     <label class="field">
       <span>管理员账号</span>
@@ -67,6 +152,8 @@ try {
 
     <button class="btn btn-primary" type="submit" id="login-btn">登 录</button>
   </form>
+
+  <p class="login-foot">轻舟已过万重山</p>
 </div>
 
 <!-- ================= 主界面 ================= -->

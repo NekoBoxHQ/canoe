@@ -494,6 +494,18 @@ check('★ CSS: 登录按钮满宽（跟输入框对齐）',
 check('★ CSS: 登录按钮的内边距跟 input 一致（高度才会齐）',
       /#login-form\s*>\s*\.btn-primary\s*\{[^}]*padding\s*:\s*11px\s+12px/.test(bootCss), '没找到');
 
+// 登录卡里那两行字：「轻舟」居中压在那行英文上方（跟侧边栏 .brand 一个规矩）。
+// 不居中时「轻舟」会贴着左边悬着，「CANOE SERVER」比它宽一截，一眼看着不齐。
+check('★ CSS: 登录卡的「轻舟」居中在英文上方',
+      /\.login-id\s*\{[^}]*text-align\s*:\s*center/.test(bootCss), '没找到这条规则');
+// 字距会在最后一个字后面也留一截，居中时字形会偏左半个字距 —— 得用
+// text-indent 补回来（侧边栏那处也是这么干的）。
+check('★ CSS: 补了字距那半个字的偏移（text-indent）',
+      /\.login-id\s+h1\s*\{[^}]*text-indent/.test(bootCss), '没找到 text-indent');
+// 密码栏到按钮之间要比"两个输入框之间"明显大一档（同 14px 会看着像第三个输入框）
+check('★ CSS: 密码栏到登录键拉开一档（28px，不是跟字段一样的 14px）',
+      /#login-form\s*>\s*\.btn-primary\s*\{[^}]*margin-top\s*:\s*28px/.test(bootCss), '没找到');
+
 // 会话页的「模式」要写得像人话。
 // 客户端报上来的是机器码（system_proxy / tun），面板上得给人看中文。
 // 两种接管方式**可以同时开**，所以第三档是叠加，不是二选一。

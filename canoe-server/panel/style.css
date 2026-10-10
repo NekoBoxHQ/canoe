@@ -72,32 +72,95 @@ html.booting #login-screen { display: none; }
 
 /* ---------------- 登录 ---------------- */
 #login-screen {
-  display: flex; align-items: center; justify-content: center; padding: 24px;
+  position: relative; overflow: hidden;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 18px;
+  padding: 24px;
 }
+/* 背景那幅夜色：铺满、不接鼠标事件 */
+.login-scene { position: absolute; inset: 0; z-index: 0; }
+.login-scene svg { display: block; width: 100%; height: 100%; }
+
 .login-card {
-  width: 360px; padding: 30px 28px 24px;
-  background: var(--card); border: 1px solid var(--line);
-  border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.5);
-  text-align: center;
+  position: relative; z-index: 1;
+  width: 384px; padding: 26px 28px 24px;
+  background: linear-gradient(180deg, rgba(16,31,58,.94), rgba(11,23,44,.97));
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: 0 30px 80px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.04);
+  backdrop-filter: blur(6px);              /* 让背后的月亮和山脊透一点点进来 */
+  text-align: left;                        /* 里面全是表单；卡片自己居中 */
 }
-.login-logo { width: 72px; height: 72px; }
-.login-card h1 { margin: 12px 0 2px; font-size: 26px; letter-spacing: 6px; }
-.login-card h1 span { font-size: 13px; letter-spacing: 1px; color: var(--faint); }
-.login-sub { margin: 0 0 22px; font-size: 12px; color: var(--dim); }
+
+/* 品牌那一块：只有「轻舟 / CANOE SERVER」两行字，**在卡片中线上居中**。
+ *
+ * ★ 这里原本摆着一个 logo 徽标，用户让去掉了（"不要那个徽标"）。那张
+ *   logo.png 是 3D 玻璃质感的，跟这套扁平暗色界面本来就不是一个年代的东西：
+ *   放大到 72px 太丑，缩成小徽标也还是多余 —— 管理面板的登录页，两行字
+ *   认得出来就够了。logo 仍然在侧边栏和 favicon 上。
+ *
+ * ⚠ 居中说的是**卡片中线**：横着排（图标在左、字在右）时那两行字会落在
+ *   中线左边，看着就是"没居中"。 */
+.login-head { text-align: center; }
+/* 两行字互相对齐（跟侧边栏 .brand 一个规矩）。
+ *
+ * ⚠ text-indent 是补 letter-spacing 的账：字距会在**最后一个字后面**也留一截，
+ *   居中时那截虚宽也算进去，字形就偏左"半个字距"。行首往右推半个字距抵掉，
+ *   才是看着正。侧边栏那处用的是同一招。改字距时这个值要一起改。 */
+.login-id { text-align: center; }
+.login-id h1 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: 5px; text-indent: 2.5px; }
+.login-id small {
+  display: block; margin-top: 2px; font-size: 10px;
+  letter-spacing: 2.4px; text-indent: 1.2px; color: var(--faint);
+}
+
+/* 一条两端淡掉的分隔线，比一条实线柔和 */
+.login-hr {
+  height: 1px; margin: 20px 0 18px;
+  background: linear-gradient(90deg, transparent, var(--line) 22%, var(--line) 78%, transparent);
+}
+
+/* 登录页的输入框比管理页的略高一点、圆角大一点：整页就这两个控件，
+   值得给它们多一点分量。焦点那圈光晕是"现在轮到你了"的提示。
+
+   ★ 两个输入框之间 14px，**密码到按钮之间必须明显再大一档**（现在是 28px）。
+     原来只隔 18px —— 跟"一组"几乎没差别，按钮看着就成了第三个输入框，
+     下面反而空着，整块头重脚轻（用户："登录键和密码栏拉开点距离"）。
+     间距的规则是：越"不是一组"的东西，差得越要看得出来，而不是差一点点。 */
+#login-form .field { margin-bottom: 14px; }
+#login-form .field > span { font-size: 12px; letter-spacing: 1px; color: var(--dim); }
+#login-form .field input { height: 44px; border-radius: 10px; }
+#login-form .field input:focus { box-shadow: 0 0 0 3px rgba(46,139,255,.16); }
+#login-form .field:last-of-type { margin-bottom: 0; }
+
 .login-error {
   margin: 4px 0 10px; padding: 9px 12px; border-radius: 8px;
   background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.45);
   color: #ffb4b4; font-size: 13px; text-align: left;
 }
+
+/* 卡片底下那行小字，压在水面上 */
+.login-foot {
+  position: relative; z-index: 1; margin: 0;
+  font-size: 12px; letter-spacing: 4px; color: var(--faint);
+}
+
 /* 登录按钮跟上面两个输入框**同宽同高**。
  *
  * .btn 本身是 padding 撑出来的行内块，宽度跟着文字走 —— 搁在居中的卡片里
  * 就成了窄窄一小条悬在中间，跟满宽的输入框对不齐，看着像没做完。
  * 这里把宽度和内边距都对齐到 .field 的 input（11px 12px + 1px 边框），
- * 高度自然也就一样了。 */
+ * 高度自然也就一样了。
+ *
+ * ⚠ 下面这两个值（width / padding）被 panel/test_panel.mjs 钉着，
+ *   改样式时别顺手改了它们。 */
 #login-form > .btn-primary {
   width: 100%; padding: 11px 12px; border-radius: 10px;
+  margin-top: 28px; letter-spacing: 4px; font-weight: 600;
+  box-shadow: 0 10px 24px rgba(46,139,255,.26);
 }
+#login-form > .btn-primary:hover { box-shadow: 0 12px 30px rgba(46,139,255,.38); }
+#login-form > .btn-primary:active { transform: translateY(1px); }
 
 .field { display: block; text-align: left; margin-bottom: 14px; }
 .field > span { display: block; margin-bottom: 6px; font-size: 12px; color: var(--dim); }
