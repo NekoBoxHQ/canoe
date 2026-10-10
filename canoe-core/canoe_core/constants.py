@@ -189,7 +189,7 @@ class Api:
     ADMIN_NODES = "/api/admin/nodes"
     ADMIN_SESSIONS = "/api/admin/sessions"
     ADMIN_STATS = "/api/admin/stats"
-    # 发布新版本（含上传安装包）
+    # 发布新版本（从 GitHub Release 拉，见 services/github.py）
     ADMIN_RELEASES = "/api/admin/releases"
 
 

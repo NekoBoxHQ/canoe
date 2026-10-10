@@ -465,7 +465,7 @@ cmd_config() {
 
     while true; do
         printf '%s\n' "$MENU_RULE"
-        printf '         %s配置%s\n' "$C_INFO" "$C_OFF"
+        printf '         %s修改配置%s\n' "$C_INFO" "$C_OFF"
         printf '%s\n' "$MENU_RULE"
         printf '   1  查看当前配置\n'
         printf '   2  改管理面板端口\n'
@@ -1103,6 +1103,12 @@ cmd_version() {
 #: 菜单宽度（按用户给的样式，31 个横线）
 MENU_RULE="-------------------------------"
 
+# ★ 条目一律**动词开头**（安装 Canoe / 查看状态 / 修改配置…），
+#   跟配置子菜单、跟 `title "卸载 Canoe"` 那批标题是一套语序。
+#   最早混着写过「Canoe 状态」「Canoe 配置」（名词打头），菜单看着半拉子
+#   不整齐 —— 用户点名过输出要"整齐"，别再退回那种写法。
+#   结构（标题 + 上下横线 + 只有 1-8 和 0）是用户拍的板，也别再加东西。
+
 show_menu() {
     clear 2>/dev/null || true
     printf '%s\n' "$MENU_RULE"
@@ -1112,8 +1118,8 @@ show_menu() {
     printf '   2  启动 Canoe\n'
     printf '   3  停止 Canoe\n'
     printf '   4  重启 Canoe\n'
-    printf '   5  Canoe 状态\n'
-    printf '   6  Canoe 配置\n'
+    printf '   5  查看状态\n'
+    printf '   6  修改配置\n'
     printf '   7  升级 Canoe\n'
     printf '   8  卸载 Canoe\n'
     printf '   0  退出\n'

@@ -113,9 +113,10 @@ done
 
 # 菜单：喂 0 让它渲染一遍就退出。
 #
-# 未安装时菜单只会列出「安装」—— 这是刻意的（其余几项点了也没用）。
-# 所以要验完整的 1-8，得先造一个"看起来装过了"的环境：
-# CANOE_APP_DIR 指过去，并在里面放一个可执行的 .venv/bin/python。
+# 菜单**永远是 1-8 + 0**，装没装过都一样 ——「未安装只该选 1」那条是 menu()
+# 循环里的提示（warn），不是把条目藏起来。这里仍旧造一个"看起来装过了"的
+# 环境，图的是走已安装那条路：CANOE_APP_DIR 指过去，里面放一个可执行的
+# .venv/bin/python。
 FAKE_APP="$TMP/fakeapp"
 mkdir -p "$FAKE_APP/canoe-server/.venv/bin"
 printf '#!/bin/sh\nexit 0\n' > "$FAKE_APP/canoe-server/.venv/bin/python"
@@ -123,9 +124,13 @@ chmod +x "$FAKE_APP/canoe-server/.venv/bin/python"
 
 MENU="$(printf '0\n' | CANOE_APP_DIR="$FAKE_APP" bash "$TARGET" 2>&1)"
 for item in "安装 Canoe" "启动 Canoe" "停止 Canoe" "重启 Canoe" \
-            "Canoe 状态" "Canoe 配置" "升级 Canoe" "卸载 Canoe"; do
+            "查看状态" "修改配置" "升级 Canoe" "卸载 Canoe"; do
     check "菜单里有「$item」" "$(grep -qF "$item" <<< "$MENU" && echo 0 || echo 1)" "$MENU"
 done
+# 条目一律动词开头（跟配置子菜单、跟 title "卸载 Canoe" 一套语序）。
+# 早先 5/6 写成「Canoe 状态」「Canoe 配置」，名词打头，夹在动词里不像一套。
+check "★ 菜单条目不再有「Canoe 状态 / Canoe 配置」这种名词打头的写法" \
+      "$(grep -qE "Canoe 状态|Canoe 配置" <<< "$MENU" && echo 1 || echo 0)" "$MENU"
 check "菜单编号 0-8 齐全" \
       "$(for i in 1 2 3 4 5 6 7 8 0; do grep -qE "^[[:space:]]*$i[[:space:]]" <<< "$MENU" || exit 1; done; echo 0)"
 
