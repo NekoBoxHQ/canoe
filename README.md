@@ -117,7 +117,7 @@ python run.py
 
 | 文件 | 必需性 | 说明 |
 |---|---|---|
-| `sing-box.exe` | **必需** | 代理内核，本项目用 1.14.2 验证 |
+| `sing-box.exe` | **必需** | 代理内核，本项目用 1.14.3 验证 |
 | `bin/ruleset/*.srs` | 绕过大陆需要 | 已内置 |
 | `wintun.dll` | 全局(TUN)模式需要 | <https://www.wintun.net/> |
 
@@ -249,7 +249,7 @@ bash deploy/test_canoe_sh.sh                              # 管理脚本（44 �
 
 | 组件 | 用途 | 获取 |
 |---|---|---|
-| **sing-box** | 代理内核（客户端用；服务端不碰流量） | [Releases](https://github.com/SagerNet/sing-box/releases)，本项目用 1.14.2 |
+| **sing-box** | 代理内核（客户端用；服务端不碰流量） | [Releases](https://github.com/SagerNet/sing-box/releases)，本项目用 1.14.3 |
 | **wintun.dll** | 仅全局(TUN)模式 | <https://www.wintun.net/> |
 | Nginx + certbot | 服务端部署 | 系统包管理器 |
 

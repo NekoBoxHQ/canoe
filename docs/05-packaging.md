@@ -15,7 +15,7 @@ build.bat
 
 | 项 | 要求 |
 |---|---|
-| Python | 3.10+（开发用 3.13 + sing-box 1.14.2 验证过） |
+| Python | 3.10+（开发用 3.13 + sing-box 1.14.3 验证过） |
 | 依赖 | `build.bat` 会自动装 `pyinstaller` 和 `requirements.txt` |
 | 图标 | `assets/canoe.ico`（已有；改了设计稿就跑 `python assets/make_icon.py` 重新生成，需要 Pillow） |
 | 内核 | `bin/sing-box.exe` —— **没有也能打包**，但用户跑不起来 |
@@ -43,7 +43,7 @@ build.bat
 所以客户端内置了一个自检开关：
 
 ```bat
-dist\Canoe\Canoe.exe --selftest
+dist\Canoe.exe --selftest
 ```
 
 它会检查内核路径、内核版本、规则集、图标是否就位，
@@ -51,17 +51,20 @@ dist\Canoe\Canoe.exe --selftest
 
 ```json
 {
-  "version": "1.0.0",
+  "version": "1.0.39",
   "frozen": true,
-  "executable": "...\\dist\\Canoe\\Canoe.exe",
-  "bin_dir": "...\\dist\\Canoe\\_internal\\bin",
+  "executable": "...\\canoe-client\\dist\\Canoe.exe",
+  "bin_dir": "...\\_MEI000123456\\bin",
   "bin_dir_exists": true,
-  "singbox": "...\\_internal\\bin\\sing-box.exe",
+  "singbox": "...\\_MEI000123456\\bin\\sing-box.exe",
   "singbox_found": true,
-  "singbox_version": "sing-box version 1.14.2",
+  "singbox_version": "sing-box version 1.14.3",
   "ruleset": { "geoip-cn.srs": 34185, "geosite-cn.srs": 56144 }
 }
 ```
+
+（单文件 exe 的解压目录名是 `_MEI` + 一个跟 pid 有关的数字，每次启动都不一样；
+上面只挑了这几项，实际还有 `crypto` / `tls` / `tun` 几块。）
 
 退出码：`0` 正常，`2` 缺内核。让用户把这个文件发过来，一眼就知道缺什么。
 

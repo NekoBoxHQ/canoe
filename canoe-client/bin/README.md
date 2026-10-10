@@ -11,8 +11,15 @@
 
 从官方 Releases 下载 Windows amd64 版本：<https://github.com/SagerNet/sing-box/releases>
 
-**版本要求：推荐 `1.9.x ~ 1.10.x`。** 1.11 起 `inbounds[].sniff` 被废弃，
-本客户端生成的配置用的是旧写法。
+**本项目随仓库提供的就是 `1.14.3`**（打版时连同它一起塞进客户端，用户不用自己放）。
+换版本时把 zip 里的 `sing-box.exe` 覆盖到本目录，然后**跑一遍**
+`python tests/test_config.py` —— 它会拿新内核真跑 `sing-box check`，
+配置写法跟不上新内核的话那里会红。
+
+> 这里原本写着"推荐 1.9.x ~ 1.10.x，1.11 起 `inbounds[].sniff` 被废弃，
+> 本客户端生成的配置用的是旧写法"—— 早就不成立了：配置生成器走的是现行的
+> `route.rules` 里 `{"action": "sniff"}`，1.14.3 对系统代理 / TUN / 回国
+> 三种配置 `check` 都是 rc=0 且一条警告都没有。
 
 ```bash
 bin\sing-box.exe version
