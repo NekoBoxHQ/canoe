@@ -659,7 +659,7 @@ def main() -> int:
 
     for path, what in (("/panel/", "面板首页"), ("/panel/index.html", "index.html"),
                        ("/panel/app.js", "app.js"), ("/panel/style.css", "style.css"),
-                       ("/panel/logo.png", "logo.png")):
+                       ("/panel/favicon.png", "favicon.png")):
         r = panel_client.get(path)
         check(f"{what} 可访问", r.status_code == 200, f"{path} -> {r.status_code}")
 

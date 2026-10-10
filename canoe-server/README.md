@@ -197,7 +197,7 @@ canoe-server/
 │       └── broadcast.py    ★SSE 推送中心
 ├── panel/                  ★Web 管理面板（纯静态，无构建步骤）
 │   ├── index.html / app.js / style.css
-│   ├── logo.png
+│   ├── favicon.png         浏览器标签图标（客户端那条船）
 │   └── test_panel.mjs      面板的 DOM 冒烟测试（需 bun + linkedom）
 ├── deploy/                 ★部署材料（systemd / Nginx / 一键脚本）
 ├── releases/               上传的客户端安装包（不进仓库）

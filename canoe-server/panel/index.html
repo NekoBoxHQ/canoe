@@ -15,7 +15,11 @@
   登录复用 /api/login，拿到的是同一个管理员令牌；
   权限由服务端 /api/admin/* 二次校验，前端藏不藏都没用。
 -->
-<link rel="icon" href="logo.png">
+<!-- 文件名从 logo.png 改成 favicon.png 是有意的：Chrome 的 favicon 单独存
+     一个库、按 URL 缓存，且**不老实听 Cache-Control** —— 同一个 URL 换了图，
+     无痕窗口都可能还给你看旧的（真踩过）。换个新文件名（= 新 URL）才能
+     让所有浏览器立刻重取。以后换图标，**换文件内容还不够，要么改名要么加 ?v=n**。 -->
+<link rel="icon" type="image/png" href="favicon.png">
 <link rel="stylesheet" href="style.css">
 <script>
 /* 有令牌就别让登录框露脸 —— 验令牌要一个网络来回，那段时间先显示
@@ -41,11 +45,11 @@ try {
 -->
 <div id="boot-screen" class="screen">
   <!--
-    ⚠ 这里用的是 logo-full.png，**favicon 用的是 logo.png** —— 两张不同的图，
+    ⚠ 这里用的是 logo-full.png，**favicon 用的是 favicon.png** —— 两张不同的图，
       别再合并成一个文件：
         · logo-full.png  带「CANOE / LIGHT BOAT」字样的完整品牌图，只在
                          这种**大图**位置用（96px 才认得出字）
-        · logo.png       客户端那条船（透明底、无字），给 16~32px 的浏览器
+        · favicon.png    客户端那条船（透明底、无字），给 16~32px 的浏览器
                          标签用 —— 带字的缩到那个尺寸就是一坨。
                          这张跟 canoe-client/assets/canoe.png 是同一个文件，
                          换了图标记得两边一起换。
@@ -169,7 +173,7 @@ try {
 <!-- ================= 主界面 ================= -->
 <div id="app-screen" class="screen" hidden>
   <aside class="sidebar">
-    <!-- 这里原来还有个 logo.png 徽标，用户让去掉了（"徽标都要"→不要）——
+    <!-- 这里原来还有个 logo 徽标，用户让去掉了（"徽标都要"→不要）——
          跟登录卡一样：两行字认得出来就够了。logo 现在只在 favicon 上。 -->
     <div class="brand">
       <div>
