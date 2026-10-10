@@ -911,6 +911,16 @@ def main() -> int:
           str(sorted(diag)))
     check("自检里带上网卡名，方便对上",
           diag.get("interface_name") == k_mod.TUN_INTERFACE_NAME, str(diag.get("interface_name")))
+    # ★ wintun_dll 这一项以前恒为 false —— diagnostics() 没把 bin 目录传下去，
+    #   wintun_present() 只能猜 cwd 和 System32，而打包后的进程 cwd 是
+    #   用户启动它的地方（桌面）。dll 明明在包里，报告却说没有。
+    #   下面这条钉住"报告说的 = bin 目录里到底有没有"。
+    from canoe_client import config as cfg_mod
+
+    _dll = cfg_mod.BIN_DIR / "wintun.dll"
+    check("★ wintun_dll 问的是真 bin 目录（不是 cwd —— 打包后恒 false）",
+          diag.get("wintun_dll") is _dll.is_file(),
+          f"报告 {diag.get('wintun_dll')} / 文件 {_dll.is_file()} @ {cfg_mod.BIN_DIR}")
 
     pm = QPixmap(32, 32)
     pm.fill(QColor("#2E8BFF"))

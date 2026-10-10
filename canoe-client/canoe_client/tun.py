@@ -85,14 +85,25 @@ $win = @(Get-PnpDevice -Class Net -ErrorAction SilentlyContinue | Where-Object {
 """
 
 
-def diagnostics() -> dict:
-    """TUN 现场：网卡在不在、有没有 IP、有没有幽灵设备、有几个内核在跑。"""
+def diagnostics(bin_dir: Path | None = None) -> dict:
+    """TUN 现场：网卡在不在、有没有 IP、有没有幽灵设备、有几个内核在跑。
+
+    ★ 不传 bin_dir 就取 config.BIN_DIR（打包后就是 _MEIPASS/bin）。
+    别让 wintun_present() 自己去猜 —— 它猜的是 **cwd** 和 System32，
+    而打包后的进程 cwd 是用户启动它的地方（桌面），于是报告里的
+    wintun_dll 恒为 false：dll 明明就在包里，报告却说没有
+    （1.0.36 的自检报告撒了这个谎，害我去翻归档才确认）。
+    真起 TUN 的那条路本来就传目录（check_tun_ready(exe.parent)），
+    这里补上，两边看的是同一个地方。
+    """
     import json
     import subprocess
 
+    from .config import BIN_DIR
+
     base: dict = {
         "admin": is_admin(),
-        "wintun_dll": wintun_present(),
+        "wintun_dll": wintun_present(bin_dir or BIN_DIR),
         "interface_name": "canoe",
     }
     if os.name != "nt":
