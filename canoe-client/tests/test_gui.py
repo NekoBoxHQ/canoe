@@ -720,6 +720,19 @@ def main() -> int:
           isinstance(view.route_label, QLabel)
           and view.route_label.focusPolicy() == Qt.NoFocus)
 
+    # 那行字是**从底部那块里借**的位置，不是往上加的。
+    # 用户为这个抱怨过两回：加这行的时候窗口被顶高了 70px（灯下面 30px +
+    # 字底下又留了整条 74px 水面），看到的就是"这块空当越拉越长 / 界面太长
+    # 不好看"。这里拿"加这行字之前的高度"卡着，超了就是又犯了同一个错。
+    check(f"★ 主界面不比加这行字之前高（{mv.HEIGHT_BEFORE_ROUTE}）",
+          view.height() <= mv.HEIGHT_BEFORE_ROUTE,
+          f"{view.width()}x{view.height()}")
+    check("★ 线路那行贴在底部那块预算里（没有从别处又借一笔）",
+          mv.ROUTE_GAP + mv.ROUTE_LINE_H + mv.WATER_GAP + mv.BOTTOM_PAD
+          <= mv.SCENE_BAND + 2,
+          f"{mv.ROUTE_GAP}+{mv.ROUTE_LINE_H}+{mv.WATER_GAP}+{mv.BOTTOM_PAD}"
+          f" vs SCENE_BAND={mv.SCENE_BAND}")
+
     # 字号跟节点名一模一样 —— 用户点名要的
     node_css = _re.search(r"QLabel#NodeName\s*\{[^}]*font-size:\s*(\d+)px", sheet, _re.S)
     mode_block = _re.search(r"QLabel#RouteMode\s*\{([^}]*)\}", sheet, _re.S)

@@ -61,7 +61,18 @@ LOG_POLL_MS = 300
 
 WINDOW_W = 420
 SIDE_PAD = 20            # 正文左右留白
-SCENE_BAND = 74          # 底部留给水面的高度
+#: 底部这一块的总预算。原来是"全给水面"，现在里面住着「线路方向」那行 ——
+#: 三个空当（灯→字、字→版本、版本→下沿）加起来别超过它，
+#: 超了窗口就变高（用户为这个抱怨过两回："越拉越长 / 界面太长不好看"）。
+SCENE_BAND = 74
+#: 加「线路方向」那行**之前**的主界面高度（1.0.32）。那行字是从底部原有的
+#: 空当里借的位置，所以窗高不该越过它。测试拿这个数卡着，见 test_gui。
+HEIGHT_BEFORE_ROUTE = 674
+BOTTOM_PAD = 10          # 版本号离窗口下沿
+ROUTE_GAP = 20           # 节点灯 →「线路方向」那行（用户挑的那一档）
+WATER_GAP = 10           # 「线路方向」那行 → 版本号（剩下的水纹就画在这块里）
+#: 「线路方向」那行本身的高度（27px 的字，行高约 36）—— 标注用。
+ROUTE_LINE_H = 36
 TOOL_H = 66
 #: 三个工具按钮等宽：(窗口宽 - 两侧留白 - 两个间隔) / 3
 TOOL_W = (WINDOW_W - SIDE_PAD * 2 - 20) // 3
@@ -237,8 +248,9 @@ class MainView(FramelessWindow):
     def _build(self) -> None:
         root = self.body_layout
         # 底部留白。最后一行是版本号，原来只留 6px —— 用户反馈"太贴底"，
-        # 现在留 16px，压在水面上方一点，看着才是"刻在那儿"而不是"被切掉一截"。
-        root.setContentsMargins(SIDE_PAD, 10, SIDE_PAD, 16)
+        # 现在留 BOTTOM_PAD。整窗高度是靠 sizeHint 量的，这里每多一点窗口
+        # 就长一点，所以这个数别随手加。
+        root.setContentsMargins(SIDE_PAD, 10, SIDE_PAD, BOTTOM_PAD)
         root.setSpacing(0)
 
         root.addWidget(self._kicker())
@@ -335,18 +347,22 @@ class MainView(FramelessWindow):
         root.addWidget(self.lights)
 
         # --- 线路方向（出国 / 回国）---
-        #   节点灯下面那块空当里，居中。**只显示、不可点** —— 方向是服务端
+        #   节点灯下面，紧跟着那排灯。**只显示、不可点** —— 方向是服务端
         #   给定的，客户端没有改的入口。
-        #   字号跟节点名一样大（用户点名要的）：它一个人占着这块空当，
-        #   小了就成脚注，跟上面那排灯也不成比例。
-        root.addSpacing(30)
+        #   字号跟节点名一样大（用户点名要的）。
+        root.addSpacing(ROUTE_GAP)
         self.route_label = QLabel(Route.LABELS[Route.OUT])
         self.route_label.setObjectName("RouteMode")
         self.route_label.setAlignment(Qt.AlignCenter)
         root.addWidget(self.route_label)
 
         # --- 底部水面 ---
-        root.addSpacing(SCENE_BAND)
+        #   ★ 这行字占的位置是**从底部这块预算里借的**，不是往上加的。
+        #     早先写成"灯下面留 30px + 字 + 完整的 74px 水面"，等于把窗口
+        #     往上顶了 76px —— 用户看到的就是"这块空当越拉越长，界面太长
+        #     不好看"。三个空当加起来（灯→字、字→版本、版本→下沿）不许超过
+        #     SCENE_BAND，整窗高度才跟加这行字之前一个量级。
+        root.addSpacing(WATER_GAP)
 
         # --- 版本号 ---
         #   压在底边正中。用户报问题时第一句常常是"我装的是哪个版本"，
