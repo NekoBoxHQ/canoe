@@ -296,6 +296,67 @@ def _draw_boat(p: QPainter, cx: float, cy: float, size: float) -> None:
 # --------------------------------------------------------------------------
 
 
+def paint_boat(p: QPainter, cx: float, cy: float, scale: float) -> None:
+    """在 (cx, cy) 为中心、边长 scale 的方框里画一条帆船。
+
+    ★ 这是**唯一**的画法：界面里那个小徽标（`_boat_pixmap`）和 exe 图标
+      （`assets/make_icon.py` 生成 ico）都调它。以前两边各画各的，
+      结果图标是一条船、标题栏小标是另一条 —— 别再分家。
+
+    几何写在 100×100 坐标里，画之前平移到目标位置、缩放。
+    配色跟着 Palette：前帆压白、主帆走青→深蓝，两块帆在小尺寸下也分得开。
+    """
+    p.save()
+    p.translate(cx - scale / 2, cy - scale / 2)
+    p.scale(scale / 100.0, scale / 100.0)
+    p.setPen(Qt.NoPen)
+
+    # 主帆（右侧大帆）
+    sail = QLinearGradient(52, 10, 82, 68)
+    sail.setColorAt(0.0, QColor("#8FE8FF"))
+    sail.setColorAt(0.55, QColor(P.CYAN_DEEP))
+    sail.setColorAt(1.0, QColor(P.ACCENT_DEEP))
+    p.setBrush(QBrush(sail))
+    main = QPainterPath()
+    main.moveTo(54, 12)
+    main.quadTo(76, 44, 82, 65)
+    main.quadTo(68, 71, 54, 68)
+    main.closeSubpath()
+    p.drawPath(main)
+
+    # 前帆（左侧小帆，压白）
+    jib = QLinearGradient(46, 24, 24, 66)
+    jib.setColorAt(0.0, QColor("#FFFFFF"))
+    jib.setColorAt(1.0, QColor("#9BDCFF"))
+    p.setBrush(QBrush(jib))
+    fore = QPainterPath()
+    fore.moveTo(46, 26)
+    fore.quadTo(32, 46, 24, 64)
+    fore.quadTo(36, 69, 46, 66)
+    fore.closeSubpath()
+    p.drawPath(fore)
+
+    # 船身：上沿平、底下一条弧
+    hull = QLinearGradient(12, 70, 88, 88)
+    hull.setColorAt(0.0, QColor("#D8F4FF"))
+    hull.setColorAt(0.45, QColor("#5FC8FF"))
+    hull.setColorAt(1.0, QColor(P.ACCENT_DEEP))
+    p.setBrush(QBrush(hull))
+    body = QPainterPath()
+    body.moveTo(11, 69)
+    body.lineTo(89, 69)
+    body.quadTo(82, 89, 50, 89)
+    body.quadTo(18, 89, 11, 69)
+    body.closeSubpath()
+    p.drawPath(body)
+
+    # 桅杆
+    p.setBrush(Qt.NoBrush)
+    p.setPen(QPen(QColor("#EAF2FF"), 2.6, Qt.SolidLine, Qt.RoundCap))
+    p.drawLine(QPointF(50, 8), QPointF(50, 70))
+    p.restore()
+
+
 def _boat_pixmap(size: int) -> QPixmap:
     """徽标本体，画在 size×size 的正方形里。"""
     dpr = 2
@@ -305,51 +366,8 @@ def _boat_pixmap(size: int) -> QPixmap:
 
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing, True)
-    s = float(size)
-    p.scale(s / 100.0, s / 100.0)
-
-    # 主帆（青 -> 亮蓝渐变）
-    sail = QLinearGradient(28, 6, 62, 62)
-    sail.setColorAt(0.0, QColor("#7FE9FF"))
-    sail.setColorAt(1.0, QColor(P.ACCENT))
-    p.setPen(Qt.NoPen)
-    p.setBrush(QBrush(sail))
-    main_sail = QPainterPath()
-    main_sail.moveTo(50, 8)
-    main_sail.lineTo(76, 66)
-    main_sail.quadTo(62, 72, 50, 70)
-    main_sail.closeSubpath()
-    p.drawPath(main_sail)
-
-    # 副帆（更浅，往前倾）
-    jib = QLinearGradient(20, 24, 46, 66)
-    jib.setColorAt(0.0, QColor("#BFF2FF"))
-    jib.setColorAt(1.0, QColor("#3FA9FF"))
-    p.setBrush(QBrush(jib))
-    fore_sail = QPainterPath()
-    fore_sail.moveTo(44, 22)
-    fore_sail.lineTo(22, 66)
-    fore_sail.quadTo(34, 71, 46, 68)
-    fore_sail.closeSubpath()
-    p.drawPath(fore_sail)
-
-    # 船身
-    hull = QLinearGradient(18, 70, 84, 84)
-    hull.setColorAt(0.0, QColor("#5FE0FF"))
-    hull.setColorAt(1.0, QColor("#2E7BFF"))
-    p.setBrush(QBrush(hull))
-    body = QPainterPath()
-    body.moveTo(14, 72)
-    body.lineTo(86, 72)
-    body.quadTo(78, 88, 50, 88)
-    body.quadTo(22, 88, 14, 72)
-    body.closeSubpath()
-    p.drawPath(body)
-
-    # 桅杆
-    p.setPen(QPen(QColor("#D6F3FF"), 2.4, Qt.SolidLine, Qt.RoundCap))
-    p.drawLine(QPointF(48, 6), QPointF(48, 70))
-
+    s = float(size * dpr)
+    paint_boat(p, s / 2, s * 0.47, s * 0.86)
     p.end()
     return pm
 
