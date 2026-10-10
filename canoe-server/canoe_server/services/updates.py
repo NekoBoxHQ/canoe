@@ -28,6 +28,7 @@ from canoe_core import (
 
 from ..config import settings
 from ..models import ClientRelease, User, epoch
+from . import github
 
 
 # --------------------------------------------------------------------------
@@ -68,6 +69,14 @@ class ReleaseTooLarge(Exception):
 
 class ReleaseMismatch(Exception):
     """收到的安装包和发布方声明的对不上（多半是这一次上传没传完）。"""
+
+
+class ReleaseSourceError(Exception):
+    """上游（GitHub Release）那边的问题：找不到 Release、没有 zip 资产、下载失败。
+
+    单独一个类，是为了让调用方能把它跟"包本身不对"分开 —— 面板要回 400 并带
+    人话，命令行要直接吐这句话。
+    """
 
 
 def guess_version(filename: str) -> str:
@@ -204,6 +213,82 @@ def list_releases(db: DBSession) -> list[ClientRelease]:
     rows = list(db.scalars(select(ClientRelease)).all())
     rows.sort(key=lambda r: version_key(r.version), reverse=True)
     return rows
+
+
+# --------------------------------------------------------------------------
+# 从 GitHub Release 拉一个包并发布
+# --------------------------------------------------------------------------
+def pull_from_github(
+    db: DBSession,
+    *,
+    repo: str,
+    tag: str = "",
+    version: str = "",
+    notes: str = "",
+    min_version: str = "",
+) -> tuple[ClientRelease, bool]:
+    """从 GitHub Release 拉安装包并发布，返回 (发布记录, 摘要核对过没有)。
+
+    ★ **面板那个「拉取最新轻舟」和命令行的 `canoe release` 都走这里。**
+
+      以前这种"两处各写一份"的账吃过一次：面板给了 sha256、命令行忘了给，
+      于是命令行发出去的包只核对了大小 —— 这种事看不出来，只能靠共用一份
+      来避免。所以 GitHub 那几步（services/github.py）和落盘发布（下面这
+      几步）都收进这一个函数。
+
+    版本号优先从资产文件名里抠（Canoe-1.0.31-win64.zip -> 1.0.31），抠不出来
+    退到 tag。更新说明留空就拿 Release 正文第一行 —— 客户端那个更新弹窗
+    只显示一段话。
+    """
+    try:
+        release = github.find_release(repo, tag)
+        asset, digest = github.pick_assets(release)
+    except github.GithubError as exc:
+        raise ReleaseSourceError(str(exc)) from exc
+
+    filename = safe_filename(str(asset.get("name") or "Canoe.zip"))
+    ver = (
+        version.strip()
+        or guess_version(filename)
+        or str(release.get("tag_name") or "").lstrip("vV")
+    )
+    if not ver:
+        raise ReleaseSourceError(
+            f"从资产名 {filename} 和 tag 里都抠不出版本号 —— 用 --version 显式给一个。"
+        )
+
+    if not notes.strip():
+        notes = next(
+            (ln.strip().strip("#*` ") for ln in str(release.get("body") or "").splitlines()
+             if ln.strip()),
+            "",
+        )[:200]
+
+    try:
+        with github.open_asset(asset) as src:
+            _dest, size, sha = store_release_file(
+                src,
+                filename,
+                expected_size=int(asset.get("size") or 0),
+                expected_sha256=digest,
+            )
+    except github.GithubError as exc:
+        raise ReleaseSourceError(str(exc)) from exc
+    except (ReleaseTooLarge, ReleaseMismatch):
+        raise                      # 这两种调用方要单独认，别包成"上游问题"
+    except OSError as exc:
+        raise ReleaseSourceError(f"下载或写盘失败：{exc}") from exc
+
+    row = publish_release(
+        db,
+        version=ver,
+        filename=filename,
+        size=size,
+        sha256=sha,
+        notes=notes,
+        min_version=min_version,
+    )
+    return row, bool(digest)
 
 
 # --------------------------------------------------------------------------

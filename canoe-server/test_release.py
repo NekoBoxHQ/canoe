@@ -322,6 +322,74 @@ def main() -> int:
     finally:
         github._get_json = real_json
 
+    # --- 10. 从 Release 拉包并发布（pull_from_github）---
+    #
+    # 这一段是真跑：把"Release 资产"的下载地址指向本地文件（file:// 走的是
+    # 标准 urlopen），所以**不联网**也验得到落盘、核对、发布整条链。
+    # 面板那个「拉取最新轻舟」和命令行的 `canoe release` 走的就是这个函数。
+    print("\n[10] 从 GitHub Release 拉包并发布")
+    from canoe_server.database import SessionLocal, init_db  # noqa: PLC0415
+    from canoe_server.services.updates import (  # noqa: PLC0415
+        ReleaseSourceError,
+        pull_from_github,
+    )
+
+    # ⚠ 上面那段的 finally 已经把 tmp 整个删了，这里得自己造一个；
+    #   releases/ 也在 tmp 底下，一并重建（store_release_file 要往里写）。
+    tmp10 = Path(tempfile.mkdtemp(prefix="canoe-pulltest-"))
+    releases.mkdir(parents=True, exist_ok=True)
+
+    pkg = tmp10 / "Canoe-9.9.9-win64.zip"
+    pkg.write_bytes(b"PK\x05\x06" + b"\0" * 18)          # 空 zip 就够，只看字节
+    want_sha = hashlib.sha256(pkg.read_bytes()).hexdigest()
+    side = tmp10 / "Canoe-9.9.9-win64.zip.sha256"
+    side.write_text(f"{want_sha}  {pkg.name}\n", encoding="utf-8")
+
+    def _asset(path):
+        return {"name": path.name, "size": path.stat().st_size,
+                "browser_download_url": path.as_uri()}
+
+    fake = {
+        "tag_name": "v9.9.9",
+        "body": "这一版是拿来测的\n第二行不该被当成更新说明",
+        "assets": [_asset(side), _asset(pkg)],
+    }
+
+    real_find = github.find_release
+    init_db()
+    try:
+        github.find_release = lambda repo, tag="": fake
+        with SessionLocal() as db:
+            row, verified = pull_from_github(db, repo="NekoBoxHQ/canoe")
+            check("★ 版本号从资产文件名里抠出来", row.version == "9.9.9", row.version)
+            check("★ 摘要核对过了（Release 上挂了 .sha256）", verified)
+            check("★ 包真的落到了 releases/ 下", (releases / pkg.name).is_file())
+            check("★ 发布记录里的 sha256 和本地一致", row.sha256 == want_sha,
+                  (row.sha256 or "")[:16])
+            check("★ 更新说明取 Release 正文第一行",
+                  row.notes == "这一版是拿来测的", repr(row.notes))
+
+            # 摘要对不上 → 整个丢掉，绝不发布
+            side.write_text("0" * 64 + "  x\n", encoding="utf-8")
+            try:
+                pull_from_github(db, repo="NekoBoxHQ/canoe", version="9.9.8")
+                check("摘要对不上时应当报错", False)
+            except Exception as exc:                       # noqa: BLE001
+                check("★ 摘要对不上就整个丢掉（不发布）",
+                      type(exc).__name__ == "ReleaseMismatch", type(exc).__name__)
+
+            # 没有 zip 资产 → 给人话
+            github.find_release = lambda repo, tag="": {"tag_name": "v9", "assets": []}
+            try:
+                pull_from_github(db, repo="NekoBoxHQ/canoe")
+                check("没有 zip 资产时应当报错", False)
+            except ReleaseSourceError as exc:
+                check("★ 没有 zip 资产时给的是人话",
+                      "package_release.py" in str(exc), str(exc))
+    finally:
+        github.find_release = real_find
+        shutil.rmtree(tmp10, ignore_errors=True)
+
     print(f"\n{'=' * 48}")
     print(f"通过 {passed} 项，失败 {failed} 项")
     print(f"{'=' * 48}\n")

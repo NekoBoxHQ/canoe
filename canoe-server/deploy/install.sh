@@ -48,9 +48,74 @@ ADMIN_GENERATED=0
 #: 项目的默认地址。不在检出目录里跑、又没给 --repo 时用它。
 DEFAULT_REPO="${CANOE_REPO:-https://github.com/NekoBoxHQ/canoe.git}"
 
-log()  { printf '\033[1;36m[*]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
-die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
+# ---- 输出 ----------------------------------------------------------------
+#
+# ⚠ 下面这几个函数在 canoe.sh 里有一份**一模一样**的，是**故意重复**的：
+#   install.sh 用在"机器上还什么都没有"的时候 —— 它可能要先从 GitHub 把
+#   canoe.sh 取回来，在那之前它谁也 source 不到，排版基建只能自带。
+#   改这里记得两边一起改（test_canoe_sh.sh 里对两边都钉了行为）。
+#
+#   颜色只在 tty 上给：输出重定向到文件/管道时全是空的，
+#   不会在日志里塞一堆 \033[。
+if [[ -t 1 ]]; then
+    C_OK=$'\033[1;32m'; C_INFO=$'\033[1;36m'; C_WARN=$'\033[1;33m'
+    C_ERR=$'\033[1;31m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
+else
+    C_OK=""; C_INFO=""; C_WARN=""; C_ERR=""; C_DIM=""; C_OFF=""
+fi
+log()  { printf '%s[*]%s %s\n' "$C_INFO" "$C_OFF" "$*"; }
+ok()   { printf '%s[+]%s %s\n' "$C_OK"   "$C_OFF" "$*"; }
+warn() { printf '%s[!]%s %s\n' "$C_WARN" "$C_OFF" "$*"; }
+err()  { printf '%s[x]%s %s\n' "$C_ERR"  "$C_OFF" "$*" >&2; }
+dim()  { printf '%s    %s%s\n' "$C_DIM" "$*" "$C_OFF"; }
+die()  { err "$*"; exit 1; }
+hr()   { printf '%s\n' "------------------------------------------------------------"; }
+
+#: 标签列补到多少显示列（跟 canoe.sh 一致）
+FIELD_WIDTH=10
+
+#: 字符串的**显示宽度**（不是字符数）：CJK 算 2 列，其余算 1。
+#: ⚠ 必须 local —— 裸写 `LC_ALL=C` 会把 locale 泄漏给整个脚本。
+disp_width() {
+    # ⚠ 必须 local —— 写成裸的 `LC_ALL=C` 会把 locale 泄漏给整个脚本，
+    #   后面所有 grep/awk 都跟着变（踩过：中文匹配忽然失效）。
+    local LC_ALL=C
+    local s="$1" w=0 i=0 n b
+    n=${#s}
+    while (( i < n )); do
+        printf -v b '%d' "'${s:i:1}" 2>/dev/null || b=63
+        if   (( b < 0x80 )); then w=$(( w + 1 )); i=$(( i + 1 ))
+        elif (( b < 0xE0 )); then w=$(( w + 2 )); i=$(( i + 2 ))   # 2 字节
+        elif (( b < 0xF0 )); then w=$(( w + 2 )); i=$(( i + 3 ))   # 3 字节（汉字在这档）
+        else                      w=$(( w + 2 )); i=$(( i + 4 ))   # 4 字节（emoji 等）
+        fi
+    done
+    printf '%d' "$w"
+}
+
+#: 标签补到 n 个显示列（不能用 printf 的 %-Ns —— 它按字节算）。
+pad_label() {
+    local w pad
+    w="$(disp_width "$1")"
+    pad=$(( $2 - w )); (( pad < 1 )) && pad=1
+    printf '%s%*s' "$1" "$pad" ""
+}
+
+#: 一行键值：两空格缩进、标签补到 FIELD_WIDTH 显示列、冒号对齐。
+field() {
+    local label="$1"; shift
+    local w pad
+    w="$(disp_width "$label")"
+    pad=$(( FIELD_WIDTH - w )); (( pad < 1 )) && pad=1
+    printf '  %s%*s : %s\n' "$label" "$pad" "" "$*"
+}
+
+#: 小节标题：两空格缩进 + 上下两条横线。
+title() {
+    hr
+    printf '  %s%s%s\n' "$C_INFO" "$*" "$C_OFF"
+    hr
+}
 
 # 以 $APP_USER 的身份跑一条命令（会交给 bash -c）。
 #
@@ -71,11 +136,56 @@ as_user() {
     fi
 }
 
+# ---- 失败回滚 -------------------------------------------------------------
+#
 # set -e 有个很不友好的地方：某条命令失败时它**一声不吭就退出**。
 # 用户看到的是"向导问完了，命令结束，什么都没发生"，完全无从下手
 # （真踩过：openssl 校验在 EC 密钥上失败，整个安装在最后一步静默中止）。
-# 这个 trap 保证任何非预期失败至少说清楚自己在哪一行、跑的是什么。
-trap 'rc=$?; printf "\n\033[1;31m[x]\033[0m 脚本在这里中断了（第 %s 行，退出码 %s）\n     命令：%s\n     这不是设计好的报错，是没兜住的失败。把上面这三行贴给开发者。\n" "$LINENO" "$rc" "$BASH_COMMAND" >&2; exit "$rc"' ERR
+#
+# 所以这里做两件事：先说清楚"在哪一行、跑的什么"，再把**本次新建的**
+# 系统对象收回去。
+#
+# ★ `NEW_*` 那组标记是关键：只在"创建那一刻它还不存在"时才置 1，回滚只
+#   处理置了标记的。这样**绝不会**把机器上原本就有的东西删掉 —— 重跑一次
+#   install（对象都在）时，回滚实际上什么都不会做，这正是要的。
+#
+# ⚠ apt 装过的包不回收：删包比留着更危险，而且卸载那边也把它算作"故意保留"。
+NEW_USER=0; NEW_APP_DIR=0; NEW_CERT_DIR=0
+NEW_UNIT=0; NEW_HOOK=0; NEW_SELF=0
+ROLLING=0
+
+rollback() {
+    local rc=$?
+    (( ROLLING )) && return 0
+    ROLLING=1
+    trap - ERR EXIT
+    (( rc == 0 )) && exit 0
+
+    err "脚本在这里中断了（退出码 $rc）—— 上面那几行就是原因"
+    dim "这不是设计好的报错，是没兜住的失败。把上面几行贴给开发者。"
+    if (( NEW_UNIT || NEW_HOOK || NEW_SELF || NEW_CERT_DIR || NEW_APP_DIR || NEW_USER )); then
+        warn "回滚本次新建的东西（机器上原有的不动）…"
+        if (( NEW_UNIT )); then
+            systemctl disable --now canoe-api >/dev/null 2>&1 || true
+            rm -f /etc/systemd/system/canoe-api.service
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+        (( NEW_HOOK ))     && rm -f /etc/letsencrypt/renewal-hooks/deploy/canoe.sh 2>/dev/null || true
+        (( NEW_SELF ))     && rm -f /usr/local/bin/canoe 2>/dev/null || true
+        (( NEW_CERT_DIR )) && rm -rf "$CERT_DIR" 2>/dev/null || true
+        (( NEW_APP_DIR ))  && rm -rf "$APP_DIR"  2>/dev/null || true
+        if (( NEW_USER )); then
+            userdel "$APP_USER"  >/dev/null 2>&1 || true
+            groupdel "$APP_USER" >/dev/null 2>&1 || true
+        fi
+        dim "已回到安装前。"
+    else
+        dim "没有本次新建的东西要收 —— 机器上原有的都原样留着。"
+    fi
+    exit "$rc"
+}
+trap rollback ERR
+trap rollback EXIT
 
 usage() {
     cat <<'EOF'
@@ -450,7 +560,9 @@ ok "系统依赖就绪"
 if ! id -u "$APP_USER" >/dev/null 2>&1; then
     log "创建用户 $APP_USER"
     useradd -r -s /usr/sbin/nologin -d "$APP_DIR" "$APP_USER"
+    NEW_USER=1                    # 只有确实是这次新建的，回滚才敢删
 fi
+[[ -d "$APP_DIR" ]] || NEW_APP_DIR=1
 mkdir -p "$APP_DIR"; chown "$APP_USER:$APP_USER" "$APP_DIR"
 
 # 是不是在检出目录里跑？（脚本自己在 canoe-server/deploy/ 下）
@@ -471,7 +583,13 @@ if [[ -n "$REPO_URL" ]]; then
     # root 去操作一个属于 canoe 用户的仓库时，新版 git 会以
     # "detected dubious ownership" 直接拒绝。这里显式声明一次，
     # 之后 install 和 `canoe upgrade`（也是 root）都能正常拉。
+    # ⚠ 幂等：先按值**锚定**删掉同名条目，再加。原来只有 `--add`，
+    #   每重跑一次 install 就往 /root/.gitconfig 里多堆一行，越跑越长。
+    #   值用正则转义 + ^…$ 锚定，免得把 /opt/canoe-old 之类一起误删。
+    _esc="$(printf '%s' "$APP_DIR" | sed 's/[][\\.*^$]/\\&/g')"
+    git config --global --unset-all safe.directory "^${_esc}$" 2>/dev/null || true
     git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+    unset _esc
 
     # 私有仓库 + 令牌：只在克隆这一下把令牌塞进 URL，用完立刻从
     # remote 里擦掉。留着的话它会明文躺在 /opt/canoe/.git/config 里 ——
@@ -546,6 +664,7 @@ as_user "$PIP install -q -r '$SERVER_DIR/requirements.txt'"
 # ---------------------------------------------------------------------------
 TLS_CERT=""
 TLS_KEY=""
+[[ -d "$CERT_DIR" ]] || NEW_CERT_DIR=1
 mkdir -p "$CERT_DIR"
 
 # 服务以 canoe 用户跑，读不了 root-only 的私钥。
@@ -580,6 +699,7 @@ case "$CERT_MODE" in
     TLS_KEY="$LIVE_DIR/privkey.pem"
 
     # 续期后：重新发布一次证书（续期会换新的 privkey 权限）+ 重启服务
+    [[ -f /etc/letsencrypt/renewal-hooks/deploy/canoe.sh ]] || NEW_HOOK=1
     mkdir -p /etc/letsencrypt/renewal-hooks/deploy
     cat > /etc/letsencrypt/renewal-hooks/deploy/canoe.sh <<HOOK
 #!/bin/sh
@@ -733,6 +853,7 @@ fi
 # 7. systemd
 # ---------------------------------------------------------------------------
 log "安装 systemd 服务…"
+[[ -f /etc/systemd/system/canoe-api.service ]] || NEW_UNIT=1
 install -m 644 "$SERVER_DIR/deploy/canoe-api.service" /etc/systemd/system/canoe-api.service
 systemctl daemon-reload
 systemctl enable canoe-api >/dev/null
@@ -744,6 +865,7 @@ systemctl is-active --quiet canoe-api \
 
 # 顺带装管理脚本：以后启停 / 看状态 / 改配置 / 升级都用 `canoe`
 if [[ -f "$SERVER_DIR/deploy/canoe.sh" ]]; then
+    [[ -f /usr/local/bin/canoe ]] || NEW_SELF=1
     install -m 755 "$SERVER_DIR/deploy/canoe.sh" /usr/local/bin/canoe
     log "管理脚本已安装：canoe"
 fi
@@ -777,64 +899,46 @@ else
     PANEL_URL="${SCHEME}://${DOMAIN:-<本机IP>}:$PANEL_PORT$PANEL_PATH"
 fi
 
-cat <<EOF
-
-============================================================
-  装好了
-============================================================
-
-  管理面板       : $PANEL_URL
-  客户端订阅接口 : $BASE_SHOWN/api/subscription
-  客户端更新接口 : $BASE_SHOWN/api/client/latest
-  健康检查       : $BASE_SHOWN/api/health
-
-  管理脚本 : canoe             （菜单：启动/停止/状态/配置/升级/卸载）
-  配置     : $SERVER_DIR/.env
-
-  登录面板 : $ADMIN_USER
-             密码就是你刚才设的那个
-             忘了的话：canoe config -> 改管理员账号
-
-  下一步：
-    1. 面板「用户」里给账号配**订阅** —— 点那行的「订阅」按钮，
-       把节点链接一行一个贴进去（ss:// vmess:// vless:// trojan://）。
-       清零 = 停止对该账号分发，客户端会就地销毁本地订阅。
-    2. 面板「发布」里上传客户端安装包 —— 客户端点「更新」就能看到。
-       （客户端地址写死在 $BASE_SHOWN，不用在客户端配任何东西）
-
-EOF
+printf '\n'
+title "装好了"
+# ⚠ 标签一律 4 个汉字（8 显示列）—— field 的标签列宽是 10，超过会被挤成
+#   1 个空格，整块就歪了。
+field "管理面板" "$PANEL_URL"
+field "订阅接口" "$BASE_SHOWN/api/subscription"
+field "更新接口" "$BASE_SHOWN/api/client/latest"
+field "健康检查" "$BASE_SHOWN/api/health"
+field "管理脚本" "canoe    （启动 / 停止 / 状态 / 配置 / 升级 / 卸载）"
+field "配置文件" "$SERVER_DIR/.env"
+field "登录面板" "$ADMIN_USER    （密码是刚才设的那个；忘了：canoe config）"
+printf '\n'
+printf '  %s下一步%s\n' "$C_INFO" "$C_OFF"
+dim "1. 面板「用户」→ 给账号配订阅：节点链接一行一个"
+dim "   （ss:// vmess:// vless:// trojan://）。清零 = 停止分发，客户端会就地销毁本地订阅"
+dim "2. 面板「发布」→「拉取最新轻舟」：服务端自己去 GitHub Release 把客户端版本拉回来发布"
+dim "   开发机那边先跑 scripts/package_release.py，把 zip 和 .sha256 一起挂到 Release 上"
+dim "   （客户端地址写死在 $BASE_SHOWN，不用在客户端配任何东西）"
+hr
 
 if [[ "$ADMIN_GENERATED" == "1" ]]; then
-cat <<EOF
-  ⚠ 管理员密码是随机生成的（向导里那步直接回车了）：
-
-       用户名  $ADMIN_USER
-       密码    $ADMIN_PASS
-
-     也写了一份在 $APP_DIR/ADMIN_PASSWORD.txt。
-     登录后请改掉并删掉那个文件。
-
-EOF
+printf '\n'
+warn "管理员密码是随机生成的（向导里那步直接回车了）："
+field "用户名" "$ADMIN_USER"
+field "密码"   "$ADMIN_PASS"
+dim "也写了一份在 $APP_DIR/ADMIN_PASSWORD.txt。登录后请改掉、并删掉那个文件。"
 fi
 
 if [[ -n "$PANEL_PORT" && "$PANEL_PORT" != "$PORT" ]]; then
-cat <<EOF
-  ⚠ 面板另开了 $PANEL_PORT 口。记得在防火墙/安全组里：
-       · $PORT      对所有用户开放（客户端要用）
-       · $PANEL_PORT 只放行你自己的 IP
-     本机 ufw 已自动放行；云厂商的安全组要你自己加。
-
-EOF
+    printf '\n'
+    warn "面板另开了 $PANEL_PORT 口，记得在防火墙/安全组里："
+    dim "$PORT       对所有用户开放（客户端要用）"
+    dim "$PANEL_PORT   只放行你自己的 IP"
+    dim "本机 ufw 已自动放行；云厂商的安全组要你自己加。"
 else
-cat <<EOF
-  ⚠ 面板和客户端共用一个口，所以 $PANEL_PATH 是公网可访问的。
-     想只对自己开放，重跑本脚本时把面板端口填成别的（例如 58589）。
-
-EOF
+    printf '\n'
+    warn "面板和客户端共用一个口，所以 $PANEL_PATH 是公网可访问的。"
+    dim "想只对自己开放，重跑本脚本时把面板端口填成别的（例如 58589）。"
 fi
 
-cat <<EOF
-  ⚠ 服务端只开 1 个 worker（推送是进程内的，多 worker 会收不到）。
-    详见 deploy/README.md 开头。
-
-EOF
+printf '\n'
+warn "服务端只开 1 个 worker（推送是进程内的，多 worker 会收不到）。"
+dim "详见 deploy/README.md 开头。"

@@ -305,23 +305,28 @@ systemctl restart canoe-api
 
 ## 5. 发布客户端新版本
 
-两条路：
+**包挂在 GitHub Release 上，服务端自己去拉** —— 不用把 83MB 传到这台机器上。
 
 ```bash
-# A. 用管理端接口上传（推荐）
-curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-     -F "version=1.1.0" \
-     -F "notes=修复 TUN 快速重连" \
-     -F "min_version=1.0.0" \
-     -F "file=@Canoe-1.1.0-win64.zip" \
-     https://api.canoe.example.com/api/admin/releases/upload
+# 1) 开发机：出包（打包前会先让 exe 自检一遍，跑不过就不出包）
+python scripts/package_release.py
+#    -> dist/Canoe-1.1.0-win64.zip  +  dist/Canoe-1.1.0-win64.zip.sha256
 
-# B. 自己把包丢进 releases/ 再登记版本
-scp Canoe-1.1.0-win64.zip server:/opt/canoe/canoe-server/releases/
-curl -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
-     -d '{"version":"1.1.0","notes":"..."}' \
-     https://api.canoe.example.com/api/admin/releases
+# 2) 开发机：把**两份**都挂到 GitHub Release（tag 形如 v1.1.0）
+gh release create v1.1.0 dist/Canoe-1.1.0-win64.zip dist/Canoe-1.1.0-win64.zip.sha256
+#    或者在网页的 Releases 页把它们拖进去
+
+# 3) 服务器：一条命令拉下来发布
+canoe release                 # 拉最新那个 Release
+canoe release v1.1.0          # 拉指定 tag
 ```
+
+> **为什么不让开发机直接传**：那条路断过两次连接，`/tmp` 里留下 46MB 的半截包，
+> 而服务端是按**落盘的字节**算 sha256 的 —— 残包自洽，于是被当成合法版本发了
+> 出去。走 Release 之后，摘要是开发机算好、当资产挂上去的，跟下载链路无关，
+> 对不上就整个丢掉。
+
+面板上也有同一个动作：「发布」页 → **「拉取最新轻舟」**（服务端自己去 GitHub 拉）。
 
 发布后客户端点「更新」就会看到新版本。发布前可以先看一眼客户端到底会拿到什么：
 
@@ -368,42 +373,53 @@ canoe release     # 发布一个客户端安装包（不用开面板）
 
 ### 发一版客户端
 
-客户端安装包是在开发机上打出来的，服务器这边只负责**发**。
-把 zip 传上来，一条命令发布：
+客户端安装包在开发机上打，挂到 **GitHub Release**，服务器这边一条命令拉下来发：
 
 ```bash
-scp Canoe-1.0.1-win64.zip root@<这台机器>:/tmp/     # 在你的开发机上执行
-canoe release /tmp/Canoe-1.0.1-win64.zip --notes "删掉中转层"
+# 开发机：出包（打包前会先让 exe 自检一遍，跑不过就不出包）
+python scripts/package_release.py
+#   -> dist/Canoe-1.0.31-win64.zip + dist/Canoe-1.0.31-win64.zip.sha256
+#   两份一起挂到 Release（tag 形如 v1.0.31）
+
+# 服务器：
+canoe release                 # 拉最新那个 Release
+canoe release v1.0.31         # 拉指定 tag
 ```
 
-版本号默认从文件名里抠（`Canoe-1.0.1-win64.zip` → `1.0.1`），
-抠不出来就得用 `--version` 显式给 —— 不会静默发成 `0.0.0`。
+版本号默认从资产文件名里抠（`Canoe-1.0.31-win64.zip` → `1.0.31`），
+抠不出来就得在面板/接口里显式给 —— 不会静默发成 `0.0.0`。
 
 ```
-  已发布    1.0.1    （库里一共 1 个版本）
-  文件      /opt/canoe/canoe-server/releases/Canoe-1.0.1-win64.zip
-  大小      83.8 MB
-  sha256    ae883256...
-  下载      https://canoe.s-ui.com:58588/downloads/Canoe-1.0.1-win64.zip
+  已发布    1.0.31    （库里一共 3 个版本）
+  上一版    1.0.30
+  来源      GitHub NekoBoxHQ/canoe   最新那个 Release
+  文件      Canoe-1.0.31-win64.zip
+  大小      83.1 MB
+  sha256    22b0a426...
+  下载      https://canoe.s-ui.com:58588/downloads/Canoe-1.0.31-win64.zip
 ```
 
 发布后：
 
 - `GET /api/client/latest` 立刻指向新版本；
 - 在线的客户端会收到 `release` 推送，结果框提示有新版本；
-- 「发布」页里也能看到它，跟面板上传是同一条记录。
+- 「发布」页里也能看到它。
 
 常用参数：
 
 ```bash
-canoe release --list                             # 看已经发过哪些
-canoe release /tmp/x.zip --version 1.2.0         # 文件名抠不出版本号时
-canoe release https://example.com/x.zip          # 也可以直接给 URL，服务器自己下
-canoe release /tmp/x.zip --min-version 1.0.0     # 低于这个版本的客户端强制升级
+canoe release --list          # 看已经发过哪些
+canoe release v1.0.31         # 拉指定 tag（要重发某一版时用）
 ```
 
-> 也可以继续用面板：「发布」页 → 上传安装包。两条路走的是同一段代码
-> （`services/updates.store_release_file`），不会一边修了另一边忘。
+> 面板上也有同一个动作：「发布」页 →「拉取最新轻舟」。
+> 两条路走的是同一段代码（`services/updates.pull_from_github`），
+> 不会出现"一边改了另一边忘"。
+>
+> ⚠ 以前那条"scp 上来再 `canoe release /tmp/xxx.zip`"的路**已经废了**，
+> 现在只认 GitHub Release（原因见上面 §5）。应急时可以用
+> `python release.py <路径或URL> --sha256 <摘要>` 直接发本机的包，
+> 但那条路不再由 `canoe` 暴露。
 
 ### 手动做（脚本不在或想自己来）
 

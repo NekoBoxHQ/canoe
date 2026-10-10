@@ -42,7 +42,6 @@ from ..models import (
 )
 from ..security import hash_password
 from ..services.broadcast import hub, notify_config_changed, notify_kick, notify_release
-from ..services import github
 from ..services.nodes import (
     bound_node_ids,
     count_nodes,
@@ -54,11 +53,12 @@ from ..services.nodes import (
 from ..services.sessions import revoke_user_sessions, revoke_user_tokens
 from ..services.updates import (
     ReleaseMismatch,
+    ReleaseSourceError,
     ReleaseTooLarge,
-    guess_version,
     latest_release,
     list_releases,
     publish_release,
+    pull_from_github,
     release_dir,
     safe_filename,
     store_release_file,
@@ -693,75 +693,38 @@ def admin_pull_release(
     store_release_file 是按**落盘的字节**算 sha256 的 —— 残包自洽，于是被
     当成合法版本发了出去。
 
-    摘要是开发机算好、当作 `.sha256` 资产一起挂上去的，这里从 Release 上
-    读回来核对，跟下载链路无关。没挂 .sha256 也照样能发，但那就只剩"大小"
-    一道闸，审计记录里会写明白。
+    真正干活的在 `services/updates.pull_from_github` —— 命令行 `canoe release`
+    走的是同一个函数，两处不会跑偏。
     """
-    try:
-        release = github.find_release(settings.github_repo, body.tag)
-        asset, digest = github.pick_assets(release)
-    except github.GithubError as exc:
-        raise HTTPException(400, {"code": "github", "detail": str(exc)}) from exc
-
-    filename = safe_filename(str(asset.get("name") or "Canoe.zip"))
-    version = (
-        body.version.strip()
-        or guess_version(filename)
-        or str(release.get("tag_name") or "").lstrip("vV")
-    )
-    if not version:
-        raise HTTPException(400, {
-            "code": "no_version",
-            "detail": "从文件名和 tag 里都抠不出版本号，请在「版本号」里手填一个。",
-        })
-
     before = latest_release(db)
     try:
-        with github.open_asset(asset) as src:
-            _dest, size, sha = store_release_file(
-                src, filename,
-                expected_size=int(asset.get("size") or 0),
-                expected_sha256=digest,
-            )
-    except github.GithubError as exc:
+        row, verified = pull_from_github(
+            db,
+            repo=settings.github_repo,
+            tag=body.tag,
+            version=body.version,
+            notes=body.notes,
+            min_version=body.min_version,
+        )
+    except ReleaseSourceError as exc:
         raise HTTPException(400, {"code": "github", "detail": str(exc)}) from exc
     except ReleaseTooLarge as exc:
         raise HTTPException(413, {"code": "too_large", "detail": str(exc)}) from exc
     except ReleaseMismatch as exc:
         raise HTTPException(400, {"code": "incomplete", "detail": str(exc)}) from exc
-    except OSError as exc:
-        raise HTTPException(500, {"code": "io_error", "detail": f"下载或写盘失败：{exc}"}) from exc
 
-    notes = body.notes.strip()
-    if not notes:
-        # 没填更新说明就拿 Release 正文第一行 —— 客户端那个更新弹窗只显示一段话
-        notes = next(
-            (ln.strip().strip("#*` ") for ln in str(release.get("body") or "").splitlines()
-             if ln.strip()),
-            "",
-        )[:200]
-
-    row = publish_release(
-        db,
-        version=version,
-        filename=filename,
-        size=size,
-        sha256=sha,
-        notes=notes,
-        min_version=body.min_version,
-    )
     db.add(AuditLog(
         user_id=admin.id,
         action="release_pull",
-        detail=f"{version} {filename} {size}B（GitHub {settings.github_repo}）"
-               + ("" if digest else " ⚠ 没挂 .sha256，只核对了大小"),
+        detail=f"{row.version} {row.filename} {row.size}B（GitHub {settings.github_repo}）"
+               + ("" if verified else " ⚠ 没挂 .sha256，只核对了大小"),
     ))
     db.commit()
     pushed = notify_release(row.version, notes=row.notes)
     return {
         **_release_view(row),
         "pushed": pushed,
-        "verified": bool(digest),          # 摘要核对过没有
+        "verified": verified,              # 摘要核对过没有
         "previous": before.version if before else "",
     }
 

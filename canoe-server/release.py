@@ -2,24 +2,28 @@
 
 用法：
 
-    python release.py Canoe-1.0.1-win64.zip
-    python release.py Canoe-1.0.1-win64.zip --notes "删掉中转层"
-    python release.py https://example.com/Canoe-1.0.1-win64.zip
-    python release.py --list
+    python release.py --github                    # 拉最新那个 Release
+    python release.py --github v1.0.31            # 拉指定 tag
+    python release.py --list                      # 看看已经发了哪些
 
-★ 推荐走 GitHub Release，别再把 83MB 从开发机怼上来：
-
-    python release.py \
-        https://github.com/NekoBoxHQ/canoe/releases/download/v1.0.27/Canoe-1.0.27-win64.zip \
-        --sha256 5e6d2840c016fa2a8f728cb20c0d497afd3b0e62efc7096a9cd9e22a890e2a18
+★ 上面那条 `--github` 就是主路径，也是 `canoe release` 用的那条。
+  开发机把 zip 挂到 GitHub Release 上，服务端自己去拉，**不用把 83MB
+  从开发机怼上来**。
 
   仓库是公开的，这条下载不需要任何凭据。开发机那边 `package_release.py`
-  已经把 zip 和 .sha256 都算好了，Release 资产就是那两份。
+  已经把 zip 和 `.sha256` 都算好了，Release 资产就是那两份；这里会把
+  `.sha256` 读回来核对 —— 摘要跟传输链路无关，对不上就整个丢掉。
 
   为什么不走"本地 SSH 上传"：那条路上真断过两次连接，/tmp 里留下 46MB 的
   半截包，而 store_release_file 是按**落盘的字节**算摘要的 —— 残包自洽，
-  于是被当成合法版本发了出去。走 Release + `--sha256` 就没有这个缝：
-  摘要是发布者本地算的，跟传输过程无关。
+  于是被当成合法版本发了出去。
+
+剩下的两种入参形式（本机文件 / 任意 http(s) 地址）是**底层能力**：
+`canoe release` 已经不暴露它们了，留着是为了应急时能直接 python 跑。
+其中本机文件的用法是：
+
+    python release.py Canoe-1.0.1-win64.zip [--notes "说明"]
+    python release.py https://example.com/Canoe-1.0.1-win64.zip --sha256 <摘要>
 
 版本号默认从文件名里抠（`Canoe-1.0.1-win64.zip` -> `1.0.1`）；抠不出来
 就必须用 `--version` 显式给。
@@ -51,10 +55,13 @@ from canoe_server.database import SessionLocal, init_db
 from canoe_server.models import AuditLog, User
 from canoe_server.services.updates import (
     ReleaseMismatch,
+    ReleaseSourceError,
     ReleaseTooLarge,
     guess_version,
+    latest_release,
     list_releases,
     publish_release,
+    pull_from_github,
     release_dir,
     safe_filename,
     store_release_file,
@@ -119,6 +126,64 @@ def show_list() -> int:
     return 0
 
 
+def publish_from_github(args) -> int:
+    """从 GitHub Release 拉一个包并发布。
+
+    真正干活的是 `services/updates.pull_from_github` —— 面板上那个
+    「拉取最新轻舟」走的是同一个函数。这里只负责把它接到命令行上：
+    解析参数、打印结果、给退出码。
+    """
+    init_db()
+    with SessionLocal() as db:
+        before = latest_release(db)
+        try:
+            row, verified = pull_from_github(
+                db,
+                repo=settings.github_repo,
+                tag=args.github,
+                version=args.version,
+                notes=args.notes,
+                min_version=args.min_version,
+            )
+        except (ReleaseSourceError, ReleaseTooLarge, ReleaseMismatch) as exc:
+            die(str(exc))
+
+        admin = db.scalars(
+            select(User).where(User.username == settings.admin_username)
+        ).first()
+        db.add(
+            AuditLog(
+                user_id=admin.id if admin else None,
+                action="release_pull",
+                detail=f"{row.version} {row.filename} {row.size}B"
+                       f"（GitHub {settings.github_repo}）"
+                       + ("" if verified else " ⚠ 没挂 .sha256，只核对了大小"),
+            )
+        )
+        db.commit()
+        version, size = row.version, row.size or 0
+        digest, filename = row.sha256 or "", row.filename or ""
+        enabled_total = len([r for r in list_releases(db) if r.enabled])
+
+    print()
+    print("=" * 56)
+    print(f"  已发布    {version}    （库里一共 {enabled_total} 个版本）")
+    if before:
+        print(f"  上一版    {before.version}")
+    print(f"  来源      GitHub {settings.github_repo}"
+          + (f"   tag {args.github}" if args.github else "   最新那个 Release"))
+    print(f"  文件      {filename}")
+    print(f"  大小      {size / 1024 / 1024:.1f} MB")
+    print(f"  sha256    {digest}")
+    if not verified:
+        print("  ⚠ 这个 Release 没挂 .sha256 —— 只核对了大小，证明不了包是完整的")
+    print(f"  下载      {public_base()}/downloads/{filename}")
+    print("=" * 56)
+    print()
+    print("  客户端下次点「更新」就会看到它；在线的客户端会收到推送。")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="release.py",
@@ -134,8 +199,17 @@ def main() -> int:
         "--sha256", default="",
         help="发布者本地算好的摘要；下载到的东西核对不过就不发（防残包）",
     )
+    # ★ 推荐用法：从 GitHub Release 拉。给 `canoe release` 用的就是这个。
+    #   nargs="?" + const="" 让它既能 `--github`（拉最新）也能 `--github v1.0.31`。
+    ap.add_argument(
+        "--github", nargs="?", const="", default=None,
+        help="从 GitHub Release 拉取并发布（后面可跟 tag，不跟就是最新那个）",
+    )
     ap.add_argument("--list", action="store_true", help="列出已经发布的版本")
     args = ap.parse_args()
+
+    if args.github is not None:
+        return publish_from_github(args)
 
     if args.list or not args.package:
         return show_list()

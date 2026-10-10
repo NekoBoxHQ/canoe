@@ -196,9 +196,21 @@ printf '\n[6] 安全默认值\n'
 check "改端口函数存在" "$(declare -F change_port >/dev/null && echo 0 || echo 1)"
 check "卸载函数存在" "$(declare -F cmd_uninstall >/dev/null && echo 0 || echo 1)"
 # 卸载必须问两遍；这里只做静态检查，不真跑
-check "卸载要先确认数据是否保留" \
-      "$(grep -q "删除数据？" "$TARGET" && echo 0 || echo 1)"
-check "卸载要二次确认" "$(grep -q "最后确认一次" "$TARGET" && echo 0 || echo 1)"
+# 卸载：用户拍的板是"一次确认、一律全清"（不再问"删不删数据"），
+# 但**必须**有 0 残留的自检，和一个能安全先看一眼的 --dry-run。
+check "★ 卸载只问一次（不再问「删不删数据」）" \
+      "$(grep -q "删除数据？" "$TARGET" && echo 1 || echo 0)"
+check "★ 卸载先把要删的东西摆出来再确认" \
+      "$(grep -q "将要删除" "$TARGET" && echo 0 || echo 1)"
+check "★ 有 0 残留自检" \
+      "$(grep -q "残留自检" "$TARGET" && echo 0 || echo 1)"
+check "★ 有 --dry-run（生产机上卸载没有第二次机会）" \
+      "$(grep -q -- "--dry-run" "$TARGET" && echo 0 || echo 1)"
+# 自检的判据必须覆盖 install.sh 写过的**每一处** —— 漏一处就是"假干净"。
+FP="$(sed -n '/^footprint()/,/^}/p' "$TARGET")"
+for k in UNIT_FILE UNIT_WANTS SELF_DEST APP_DIR CERT_DIR CERT_HOOK APP_USER GITCONFIG UFW_PORTS; do
+    check "★ 自检覆盖 $k" "$(grep -q "$k" <<< "$FP" && echo 0 || echo 1)"
+done
 check "改客户端口会警告写死的事" \
       "$(grep -q "写死在 58588" "$TARGET" && echo 0 || echo 1)"
 
@@ -481,19 +493,34 @@ run_release() {
     bash -c "$inner$q" 2>&1
 }
 
-OUT="$(run_release --notes '两个 词' /tmp/Canoe-1.0.1-win64.zip)"
-check "跑得起来" "$(grep -q 'ARGC=' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
-check "★ 带空格的 --notes 没被拆开（参数正确引用了）" \
-      "$(grep -q 'ARG=<两个 词>' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
-check "★ 参数个数对：release.py + --notes + 值 + 包路径 = 4" \
-      "$(grep -q 'ARGC=4' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
+# ★ 现在**只走 GitHub**：不给参数就是拉最新那个 Release。
+OUT="$(run_release)"
+check "★ 不给参数 = 拉最新 Release（--github 不带 tag）" \
+      "$(grep -q 'ARG=<--github>' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
+check "★ 参数个数对：release.py + --github = 2" \
+      "$(grep -q 'ARGC=2' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
+
+OUT="$(run_release v1.0.31)"
+check "★ 给了 tag 就一起传过去" \
+      "$(grep -q 'ARG=<--github>' <<< "$OUT" && grep -q 'ARG=<v1.0.31>' <<< "$OUT" && echo 0 || echo 1)" \
+      "$OUT"
+check "★ 参数个数对：release.py + --github + tag = 3" \
+      "$(grep -q 'ARGC=3' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
+
+# 老流程（把包 scp 上来再发本机文件）已经废了 —— 这里钉死它不会偷偷复活
+OUT="$(run_release /tmp/Canoe-1.0.1-win64.zip)"
+check "★ 不再接受本机文件（旧的 scp 上传流程已废）" \
+      "$(grep -q '不发本机文件' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
+OUT="$(run_release --notes '两个 词' /tmp/x.zip)"
+check "★ 不认识的参数会被拒绝" \
+      "$(grep -q '不认识的参数' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
+
+OUT="$(run_release --help 2>&1)"
+check "★ 帮助里说明了包从 GitHub 来" \
+      "$(grep -q 'GitHub' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
+check "★ 帮助里不再教 scp" "$(grep -q 'scp ' <<< "$OUT" && echo 1 || echo 0)" "$OUT"
 check "★ 以应用用户身份跑（不是 root 直接跑）" \
       "$(grep -q 'as_user' "$TARGET" && grep -q 'release.py' "$TARGET" && echo 0 || echo 1)"
-
-OUT="$(run_release 2>&1)"
-check "不给参数时打印用法" "$(grep -q 'canoe release' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
-check "用法里说了怎么把包弄上机器" \
-      "$(grep -q 'scp ' <<< "$OUT" && echo 0 || echo 1)" "$OUT"
 
 # 升级时要把 /usr/local/bin/canoe 刷新一遍 —— 不刷的话，仓库里新加的
 # 子命令（比如 release）敲下去会提示"没有这一项"，用户只能去
@@ -503,6 +530,100 @@ check "★ 升级会刷新装到 PATH 上的那个管理脚本" \
       "$(grep -q 'install -m 755 .*SELF_DEST' <<< "$UP" && echo 0 || echo 1)"
 check "★ 刷新前先比 inode，避免自己拷自己（来源和目标是同一个文件时）" \
       "$(grep -q -- '-ef' <<< "$UP" && echo 0 || echo 1)"
+
+printf '\n[14] 排版统一\n'
+# 用户对输出整齐的要求很高。这几条钉住**排版基建本身**还能用 ——
+# 以后谁改坏了，这里立刻红。
+check "★ disp_width：汉字算 2 列" \
+      "$([[ "$(disp_width '服务状态')" == "8" ]] && echo 0 || echo 1)" \
+      "服务状态 -> $(disp_width '服务状态')"
+check "★ disp_width：ASCII 算 1 列" \
+      "$([[ "$(disp_width 'abc')" == "3" ]] && echo 0 || echo 1)"
+check "★ disp_width：中英混排也对" \
+      "$([[ "$(disp_width 'ufw 规则')" == "8" ]] && echo 0 || echo 1)" \
+      "ufw 规则 -> $(disp_width 'ufw 规则')"
+# 关键的一条：脚本可能在 cron / systemd / curl|bash 里跑，那些环境下
+# LANG 常常是 POSIX，bash 会按字节数（一个汉字 = 3）—— 对齐就全歪了。
+check "★ disp_width 不依赖 locale（LC_ALL=C 下仍是 2 列）" \
+      "$([[ "$(LC_ALL=C disp_width '服务状态')" == "8" ]] && echo 0 || echo 1)" \
+      "LC_ALL=C -> $(LC_ALL=C disp_width '服务状态')"
+
+f1="$(field '服务状态' 运行中)"
+f2="$(field '开机自启' 是)"
+check "★ field：不同长度的标签，冒号落在同一列" \
+      "$([[ "$(disp_width "${f1%%:*}")" == "$(disp_width "${f2%%:*}")" ]] && echo 0 || echo 1)" \
+      "[$f1] vs [$f2]"
+check "★ field 的版式：两空格 + 标签 + 补白 + 「: 」+ 值" \
+      "$(grep -qE '^  服务状态 +: 运行中$' <<< "$f1" && echo 0 || echo 1)" "$f1"
+check "★ pad_label 也用显示宽度（不是 printf 的 %-Ns，那个按字节）" \
+      "$([[ "$(disp_width "$(pad_label '单元' 13)")" == "13" ]] && echo 0 || echo 1)" \
+      "$(disp_width "$(pad_label '单元' 13)")"
+
+check "★ 正文分隔线统一 60 根" \
+      "$([[ "$(grep -m1 '^hr() {' "$TARGET" | tr -cd '-' | wc -c)" == "60" ]] && echo 0 || echo 1)" \
+      "$(grep -m1 '^hr() {' "$TARGET" | tr -cd '-' | wc -c) 根"
+check "★ 菜单仍是 31 根（用户点名的结构，不许动）" \
+      "$([[ "$(grep -m1 '^MENU_RULE=' "$TARGET" | tr -cd '-' | wc -c)" == "31" ]] && echo 0 || echo 1)" \
+      "$(grep -m1 '^MENU_RULE=' "$TARGET" | tr -cd '-' | wc -c) 根"
+
+printf '\n[15] 卸载的空跑（--dry-run）\n'
+# 生产机上卸载没有第二次机会，所以留了这个"先看一眼"的口子。
+# 这里造一个假的 APP_DIR，跑一遍空跑，验它**列得出、且什么都不动**。
+FAKE_UN="$TMP/unapp"
+mkdir -p "$FAKE_UN/canoe-server"
+DRY="$(CANOE_APP_DIR="$FAKE_UN" bash -c "
+    source '$TARGET'
+    need_root() { :; }
+    cmd_uninstall --dry-run
+" 2>&1)"
+check "★ --dry-run 跑得起来" "$(grep -q '空跑' <<< "$DRY" && echo 0 || echo 1)" "$DRY"
+check "★ 列出了足迹（这里造了个假程序目录，得看见它）" \
+      "$(grep -q "$FAKE_UN" <<< "$DRY" && echo 0 || echo 1)" "$DRY"
+check "★ 空跑真的什么都没动" "$([[ -d "$FAKE_UN" ]] && echo 0 || echo 1)"
+OUT_BAD="$(CANOE_APP_DIR="$FAKE_UN" bash -c "
+    source '$TARGET'
+    need_root() { :; }
+    cmd_uninstall --乱写
+" 2>&1)"
+check "★ 不认识的参数会被拒绝" \
+      "$(grep -q '不认识的参数' <<< "$OUT_BAD" && echo 0 || echo 1)" "$OUT_BAD"
+
+printf '\n[16] install.sh：幂等 / 回滚 / 结尾提示\n'
+INST="$HERE/install.sh"
+
+# safe.directory 原来只有 --add，每重跑一次 install 就往 /root/.gitconfig
+# 里多堆一行 —— 装机脚本最容易犯的那种"看不见的脏"。
+check "★ safe.directory 幂等（先按值 unset-all 再 add）" \
+      "$(grep -q -- '--unset-all safe.directory' "$INST" \
+         && grep -q -- '--add safe.directory' "$INST" && echo 0 || echo 1)"
+check "★ unset-all 的值是锚定的（不然会误伤 /opt/canoe-old 之类）" \
+      "$(grep -q '\^\\?\$' "$INST" || grep -q 'safe.directory "\^' "$INST" && echo 0 || echo 1)"
+
+check "★ 有失败回滚（ERR + EXIT 两个 trap）" \
+      "$(grep -q 'trap rollback ERR' "$INST" && grep -q 'trap rollback EXIT' "$INST" && echo 0 || echo 1)"
+check "★ 回滚只动『本次新建』的对象（NEW_* 标记）" \
+      "$(grep -q 'ROLLING=0' "$INST" && [[ "$(grep -c 'NEW_[A-Z_]*=1' "$INST")" -ge 5 ]] \
+         && echo 0 || echo 1)" "$(grep -c 'NEW_[A-Z_]*=1' "$INST") 处置位"
+check "★ 回滚里删用户/组之前先看 NEW_USER" \
+      "$(sed -n '/^rollback()/,/^}/p' "$INST" | grep -q 'NEW_USER' && echo 0 || echo 1)"
+check "★ 回滚不碰 apt 包（删包比留着危险）" \
+      "$(sed -n '/^rollback()/,/^}/p' "$INST" | grep -qE 'apt-get|autoremove' && echo 1 || echo 0)"
+
+check "★ 结尾提示改成了「拉取最新轻舟」" \
+      "$(grep -q '拉取最新轻舟' "$INST" && echo 0 || echo 1)"
+check "★ 结尾不再教「上传客户端安装包」" \
+      "$(grep -q '上传客户端安装包' "$INST" && echo 1 || echo 0)"
+
+# 排版基建在两个脚本里各有一份（install.sh 要在"机器上什么都没有"时跑，
+# source 不到 canoe.sh）。这里钉住**代码本体**一致 —— 注释可以不同，
+# 逻辑不许跑偏。
+norm_fn() { sed -n "/^$1()/,/^}/p" "$2" | grep -v '^[[:space:]]*#'; }
+check "★ disp_width 两个脚本逻辑一致" \
+      "$([[ "$(norm_fn disp_width "$TARGET")" == "$(norm_fn disp_width "$INST")" ]] && echo 0 || echo 1)"
+check "★ field 两个脚本逻辑一致" \
+      "$([[ "$(norm_fn field "$TARGET")" == "$(norm_fn field "$INST")" ]] && echo 0 || echo 1)"
+check "★ pad_label 两个脚本逻辑一致" \
+      "$([[ "$(norm_fn pad_label "$TARGET")" == "$(norm_fn pad_label "$INST")" ]] && echo 0 || echo 1)"
 
 printf '\n%s\n' "$(printf '=%.0s' {1..48})"
 printf '通过 %d 项，失败 %d 项\n' "$passed" "$failed"

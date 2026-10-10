@@ -335,14 +335,20 @@ PUT /api/admin/users/12/nodes
 |---|---|---|
 | GET | `/api/admin/releases` | 版本列表 + 当前最新 |
 | POST | `/api/admin/releases` | 只登记版本（包自己放进 `releases/`） |
-| POST | `/api/admin/releases/upload` | multipart 上传安装包并发布 |
+| POST | `/api/admin/releases/pull` | **从 GitHub Release 拉最新（或指定 tag）并发布** —— 面板上那个「拉取最新轻舟」 |
+| POST | `/api/admin/releases/upload` | multipart 上传安装包并发布（留着当后备，面板上不暴露了） |
 | GET | `/api/admin/releases/latest-preview` | 预览客户端会拿到什么 |
 | DELETE | `/api/admin/releases/{id}?delete_file=true` | 撤版本 |
 
-> 不想开面板的话，服务器上一条命令发同样的东西：
-> `canoe release /tmp/Canoe-1.0.1-win64.zip`。它和 `/upload` 走的是同一个
-> 落盘函数（`services/updates.store_release_file`），只是不用传令牌 ——
-> 你本来就是那台机器的 root。
+> 不想开面板的话，服务器上一条命令发同样的东西：`canoe release`
+> （不给参数 = 拉最新那个 Release，`canoe release v1.0.31` = 指定 tag）。
+> 它和 `/pull` 走的是**同一个函数**（`services/updates.pull_from_github`），
+> 只是不用传令牌 —— 你本来就是那台机器的 root。
+>
+> 包为什么不再从开发机直接传上来：那条路断过两次连接，`/tmp` 里留下 46MB
+> 的半截包，而落盘时是按**落盘的字节**算 sha256 的，残包自洽就被当成合法
+> 版本发了出去。走 Release 之后摘要是开发机算好、当资产挂上去的，跟下载
+> 链路无关，对不上就整个丢掉。
 
 ---
 

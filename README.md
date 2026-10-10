@@ -184,11 +184,16 @@ canoe          # 菜单：安装 / 启动 / 停止 / 重启 / 状态 / 配置 / 
 canoe status   # 也可以直接用子命令（写进脚本/定时任务）
 ```
 
-**发一版客户端**（安装包在哪台机器上都行，传上去再发）：
+**发一版客户端**（包挂在 GitHub Release 上，服务端自己去拉）：
 
 ```bash
-canoe release /tmp/Canoe-1.0.1-win64.zip --notes "更新说明"
-canoe release --list
+# 开发机：出包，把 zip 和 .sha256 一起挂到 Release（tag 形如 v1.0.31）
+python scripts/package_release.py
+
+# 服务器：拉下来发布
+canoe release            # 最新那个 Release
+canoe release v1.0.31    # 指定 tag
+canoe release --list     # 看已经发过哪些
 ```
 
 > 用 `bash -c "$(curl …)"`，**不要**用 `curl … | bash` ——
