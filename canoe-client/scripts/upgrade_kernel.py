@@ -32,11 +32,12 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
 import json
 import os
-import platform
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -192,6 +193,11 @@ def main() -> int:
 
     # ---- 1. 找到要装的那个包 ----
     tmp = Path(tempfile.mkdtemp(prefix="canoe-kernel-"))
+    # ★ 工作目录用完必须删：里头躺着一个 32MB 的 zip 和 80MB 的解包内核。
+    #   写这个脚本的第一版就忘了 —— 跑了 7 次，%TEMP% 里攒了 157MB。
+    #   （跟 test_release 那个"删之前没 dispose"是同一类病：临时目录不清、
+    #     又没人会去看它。）备份是**另一个目录**，不受这行影响。
+    atexit.register(shutil.rmtree, tmp, ignore_errors=True)
     if args.local_zip:
         zip_path = Path(args.local_zip).resolve()
         if not zip_path.is_file():
