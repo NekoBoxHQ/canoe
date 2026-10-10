@@ -108,7 +108,12 @@ class AuthView(FramelessWindow):
     # ------------------------------------------------------------------
     def paint_background(self, painter: QPainter, width: float, height: float) -> None:
         """夜色山水。地平线压到卡片下沿以下 —— 这样远山、月亮、水波和小舟
-        都落在特意留出来的那条带子里，不会整条被卡片盖住。"""
+        都落在特意留出来的那条带子里，不会整条被卡片盖住。
+
+        有 assets/ocean_bg.png 的话这条分支就不走了（两个页面同一张底图）。
+        """
+        if A.paint_background_image(painter, width, height):
+            return
         A.paint_night(painter, width, height, horizon=0.885, mountain=1.0)
 
     def _fit(self) -> None:

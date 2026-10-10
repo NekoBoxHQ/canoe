@@ -29,6 +29,60 @@ from canoe_core import Palette as P
 from ..config import ASSETS_DIR
 
 # --------------------------------------------------------------------------
+# 背景：可选底图（有就用图，没有就代码画）
+# --------------------------------------------------------------------------
+
+#: 放了这张图就用它铺满整窗：`assets/ocean_bg.png`。
+#: 打包会自动带上（canoe.spec 里 assets/*.png 是通配的，加素材不用改 spec）。
+#:
+#: 为什么两套都留着：
+#:   · 代码画的那套（paint_night）—— 任意窗口尺寸/缩放都锐利、零体积，
+#:     两个页面还能各自调构图（登录页地平线 0.885、主界面 0.72）。
+#:   · 位图 —— 能放照片、网图，好看的上限高得多，但放大就糊、构图写死。
+#: 谁合适用谁；素材没到位时自动退回代码那套，不会开天窗。
+BG_IMAGE_NAME = "ocean_bg.png"
+
+_bg_pixmap: QPixmap | None = None
+_bg_loaded = False
+
+
+def background_pixmap() -> QPixmap | None:
+    """读一次底图并缓存（每次重绘都读盘太浪费）。没有就返回 None。
+
+    ⚠ 只读一次：跑起来之后往 assets/ 里丢图不会生效，得重启。
+    """
+    global _bg_pixmap, _bg_loaded
+    if not _bg_loaded:
+        _bg_loaded = True
+        path = ASSETS_DIR / BG_IMAGE_NAME
+        pm = QPixmap(str(path)) if path.is_file() else QPixmap()
+        _bg_pixmap = None if pm.isNull() else pm
+    return _bg_pixmap
+
+
+def paint_background_image(p: QPainter, width: float, height: float) -> bool:
+    """有底图就铺满整窗并返回 True；没有返回 False（调用方退回代码画的那套）。
+
+    铺法是**等比放大到铺满、居中再裁掉多出来的边**（cover），不是拉伸 ——
+    拉伸（IgnoreAspectRatio）在比例不对的时候会把月亮压成椭圆。
+    图正好是窗口那个比例（420:621）时，两种铺法结果一样。
+    """
+    pm = background_pixmap()
+    if pm is None:
+        return False
+    scaled = pm.scaled(
+        int(round(width)), int(round(height)),
+        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    x = (scaled.width() - width) / 2.0
+    y = (scaled.height() - height) / 2.0
+    p.drawPixmap(QRectF(0, 0, width, height), scaled,
+                 QRectF(x, y, width, height))
+    return True
+
+
+# --------------------------------------------------------------------------
 # 背景：夜色山水
 # --------------------------------------------------------------------------
 

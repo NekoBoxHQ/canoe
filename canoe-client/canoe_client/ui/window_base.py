@@ -142,7 +142,13 @@ class FramelessWindow(QWidget):
 
     # -- 子类实现 ------------------------------------------------------
     def paint_background(self, painter: QPainter, width: float, height: float) -> None:
-        """铺整窗底图。默认给个夜色，子类可覆盖。"""
+        """铺整窗底图。
+
+        ★ 有 `assets/ocean_bg.png` 就用那张图铺满；没有就退回代码画的夜色。
+          素材没到位时不会开天窗，这条是刻意的（见 artwork.BG_IMAGE_NAME）。
+        """
+        if A.paint_background_image(painter, width, height):
+            return
         A.paint_night(painter, width, height, horizon=0.72)
 
     def paintEvent(self, event) -> None:  # noqa: N802
