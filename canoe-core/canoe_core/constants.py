@@ -263,6 +263,9 @@ MAX_NODES_PER_USER = 6
 class ErrorCode:
     OK = "ok"
     BAD_CREDENTIALS = "bad_credentials"
+    #: 试得太频繁被挡下来了。客户端只要把服务端给的 detail 显示出来即可，
+    #: 它跟 bad_credentials 的区别是"这次根本没验密码"。
+    RATE_LIMITED = "rate_limited"
     UNAUTHORIZED = "unauthorized"
     BANNED = "banned"
     EXPIRED = "expired"

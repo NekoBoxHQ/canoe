@@ -11,7 +11,7 @@ from canoe_core import ErrorCode, new_sub_key
 from ..config import settings
 from ..models import Session as SessionRow
 from ..models import Token, User, utcnow
-from ..security import gen_session_id, new_token, token_hash
+from ..security import encrypt_sub_key, gen_session_id, new_token, token_hash
 
 
 class CanoeError(Exception):
@@ -29,10 +29,13 @@ class CanoeError(Exception):
 # --------------------------------------------------------------------------
 
 
-def issue_login_token(db: DBSession, user: User, device_id: str) -> tuple[str, Token]:
-    """签发登录令牌。返回 (明文 token, Token 行)。
+def issue_login_token(db: DBSession, user: User, device_id: str) -> tuple[str, Token, str]:
+    """签发登录令牌。返回 (明文 token, Token 行, 明文 sub_key)。
 
     同一设备重复登录时吊销旧令牌，避免令牌无限堆积。
+
+    sub_key 明文**只在这一次调用里存在**：一份交给调用方放进登录响应发给
+    客户端，库里留下的是它的密文（见 security.encrypt_sub_key 的说明）。
     """
     db.execute(
         update(Token)
@@ -45,19 +48,21 @@ def issue_login_token(db: DBSession, user: User, device_id: str) -> tuple[str, T
     )
 
     raw = new_token()
+    # 每个会话一把新的订阅密钥。登录时下发给客户端，服务端拿同一把
+    # 加密 /api/subscription 的响应。吊销令牌 = 这把钥匙一起失效。
+    sub_key = new_sub_key()
     row = Token(
         user_id=user.id,
         token_hash=token_hash(raw),
         device_id=device_id,
-        # 每个会话一把新的订阅密钥。登录时下发给客户端，服务端拿同一把
-        # 加密 /api/subscription 的响应。吊销令牌 = 这把钥匙一起失效。
-        sub_key=new_sub_key(),
+        sub_key="",                              # 老列不再写明文
+        sub_key_enc=encrypt_sub_key(sub_key),    # 库里只有密文
         expire_at=utcnow() + timedelta(seconds=settings.token_ttl),
     )
     db.add(row)
     db.commit()
     db.refresh(row)
-    return raw, row
+    return raw, row, sub_key
 
 
 def revoke_login_token(db: DBSession, raw_token: str) -> None:

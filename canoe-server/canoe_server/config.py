@@ -47,6 +47,32 @@ class Settings(BaseSettings):
     token_bytes: int = 32
     token_ttl: int = 86400  # 登录令牌有效期（秒），默认 1 天
 
+    #: 给 tokens.sub_key 做静态加密用的主密钥（环境变量 SECRET_KEY）。
+    #: 留空则退回 TICKET_SECRET —— 那是历史遗留字段，之前**没有任何代码读它**，
+    #: 正好拿来用；两个都没有就在 data/subkey.key 里生成一把（0600）。
+    #: ⚠ 换掉这把钥匙 = 已存的订阅密钥全部解不开（客户端会收到空信封、
+    #:   销毁本地订阅），所以一旦有值就别再动它。
+    secret_key: str = ""
+    ticket_secret: str = ""
+
+    # --- 反向代理 ---
+    #: 是否信任 X-Forwarded-For。**默认不认**。
+    #: 本部署是 uvicorn 直接对公网、前面没有反代，认了这个头就等于让任何人
+    #: 随手伪造来源 IP：审计日志变成写小说，按 IP 的限速也能"一请求换一个
+    #: 假 IP"绕过去。真放到 Nginx 后面（那时只有反代能连到本进程）再打开。
+    trust_proxy: bool = False
+
+    # --- 登录 / 注册限速（进程内滑动窗口，见 services/ratelimit.py）---
+    #: 同一个用户名在窗口内连续失败这么多次就锁住。/api/login 每次要跑
+    #: 24 万次 PBKDF2，没有这道闸，它就是一个不用登录就能按下去的 CPU 开关。
+    login_max_fails: int = 10
+    login_fail_window: int = 300     # 失败计数的统计窗口（秒）
+    login_lock_seconds: int = 300    # 触发后锁多久（秒）
+    #: 同一个 IP 在窗口内最多注册几个号。/api/register 不要任何凭据，
+    #: 不限速就是一台免费的造号机 —— 顺带还能把推送连接池占满。
+    register_max_per_ip: int = 5
+    register_window: int = 3600
+
     # --- Web 管理面板 ---
     # 面板是纯静态的（HTML+CSS+JS，无构建步骤），挂在这个目录上。
     panel_dir: str = str(BASE_DIR / "panel")

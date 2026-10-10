@@ -1168,6 +1168,14 @@ class MainView(FramelessWindow):
         if not info.url:
             self._fail_update("服务端没给安装包地址")
             return
+        if not info.sha256:
+            # 没摘要就没得校验，而这条路下下来的东西是要**执行**的。
+            # 在这里就拦掉，别让用户等 87MB 下完了再说不行。
+            self._fail_update(
+                "服务端没给安装包校验摘要，已拒绝更新。\n"
+                "请找管理员确认发布包（更新地址可能不是我们的服务端）。"
+            )
+            return
         if not update.can_self_update():
             # 源码运行时"当前程序"是 python.exe，换了没意义。别让用户
             # 干等半天才发现。地址给出来，他自己下。

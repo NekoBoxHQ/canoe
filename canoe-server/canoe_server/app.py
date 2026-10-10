@@ -21,6 +21,13 @@ app = FastAPI(
     title=settings.app_name,
     version=VERSION,
     description=f"{BRAND_CN} 服务端 · {SLOGAN_CN}",
+    # ★ 接口文档按 debug 开关。开着的话，公网上任何人都能读到**全部**
+    #   接口 schema（包括 /api/admin/* 的形状）—— 对一个只有一个客户的
+    #   代理服务来说，这是白送的侦察材料，没有任何好处。
+    #   要查文档就在本地 DEBUG=true 起一份。
+    docs_url="/docs" if settings.debug else None,
+    redoc_url="/redoc" if settings.debug else None,
+    openapi_url="/openapi.json" if settings.debug else None,
 )
 
 # 桌面客户端不走浏览器 CORS，这里留一个受控的默认值方便你用 web 面板调试
@@ -89,6 +96,24 @@ async def on_startup() -> None:
     init_db()
     # 推送是从同步路由（线程池）发起的，得先记住事件循环才能跨线程投递
     hub.bind_loop(asyncio.get_running_loop())
+
+
+DOWNLOAD_HEADERS = {
+    # 下载目录跟面板**同源同端口**，而面板的令牌放在 sessionStorage 里 ——
+    # 万一 releases/ 里混进一个 .html/.svg（上传时只按扩展名落盘），浏览器
+    # 会把它当页面内联执行，顺手就能读走管理员令牌。
+    # 一律当附件下发 + 禁止嗅探：这两个头一加，那个通道就没了。
+    "X-Content-Type-Options": "nosniff",
+    "Content-Disposition": "attachment",
+}
+
+
+@app.middleware("http")
+async def downloads_are_attachments(request: Request, call_next):
+    resp = await call_next(request)
+    if request.url.path.startswith(Api.DOWNLOAD_PREFIX):
+        resp.headers.update(DOWNLOAD_HEADERS)
+    return resp
 
 
 # 客户端安装包自托管：/api/client/latest 返回的下载地址就落在这里

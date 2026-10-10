@@ -8,9 +8,10 @@ from sqlalchemy.orm import Session as DBSession
 
 from canoe_core import ErrorCode
 
+from .config import settings
 from .database import get_db
 from .models import Token, User
-from .security import token_hash
+from .security import decrypt_sub_key, token_hash
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -107,11 +108,23 @@ def current_sub_key(
     row = db.scalars(select(Token).where(Token.token_hash == token_hash(raw))).first()
     if row is None or not row.is_valid:
         return ""
-    return row.sub_key or ""
+    if row.sub_key_enc:
+        return decrypt_sub_key(row.sub_key_enc)
+    # 迁移前的老行（正常路径下 init_db 已经改写过了）
+    return decrypt_sub_key(row.sub_key)
 
 
 def client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    """请求来源 IP。**默认只认真实对端，不认 X-Forwarded-For。**
+
+    这条改过：原来无条件读 XFF 的第一段。本部署是 uvicorn 直接对公网、
+    前面没有反代，那个头完全是客户端说了算 —— 于是审计日志里的 IP 想写
+    什么写什么，按 IP 的登录/注册限速也能"一个请求换一个假 IP"绕过去。
+
+    放到 Nginx 后面时再打开 trust_proxy（那时只有反代能连到本进程）。
+    """
+    if settings.trust_proxy:
+        fwd = request.headers.get("x-forwarded-for")
+        if fwd:
+            return fwd.split(",")[0].strip()
     return request.client.host if request.client else ""

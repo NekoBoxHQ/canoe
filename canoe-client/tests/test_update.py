@@ -207,23 +207,31 @@ def main() -> int:
             check("★ 摘要对不上 -> 拒收", exc.code == "bad_digest", exc.code)
             check("★ 拒收时把文件删掉（绝不留半成品）", not dest2.exists())
 
-        # 大小对不上
+        # 大小对不上（摘要给对的，好让流程真正走到大小那一步）
         dest3 = tmp / "dl3.zip"
         try:
-            update.download(url, dest3, expected_size=len(blob) + 999)
+            update.download(url, dest3, expected_sha256=digest,
+                            expected_size=len(blob) + 999)
             check("大小不对应当报错", False)
         except update.UpdateError as exc:
             check("★ 大小对不上 -> 拒收", exc.code == "size_mismatch", exc.code)
 
-        # 服务端没给摘要：也要能下（老版本服务端），但大小还是要对
+        # 服务端没给摘要：**拒收**。
+        # 原来这里钉的是"没给 sha256 时照样能下"—— 那条是漏洞：这条路下下来的
+        # 东西是要拿去执行自己的，校验不能是"有就验、没有就跳过"。
         dest4 = tmp / "dl4.zip"
-        update.download(url, dest4, expected_size=len(blob))
-        check("服务端没给 sha256 时照样能下", dest4.read_bytes() == blob)
+        try:
+            update.download(url, dest4, expected_size=len(blob))
+            check("没给 sha256 应当拒收", False)
+        except update.UpdateError as exc:
+            check("★ 服务端没给 sha256 -> 拒收（fail-closed）",
+                  exc.code == "no_digest", exc.code)
+            check("★ 拒收时不落盘", not dest4.exists())
 
         # 404
         _Handler.status = 404
         try:
-            update.download(url, tmp / "dl5.zip")
+            update.download(url, tmp / "dl5.zip", expected_sha256="0" * 64)
             check("404 应当报错", False)
         except update.UpdateError as exc:
             check("★ 404 -> 可读报错", exc.code == "http_error", exc.code)
@@ -233,7 +241,7 @@ def main() -> int:
         cancel = threading.Event()
         cancel.set()          # 一开始就是置位的：模拟"刚点就开始"的那种取消
         try:
-            update.download(url, tmp / "dl6.zip", cancelled=cancel)
+            update.download(url, tmp / "dl6.zip", expected_sha256="0" * 64, cancelled=cancel)
             check("取消应当抛 DownloadCancelled", False)
         except update.DownloadCancelled as exc:
             check("★ 取消抛的是 DownloadCancelled（不是错误）", exc.code == "cancelled")
@@ -569,7 +577,8 @@ def main() -> int:
 
         try:
             dest9 = tmp / "dl-proxy.zip"
-            update.download(target, dest9)
+            update.download(target, dest9,
+                            expected_sha256=hashlib.sha256(_Handler.blob).hexdigest())
             check("★ update.download 也无视系统代理", dest9.is_file())
         except update.UpdateError as exc:
             check("★ update.download 也无视系统代理", False, exc.message)

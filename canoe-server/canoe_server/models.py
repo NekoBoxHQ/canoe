@@ -112,8 +112,14 @@ class Token(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     device_id: Mapped[str] = mapped_column(String(64), default="")
-    #: 会话级订阅密钥（base64）。登录时下发给客户端，之后服务端用它加密
-    #: 订阅响应。吊销令牌 = 这把钥匙一起作废，客户端再也解不开新订阅。
+    #: 会话级订阅密钥（base64）的**密文**。登录时把明文下发给客户端，
+    #: 服务端自己用它加密订阅响应；库里这份是加过密的
+    #: （AES-GCM，见 security.encrypt_sub_key）。
+    #: 为什么：这张表的令牌存了哈希、号称"拿到库也没用"，可 sub_key 原本
+    #: 是明文 —— 拖库 + 任意一份密文就能解出会话的全部节点口令。
+    sub_key_enc: Mapped[str] = mapped_column(String(160), default="")
+    #: ⚠ 迁移前的老列，只在"密文列还空着"的旧行里有值。
+    #: init_db 会把它们就地重写成 sub_key_enc 并清空这里（见 database）。
     sub_key: Mapped[str] = mapped_column(String(64), default="")
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     expire_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

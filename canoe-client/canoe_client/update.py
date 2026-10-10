@@ -170,12 +170,25 @@ def download(
 
     on_progress(done, total) —— total 拿不到时是 0。
     cancelled 是一个 threading.Event，置位就中途放弃并删掉半成品。
+
+    ★ 摘要**必填**：没有摘要就直接拒绝，不再"没给就跳过校验"。
+      这条路下载的东西最终是要拿去**执行**的（换掉自己那个 exe），
+      所以它不能有"校验可选"这种形态。服务端 /api/client/latest 一直
+      带 sha256；真拿不到，说明对面不是我们的服务端、或者响应被改过。
     """
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     if not url:
         raise UpdateError("服务端没给下载地址", code="no_url")
+
+    expected_sha256 = (expected_sha256 or "").strip()
+    if not expected_sha256:
+        raise UpdateError(
+            "服务端没有提供安装包校验摘要，已拒绝下载。\n"
+            "请确认更新地址是我们的服务端（或让管理员检查发布包）。",
+            code="no_digest",
+        )
 
     def note(done: int, total: int) -> None:
         if on_progress:
@@ -230,15 +243,15 @@ def download(
         )
 
     # ★ 校验没通过就当没下过。这条路下载的东西是要拿去执行的。
-    if expected_sha256:
-        got = digest.hexdigest()
-        if got.lower() != expected_sha256.strip().lower():
-            dest.unlink(missing_ok=True)
-            raise UpdateError(
-                f"安装包校验失败（摘要对不上）\n服务端：{expected_sha256[:16]}…\n"
-                f"实际：  {got[:16]}…\n文件已丢弃，请联系管理员确认发布包。",
-                code="bad_digest",
-            )
+    #   （摘要一定非空 —— 空的话上面已经拒了，不会走到这儿。）
+    got = digest.hexdigest()
+    if got.lower() != expected_sha256.lower():
+        dest.unlink(missing_ok=True)
+        raise UpdateError(
+            f"安装包校验失败（摘要对不上）\n服务端：{expected_sha256[:16]}…\n"
+            f"实际：  {got[:16]}…\n文件已丢弃，请联系管理员确认发布包。",
+            code="bad_digest",
+        )
 
     note(done, total or done)
     return dest

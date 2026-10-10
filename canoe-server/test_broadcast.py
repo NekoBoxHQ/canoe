@@ -89,7 +89,8 @@ def main() -> int:
         check("★ 只投给目标账号那条连接（另一条一个字节都收不到）",
               sent == [mine], f"投给了 {len(sent)} 条，期望 1 条")
         check("★ 返回的目标数也是 1（不是全员广播）", n == 1, str(n))
-        ev = loop.delivered()[-1]
+        # permanent=True 现在会推两条（kick + 关闭哨兵），kick 是**倒数第二条**
+        ev = loop.delivered()[-2]
         check("事件是 kick 且带 permanent", ev.get("type") == "kick" and ev.get("permanent") is True, str(ev))
         check("payload 里也带 user_id（客户端要拿它对名字）",
               ev.get("user_id") == 1, str(ev))
@@ -116,8 +117,76 @@ def main() -> int:
         sent = set(loop.calls[before][0])
         check("★ release 广播给两条连接", sent == {mine, theirs} and n == 2, f"{len(sent)} 条")
 
-        # --- 4. 没人听的时候不能炸 ---
-        print("\n[4] 边界")
+        # --- 4. 封禁要把连接**真的关掉** ---
+        #    原来是"只发一条 kick 就算踢了"—— 客户端不理它，这条连接就一直
+        #    挂着（吊销不彻底）。现在推完原因再断管子。
+        print("\n[4] 封禁：推完原因就断管子")
+        before = len(loop.calls)
+        bc.notify_kick(1, "账号已被封禁", permanent=True)
+        new = loop.calls[before:]
+        check("★ 推了两条：先 kick、后关闭哨兵", len(new) == 2, f"{len(new)} 条")
+        check("★ 第一条是 kick 事件", new and new[0][1].get("type") == "kick", str(new[:1]))
+        # ⚠ 这里只能用 type 比、不能用 `is bc._CLOSE`：FakeLoop 记的是
+        #   `dict(event)` 的副本，身份已经变了（真队列里进的是原对象，
+        #   所以下面 [5] 那条"哨兵不会被发出去"仍然测得到身份判断）。
+        check("★ 第二条是内部关闭哨兵，且只给目标账号",
+              len(new) == 2 and new[1][1].get("type") == "__close__" and new[1][0] == [mine],
+              str(new[1][0] if len(new) == 2 else None))
+
+        before = len(loop.calls)
+        bc.notify_kick(1, "管理员把你踢下线了", permanent=False)
+        new = loop.calls[before:]
+        check("★ 踢单个会话（非封禁）只通知，不硬断（别的设备还能用）",
+              len(new) == 1, f"{len(new)} 条")
+
+        # --- 5. 哨兵进了队列，stream() 必须自己收摊 ---
+        print("\n[5] 哨兵不能变成一帧 SSE")
+        import asyncio  # noqa: PLC0415
+
+        # 先把上面手工挂的那条（账号 1）撤掉，免得下面数连接数时把它算进来
+        hub._drop(mine)
+
+        async def scenario() -> list[str]:
+            hub._loop = asyncio.get_running_loop()      # publish 要跨线程投递
+            seen: list[str] = []
+
+            async def collect() -> None:
+                async for ev in hub.stream(1, {"revision": "r"}):
+                    seen.append(str(ev.get("type")))
+
+            task = asyncio.create_task(collect())
+            for _ in range(200):                        # 等它注册上
+                await asyncio.sleep(0.01)
+                if hub.connections_of(1):
+                    break
+            hub.disconnect_user(1)
+            await asyncio.wait_for(task, timeout=5)
+            return seen
+
+        seen = asyncio.run(scenario())
+        check("★ 收到 hello 之后就结束了（哨兵没被当成事件发出去）",
+              seen == ["hello"], str(seen))
+        check("★ 连接已从 hub 摘掉", hub.connections_of(1) == 0, str(hub.connections_of(1)))
+
+        # --- 6. kick 和关闭哨兵必须**都**在队列里，且 kick 在前 ---
+        #     踩过：给关闭哨兵加了"清空队列给它腾位置"，于是同一次事件循环里
+        #     kick 刚塞进去就被 close 清掉了（消费者的唤醒排在两个回调之后）。
+        #     真机表现是"封禁推不来 kick"——客户端只看到连接断了，不知道为什么。
+        #     smoke_test 的 [15] 抓到的就是这个。
+        print("\n[6] kick + 关闭哨兵：都在，且 kick 在前")
+        q: asyncio.Queue = asyncio.Queue(maxsize=bc.QUEUE_SIZE)
+        hub._fanout({"type": "kick", "user_id": 1}, [q])
+        hub._fanout(bc._CLOSE, [q])
+        drained = []
+        while not q.empty():
+            drained.append(q.get_nowait())
+        check("★ 两条都在（kick 没被清掉）", len(drained) == 2, str(drained))
+        check("★ 顺序是先 kick、后关闭",
+              len(drained) == 2 and drained[0].get("type") == "kick"
+              and drained[1] is bc._CLOSE, str(drained))
+
+        # --- 7. 没人听的时候不能炸 ---
+        print("\n[7] 边界")
         hub._drop(mine)
         hub._drop(theirs)
         check("★ 一条连接都没有时 publish 返回 0，不抛异常",

@@ -38,7 +38,12 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "subscription": "TEXT DEFAULT ''",
         "route_mode": "VARCHAR(8) DEFAULT 'out'",
     },
-    "tokens": {"sub_key": "VARCHAR(64) DEFAULT ''"},
+    "tokens": {
+        "sub_key": "VARCHAR(64) DEFAULT ''",
+        # 订阅密钥改成加密落库（见 security.encrypt_sub_key）。
+        # 160 是给 base64(nonce+密文+tag) 留的余量。
+        "sub_key_enc": "VARCHAR(160) DEFAULT ''",
+    },
     "nodes": {"link": "TEXT DEFAULT ''"},
 }
 
@@ -100,10 +105,35 @@ def _drop_stale_tables() -> None:
                 conn.execute(sql_text(f"DROP TABLE {table}"))
 
 
+def _migrate_sub_keys() -> None:
+    """把老库里的**明文** sub_key 就地加密成 sub_key_enc（一次性）。
+
+    放在启动时做，而不是"读到明文再顺手改写"：读取路径（deps.current_sub_key）
+    是个 GET 依赖，让它偷偷写库容易在别处引出意外。启动时扫一遍干净得多，
+    而且扫完之后新代码里就只有一种形式（密文）。
+
+    幂等：sub_key 已经是空串的行直接跳过，跑一百次也是同样的结果。
+    """
+    from sqlalchemy import text as sql_text
+
+    from .security import encrypt_sub_key
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sql_text("SELECT id, sub_key FROM tokens WHERE sub_key IS NOT NULL AND sub_key != ''")
+        ).fetchall()
+        for row_id, raw in rows:
+            conn.execute(
+                sql_text("UPDATE tokens SET sub_key_enc = :enc, sub_key = '' WHERE id = :id"),
+                {"enc": encrypt_sub_key(raw), "id": row_id},
+            )
+
+
 def init_db() -> None:
-    """建表 + 补列。生产建议改用 Alembic 迁移（见 docs/03-database.md）。"""
+    """建表 + 补列 + 一次性数据迁移。生产建议改用 Alembic（见 docs/03-database.md）。"""
     from . import models  # noqa: F401  确保模型注册到 metadata
 
     _drop_stale_tables()
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
+    _migrate_sub_keys()

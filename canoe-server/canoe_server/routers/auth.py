@@ -28,7 +28,14 @@ from ..config import settings
 from ..database import get_db
 from ..deps import client_ip, get_current_user
 from ..models import AuditLog, Token, User, as_aware, epoch, utcnow
-from ..security import hash_password, token_hash, verify_password
+from ..security import dummy_verify, hash_password, token_hash, verify_password
+from ..services.ratelimit import (
+    ip_key,
+    login_failed,
+    login_ok,
+    login_retry_after,
+    register_limiter,
+)
 from ..services.sessions import (
     CanoeError,
     ensure_device_allowed,
@@ -56,6 +63,19 @@ def _audit(db: DBSession, user_id: int | None, action: str, detail: str = "", ip
 
 @router.post(Api.REGISTER, response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 def register(body: RegisterRequest, request: Request, db: DBSession = Depends(get_db)):
+    # 注册不要任何凭据，所以它是"谁能建号"的唯一闸门。按 IP 限速 ——
+    # 放在最前面，连查重和 PBKDF2 都别跑，省得被拿来当 CPU 开关。
+    ip = client_ip(request)
+    wait = register_limiter.retry_after(ip_key(ip))
+    if wait:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "code": ErrorCode.RATE_LIMITED,
+                "detail": f"注册太频繁了，请 {wait} 秒后再试",
+            },
+        )
+
     if db.scalars(select(User).where(User.username == body.username)).first():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -74,7 +94,10 @@ def register(body: RegisterRequest, request: Request, db: DBSession = Depends(ge
     db.commit()
     db.refresh(user)
 
-    _audit(db, user.id, "register", user.username, client_ip(request))
+    # 记一次（记的是**成功**的，不是失败的）—— 窗口内建满就歇着
+    register_limiter.hit(ip_key(ip))
+
+    _audit(db, user.id, "register", user.username, ip)
     return RegisterResponse(
         id=user.id, username=user.username, created_at=epoch(user.created_at) or 0
     )
@@ -88,14 +111,42 @@ def register(body: RegisterRequest, request: Request, db: DBSession = Depends(ge
 @router.post(Api.LOGIN, response_model=LoginResponse)
 def login(body: LoginRequest, request: Request, db: DBSession = Depends(get_db)):
     ip = client_ip(request)
+
+    # ★ 限速查在**跑 PBKDF2 之前**。放到校验后面就等于没限 —— 攻击者的
+    #   每次尝试照样要服务端烧 24 万次哈希，这里正是要挡的就是这个。
+    wait = login_retry_after(body.username, ip)
+    if wait:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "code": ErrorCode.RATE_LIMITED,
+                "detail": f"尝试太频繁了，请 {wait} 秒后再试",
+            },
+        )
+
     user = db.scalars(select(User).where(User.username == body.username)).first()
 
-    if user is None or not verify_password(body.password, user.password_hash):
-        _audit(db, user.id if user else None, "login_failed", body.username, ip)
+    if user is None:
+        # 用户名不存在也走一遍同样开销的校验：否则"查得到的人慢、查不到的人快"，
+        # 光看响应时间就能把有效用户名枚举出来（错误文案统一也挡不住）。
+        dummy_verify(body.password)
+        login_failed(body.username, ip)
+        _audit(db, None, "login_failed", body.username, ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": ErrorCode.BAD_CREDENTIALS, "detail": "用户名或密码错误"},
         )
+
+    if not verify_password(body.password, user.password_hash):
+        login_failed(body.username, ip)
+        _audit(db, user.id, "login_failed", body.username, ip)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": ErrorCode.BAD_CREDENTIALS, "detail": "用户名或密码错误"},
+        )
+
+    # 验过了就清零 —— 正常用户偶尔手滑几次不该被累积到锁住
+    login_ok(body.username, ip)
 
     try:
         ensure_user_usable(user)
@@ -106,7 +157,7 @@ def login(body: LoginRequest, request: Request, db: DBSession = Depends(get_db))
             status_code=exc.http_status, detail={"code": exc.code, "detail": exc.message}
         ) from exc
 
-    raw_token, token_row = issue_login_token(db, user, body.device_id)
+    raw_token, token_row, sub_key = issue_login_token(db, user, body.device_id)
     user.last_login_at = utcnow()
     db.commit()
 
@@ -115,7 +166,9 @@ def login(body: LoginRequest, request: Request, db: DBSession = Depends(get_db))
     return LoginResponse(
         token=raw_token,
         expires_in=max(0, int((as_aware(token_row.expire_at) - utcnow()).total_seconds())),
-        sub_key=token_row.sub_key,
+        # ★ 明文 sub_key 只在这次响应里出现一次；库里存的是密文，
+        #   所以这里不能用 token_row.sub_key（那已经是空的了）。
+        sub_key=sub_key,
         user=UserInfo(
             id=user.id,
             username=user.username,

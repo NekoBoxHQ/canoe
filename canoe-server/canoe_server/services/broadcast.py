@@ -27,6 +27,11 @@ from ..config import settings
 #: 每条连接的待发队列上限。客户端读得慢也不至于把服务端内存顶爆。
 QUEUE_SIZE = 64
 
+#: 内部哨兵：推给某条连接、让它自己收摊。
+#: ⚠ 它**不是**给客户端的协议事件 —— stream() 见到就 break，绝不会变成
+#:   一帧 SSE。客户端那边不需要认识这个 type。
+_CLOSE: dict[str, Any] = {"type": "__close__"}
+
 
 class EventHub:
     def __init__(self) -> None:
@@ -90,6 +95,10 @@ class EventHub:
                     # 长时间没数据的连接掐掉，所以这个心跳是必需的。
                     yield {"type": "ping"}
                     continue
+                if event is _CLOSE:
+                    # 服务端让这条连接收摊（封禁/踢人）。不要再 yield ——
+                    # 这不是协议事件，只是"该断了"。
+                    break
                 yield event
         finally:
             self._drop(queue)
@@ -119,8 +128,28 @@ class EventHub:
             return 0
         return len(targets)
 
+    def disconnect_user(self, user_id: int) -> int:
+        """把这个账号**所有**长连接关掉。封禁 / 踢人时用。
+
+        为什么要真的断：原先只在连接建立时鉴权，之后一路不管 —— 用户被封了，
+        服务端只是推一条 kick 事件，客户端**听不听全凭自觉**，那条连接会一直
+        挂到 TCP 自己断为止。现在推完原因就把管子收掉，吊销才算彻底。
+
+        （推的东西里从来没有订阅内容，所以之前也没漏节点 —— 这条是"该断的
+          没断"，不是数据泄漏。）
+        """
+        return self.publish(_CLOSE, user_id=user_id)
+
     def _fanout(self, event: dict[str, Any], targets: list[asyncio.Queue]) -> None:
-        """在事件循环线程里执行。"""
+        """在事件循环线程里执行。
+
+        ⚠ 关闭哨兵**走的就是这条路**，别给它开小灶。曾经写过"它是最后一句，
+          清空队列给它腾位置"—— 结果是同一次事件循环里 kick 刚 put 进去，
+          紧接着的 close 就把它清掉了（消费者的唤醒排在两个回调之后），
+          客户端只看到连接断了、不知道为什么，表现为"封禁推不来 kick"。
+          smoke_test 的 [15] 抓到的就是这个。要保证的是 **kick 还在、且在
+          close 前面**，所以这里只按"满了丢最老的"来腾位置。
+        """
         for queue in targets:
             try:
                 queue.put_nowait(event)
@@ -184,8 +213,16 @@ def notify_kick(user_id: int, reason: str = "管理员操作", *, permanent: boo
     （"我登录 A，封禁 B，A 就下线了"）。所以：
       · 定向靠的是 publish(user_id=…)，payload 里那份是给客户端自查的；
       · 客户端那边也认一下名字（main_view 的 kick 分支），两道都要有。
+
+    ★ 封禁（permanent）时推完原因还要把连接**真的关掉**：光发一条事件等于
+      "通知一声"，客户端不理它这条连接就一直挂着（吊销不彻底）。顺序不能反
+      —— 先关就没人收得到"为什么"了。
+
+      ⚠ 只对 permanent 断。踢**单个会话**时账号本身还是好的，别的设备马上
+        就能重连，硬断只是白抖一下；那种情况仍然只通知。
     """
-    return hub.publish(
-        {"type": "kick", "user_id": user_id, "reason": reason, "permanent": permanent},
-        user_id=user_id,
-    )
+    event = {"type": "kick", "user_id": user_id, "reason": reason, "permanent": permanent}
+    pushed = hub.publish(event, user_id=user_id)
+    if permanent:
+        hub.disconnect_user(user_id)
+    return pushed
