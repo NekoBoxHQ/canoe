@@ -339,11 +339,12 @@ class MainView(FramelessWindow):
         self.error_label.setObjectName("Error")
         self.error_label.setWordWrap(True)
         self.error_label.setAlignment(Qt.AlignCenter)
-        # ★ 不设最小高度：空的时候它高度是 0，所以按钮和账号行之间的间距
-        #   还是 GAP —— 跟别处一样齐。早先写死 24px，等于平时也留着一块
-        #   看不见的空白，用户一眼就看出"这块比别处宽"。
-        #   真出错时它顶出来的高度从下面的水面里借（窗是定高的）。
-        root.addSpacing(4)
+        # ★ 没出错时**整个藏起来**，不是只清空文字。
+        #   QLabel 就算 text=""，布局里照样占着一行高（约 25px）—— 用户看到
+        #   的就是"按钮和账号行之间比别处宽"，一眼就发现了。藏起来之后它
+        #   完全不占位置，按钮→账号行就是干干净净的 FOOT_GAP。
+        #   出错时它顶出来的高度从下面的水面里借（窗是定高的）。
+        self.error_label.hide()
         root.addWidget(self.error_label)
 
         root.addSpacing(FOOT_GAP)
@@ -435,7 +436,11 @@ class MainView(FramelessWindow):
         return btn
 
     def _result_card(self) -> QFrame:
-        """输出结果：标题 + 一行（绿点 + 文本）。
+        """输出结果：**只有一行**（绿点 + 文本），没有标题。
+
+        以前上面还压着一排「📄 输出结果」的标题，用户说砍掉
+        （"把输出结果 几个字那一排 砍掉"）—— 就一行字的东西，标题比内容还
+        显眼。砍完之后留白要**上下一样**，所以 margins 是 (14, 14, 14, 14)。
 
         **只有一行**，新的结果顶掉旧的，底下不留空白块。
 
@@ -445,20 +450,10 @@ class MainView(FramelessWindow):
         card = QFrame()
         card.setObjectName("Card")
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(14, 12, 14, 14)
-        lay.setSpacing(10)
-
-        head = QHBoxLayout()
-        head.setSpacing(8)
-        mark = QLabel()
-        mark.setPixmap(A.icon("doc", 17, P.TEXT))
-        mark.setFixedSize(17, 17)
-        head.addWidget(mark)
-        title = QLabel(Text.LABEL_RESULT)
-        title.setObjectName("ResultTitle")
-        head.addWidget(title)
-        head.addStretch(1)
-        lay.addLayout(head)
+        # ★ 上下一样（用户："输出框 上面的边和下面的边一样"）。以前是
+        #   12/14，上边窄一点是因为上面还有那排标题撑着，现在没了。
+        lay.setContentsMargins(14, 14, 14, 14)
+        lay.setSpacing(0)
 
         row_frame = QFrame()
         row_frame.setObjectName("ResultRow")
@@ -602,11 +597,20 @@ class MainView(FramelessWindow):
         self.account_label.setText(session.username or "")
         self._apply_buttons()
 
+    def _set_error(self, text: str) -> None:
+        """报错行。空串 = 没出错 -> 整行藏起来（不占布局）。
+
+        ⚠ 只 setText('') 不够：QLabel 就算文本为空，布局里照样占一行高，
+          按钮和账号行之间会平白宽出 25px。见 _build 里那段说明。
+        """
+        self.error_label.setText(text)
+        self.error_label.setVisible(bool(text))
+
     def _set_state(self, state: str, error: str = "") -> None:
         session.state = state
         session.error = error if state == STATE_STORM else ""
         self.status_label.setText(Text.ST_ERROR if state == STATE_STORM else session.status_text)
-        self.error_label.setText(session.error)
+        self._set_error(session.error)
         self._apply_buttons()
 
     def _apply_buttons(self) -> None:
@@ -665,7 +669,7 @@ class MainView(FramelessWindow):
     # 启航 / 靠岸
     # ==================================================================
     def _launch(self) -> None:
-        self.error_label.setText("")
+        self._set_error("")
         self.launch_btn.setEnabled(False)
         self.launch_btn.setText(Text.BTN_LAUNCH_BUSY)
         self.status_label.setText(Text.ST_CONNECTING)
@@ -998,7 +1002,7 @@ class MainView(FramelessWindow):
                 sysproxy.clear_proxy()
                 bus.system("系统代理已还原")
             except OSError as exc:
-                self.error_label.setText(f"还原系统代理失败：{exc}")
+                self._set_error(f"还原系统代理失败：{exc}")
                 bus.error(f"还原系统代理失败：{exc}")
 
         # 告诉服务端这次会话结束了。
@@ -1011,7 +1015,7 @@ class MainView(FramelessWindow):
         try:
             kernel.stop()
         except Exception as exc:  # noqa: BLE001
-            self.error_label.setText(f"关闭内核时出错：{exc}")
+            self._set_error(f"关闭内核时出错：{exc}")
             bus.error(f"关闭内核时出错：{exc}")
 
         self._set_state(STATE_DOCKED)

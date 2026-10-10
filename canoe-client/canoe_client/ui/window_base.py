@@ -112,7 +112,7 @@ class _TitleBar(QWidget):
 #: 这里把它抄成常量给登录页用；test_gui 有一条把两者钉在一起，
 #: 哪天主界面高度变了，那条会红，提醒你回来改这个数。
 WINDOW_W = 420
-WINDOW_H = 621
+WINDOW_H = 592
 
 
 class FramelessWindow(QWidget):

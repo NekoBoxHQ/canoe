@@ -734,18 +734,21 @@ def main() -> int:
     check("★ 登录页也是同一个尺寸",
           (auth.width(), auth.height()) == (mv.WINDOW_W, mv.WINDOW_H),
           f"{auth.width()}x{auth.height()}")
-    # 主界面的高度现在是**写死**的（跟登录页同一个数），不再是内容撑出来的。
-    # 内容哪天长得超过这个框子就会被挤 —— 这条盯着它：余量不对就去调 WINDOW_H。
-    # ⚠ 量之前必须 processEvents：布局是懒重算的，松开尺寸的当下读到的还是旧值
-    #   （第一版少了这句，量出来 594，白白红了一次）。
-    view.setMinimumSize(0, 0)
-    view.setMaximumSize(16777215, 16777215)
+    # 主界面的高度是**写死**的（跟登录页同一个数），不再是内容撑出来的 ——
+    # 内容多一分少一分，多出来的空当会被 Qt 摊到某个间隔上（踩着过：删掉
+    # 「输出结果」那排标题之后，按钮和账号行之间从 8px 悄悄变成 37px）。
+    # 所以不能拿 sizeHint 比（那个跟实际布局不是一回事），得量**真正的东西**：
+    # 最后一行（版本号）的底边离窗口下沿，必须正好是 BOTTOM_PAD。
+    # ⚠ 量之前先 show() + 走一轮事件：不 show 的话布局还停在"没打磨过"的
+    #   状态，量出来是 479 而不是 578（踩过）。
+    view.show()
     pump(app, 0.05)
-    natural = view.sizeHint().height()
-    view.setFixedSize(mv.WINDOW_W, mv.WINDOW_H)     # 量完复原
-    check("★ 窗口装得下内容，余量也不离谱（现在是 20 上下）",
-          0 <= mv.WINDOW_H - natural <= 30,
-          f"内容 {natural} vs 窗口 {mv.WINDOW_H}")
+    v_bottom = view.version_label.mapTo(
+        view, view.version_label.rect().bottomLeft()).y()
+    check("★ 内容正好填满窗口（版本号底下就是 BOTTOM_PAD，不空也不挤）",
+          abs(view.height() - v_bottom - mv.BOTTOM_PAD) <= 2,
+          f"窗口 {view.height()} - 版本底边 {v_bottom} = "
+          f"{view.height() - v_bottom}，该是 {mv.BOTTOM_PAD}")
 
     # 服务端说改 -> 推送 -> 客户端跟着改（只是不在界面上写出来）
     fake_api.route_mode = Route.IN

@@ -86,6 +86,42 @@ def paint_background_image(p: QPainter, width: float, height: float) -> bool:
 # 背景：夜色山水
 # --------------------------------------------------------------------------
 
+
+def _draw_stars(p: QPainter, w: float, sky_bottom: float, count: int = 44) -> None:
+    """天空里的星星。
+
+    ⚠ 坐标用**固定公式**算（sin 取小数部分），不用 random —— 每次渲染必须
+      一模一样，截图验收和测试要可比（山脊顶点同一个道理）。
+    越靠地平线越淡（大气感），月亮附近不画（会被光晕吃掉，也免得像噪点）。
+    """
+    p.setPen(Qt.NoPen)
+    for i in range(count):
+        fx = (math.sin(i * 12.9898 + 4.1) * 43758.5453) % 1.0
+        fy = (math.sin(i * 78.233 + 1.7) * 43758.5453) % 1.0
+        x = fx * w
+        y = fy * sky_bottom * 0.9
+        # 靠地平线那几颗淡下去，天顶那几颗亮 —— 不然整片天糊成砂纸
+        depth = 1.0 - (y / sky_bottom if sky_bottom else 0.0)
+        alpha = int(22 + 96 * depth * fy)
+        if alpha < 12:
+            continue
+        r = 0.6 + 1.2 * fy
+        p.setBrush(QColor(228, 240, 255, alpha))
+        p.drawEllipse(QPointF(x, y), r, r)
+
+
+def _ridge_edge(w: float, base_y: float, height: float,
+                points: tuple[tuple[float, float], ...]) -> QPainterPath:
+    """只取山脊**上沿**那条线（不含底边）—— 用来打月光。"""
+    path = QPainterPath()
+    for i, (x, lift) in enumerate(points):
+        pt = QPointF(w * x, base_y - height * lift)
+        if i == 0:
+            path.moveTo(pt)
+        else:
+            path.lineTo(pt)
+    return path
+
 #: 远 / 中 / 近三层山脊。每项是 (整幅高度的占比, 顶点数据)。
 #: 山都不高 —— 美化稿里山脊只比地平线冒出一小截，不能顶到卡片上去。
 #: 顶点是 (x 比例, 相对该层最高点的抬起比例)，手写死的 ——
@@ -144,31 +180,43 @@ def paint_night(p: QPainter, width: float, height: float, *,
     sky.setColorAt(1.00, QColor(P.NIGHT_HORIZON))
     p.fillRect(QRectF(0, 0, w, sky_bottom + 1), sky)
 
+    # --- 星星 ---
+    _draw_stars(p, w, sky_bottom)
+
     # --- 月亮 + 光晕 ---
     # 压在**地平线附近**（美化稿里月亮就悬在山脊上方），不要挂到天顶去，
     # 否则会正好跑到品牌字后面。
     mx = w * 0.72
     my = sky_bottom * 0.90
     if moon:
-        radius = max(9.0, min(w, h) * 0.032)
-        glow = QRadialGradient(QPointF(mx, my), radius * 5.2)
-        glow.setColorAt(0.00, QColor(228, 238, 255, 78))
-        glow.setColorAt(0.40, QColor(160, 200, 255, 26))
-        glow.setColorAt(1.00, QColor(120, 170, 255, 0))
+        radius = max(10.0, min(w, h) * 0.036)
         p.setPen(Qt.NoPen)
-        p.setBrush(QBrush(glow))
-        p.drawEllipse(QPointF(mx, my), radius * 5.2, radius * 5.2)
+        # 两层晕：外层又宽又淡（整片天有一点点亮），内层紧贴着月亮
+        for span, a1, a2 in ((radius * 8.0, 26, 0), (radius * 4.6, 64, 22)):
+            glow = QRadialGradient(QPointF(mx, my), span)
+            glow.setColorAt(0.00, QColor(228, 238, 255, a1))
+            glow.setColorAt(0.45, QColor(170, 205, 255, a2))
+            glow.setColorAt(1.00, QColor(120, 170, 255, 0))
+            p.setBrush(QBrush(glow))
+            p.drawEllipse(QPointF(mx, my), span, span)
         p.setBrush(QColor(P.MOON))
         p.drawEllipse(QPointF(mx, my), radius, radius)
 
     # --- 三层山脊 ---
     if mountain > 0:
-        for (lift, points), color in zip(
-            _RIDGES, (P.MOUNT_FAR, P.MOUNT_MID, P.MOUNT_NEAR)
+        for idx, ((lift, points), color) in enumerate(
+            zip(_RIDGES, (P.MOUNT_FAR, P.MOUNT_MID, P.MOUNT_NEAR))
         ):
+            top = h * lift * mountain
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(color))
-            p.drawPath(_ridge_path(w, sky_bottom, h * lift * mountain, points))
+            p.drawPath(_ridge_path(w, sky_bottom, top, points))
+            # 脊线上压一道月光。有这道边，三层山才"立"得起来；没有的话
+            # 三块纯色糊成一片，看着闷（用户要"背景再舒服点"）。
+            # 越远越淡 —— 空气透视，近处最亮。
+            p.setPen(QPen(QColor(158, 196, 244, (34, 56, 84)[idx]), 1.1))
+            p.setBrush(Qt.NoBrush)
+            p.drawPath(_ridge_edge(w, sky_bottom, top, points))
 
     # --- 水面 ---
     water_top = sky_bottom
@@ -195,11 +243,21 @@ def paint_night(p: QPainter, width: float, height: float, *,
     for i in range(14):
         t = i / 13.0
         y = water_top + (h - water_top) * (t ** 1.35)
-        alpha = int(52 * (1.0 - t) ** 1.6) + 4
+        alpha = int(42 * (1.0 - t) ** 1.6) + 4
         p.setPen(QPen(QColor(150, 190, 240, alpha), 1.0))
         left = w * (0.02 + 0.03 * math.sin(i * 2.1))
         right = w * (0.98 - 0.03 * math.cos(i * 1.7))
         p.drawLine(QPointF(left, y), QPointF(right, y))
+
+    # 月光柱里的碎光：几粒横向小短线，水面才不是一块死板
+    if moon:
+        p.setPen(Qt.NoPen)
+        for j in range(7):
+            t = (j + 1) / 8.0
+            y = water_top + (h - water_top) * (t ** 1.25)
+            half = w * (0.018 + 0.030 * t)
+            p.setBrush(QColor(214, 234, 255, int(58 * (1.0 - t) ** 1.1) + 10))
+            p.drawEllipse(QPointF(mx, y), half, 0.9)
 
     # --- 帆船剪影 ---
     if boat and h - water_top > 40:

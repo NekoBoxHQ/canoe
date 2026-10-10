@@ -242,11 +242,8 @@ def qss() -> str:
     QToolButton#ToolUrl:disabled {{ color: {P.TEXT_FAINT}; border-color: {P.CARD_LINE_SOFT}; }}
 
     /* ---------------- 输出结果 ---------------- */
-    QLabel#ResultTitle {{
-        font-size: 13px;
-        font-weight: 600;
-        color: {P.TEXT};
-    }}
+    /* 那排「输出结果」标题（连图标）被用户砍了 —— 就一行字的东西，标题比
+       内容还显眼。它的 #ResultTitle 规则一并删掉，别留死样式。 */
     QLabel#ResultText {{
         font-family: "Cascadia Mono", "Consolas", "Microsoft YaHei UI", monospace;
         font-size: 15px;

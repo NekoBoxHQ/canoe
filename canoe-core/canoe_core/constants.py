@@ -50,7 +50,8 @@ class Text:
     BTN_UPDATE = "更新"
     BTN_TCPING = "TCping"
     BTN_URLTEST = "URL测试"
-    LABEL_RESULT = "输出结果"
+    # （原来这里有个 LABEL_RESULT = "输出结果"，是结果框上面那排标题 ——
+    #   用户后来把标题砍了，文案也就没人用了，删掉免得留着当摆设。）
 
     # 日志面板首行
     LOG_READY = "准备就绪，等待操作…"
