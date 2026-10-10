@@ -54,7 +54,10 @@ html.booting #boot-screen {
 }
 html.booting #login-screen { display: none; }
 
-.boot-logo { width: 56px; height: 56px; opacity: .85; }
+/* 96px 而不是 56px：这张是**带字**的完整品牌图（见 index.html 那段注释），
+   56px 下「CANOE」偏小、「LIGHT BOAT」直接看不见。启动页只有这一张图，
+   空白足够，放大不影响别的。 */
+.boot-logo { width: 96px; height: 96px; opacity: .9; }
 /* text-indent 2px：字距的账（这行也是"盒子跟着文字走"，补整个字距） */
 .boot-text { font-size: 13px; color: var(--dim); letter-spacing: 2px; text-indent: 2px; }
 .boot-bar {
