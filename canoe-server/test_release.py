@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import atexit
+import gc
 import tempfile
 import zipfile
 from pathlib import Path
@@ -75,9 +76,30 @@ def run_cli(args: list[str], env_extra: dict[str, str]) -> subprocess.CompletedP
     )
 
 
+def purge_temp(path: Path) -> None:
+    """删掉这一轮用的临时目录（可重复调用）。
+
+    ★ 删之前**必须先把数据库连接放掉**。下面有几段是**在本进程里**直接调
+    store_release_file 的（不是走子进程），SQLAlchemy 的连接池还攥着
+    test.db；Windows 删不掉正被打开的文件，而 rmtree(ignore_errors=True)
+    把错吞得干干净净 —— 于是每跑一次 %TEMP% 里就多留一个
+    canoe-reltest-*（110 KB）。先 gc 收掉没人引用的 Session（连接回池），
+    再 dispose 掉池子，最后才删。
+    """
+    gc.collect()
+    try:
+        from canoe_server.database import engine
+
+        engine.dispose()
+    except Exception:
+        # 还没 import 到那儿就退出了（比如前面就失败），不影响删目录
+        pass
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="canoe-reltest-"))
-    atexit.register(shutil.rmtree, tmp, ignore_errors=True)
+    atexit.register(purge_temp, tmp)
     releases = tmp / "releases"
     releases.mkdir()
     env = {
@@ -239,7 +261,8 @@ def main() -> int:
         check("老调用方（不报 size/sha256）照旧能用", got_size == len(whole))
 
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        # 走 purge_temp，别直接 rmtree —— 它握着 test.db，直接删是静默失败的
+        purge_temp(tmp)
 
     # --- 9. 从 GitHub Release 拉包 ---
     #
@@ -391,6 +414,16 @@ def main() -> int:
     finally:
         github.find_release = real_find
         shutil.rmtree(tmp10, ignore_errors=True)
+
+    # ★ 临时目录必须真的没了。以前这里直接 rmtree，而本进程还攥着
+    #   test.db，Windows 删不掉正被打开的文件、ignore_errors 又把错吞了，
+    #   于是每跑一次 %TEMP% 里就多留一个 canoe-reltest-*（110 KB），
+    #   谁也看不见。钉住它，别再退回去。
+    #   （收尾这里再清一次：中途那段 finally 跑的时候前面几个子进程刚退，
+    #     句柄还没放干净，删不掉是正常的 —— 到这个点才真能删。）
+    purge_temp(tmp)
+    check("★ 临时目录真的删掉了（%TEMP% 里不留 canoe-reltest-*）",
+          not tmp.exists(), f"还留着 {tmp}")
 
     print(f"\n{'=' * 48}")
     print(f"通过 {passed} 项，失败 {failed} 项")
