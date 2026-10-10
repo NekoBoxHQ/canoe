@@ -358,7 +358,7 @@ def paint_boat(p: QPainter, cx: float, cy: float, scale: float) -> None:
 
 
 def _boat_pixmap(size: int) -> QPixmap:
-    """徽标本体，画在 size×size 的正方形里。"""
+    """徽标本体，画在 size×size 的正方形里（size 是**逻辑**尺寸）。"""
     dpr = 2
     pm = QPixmap(size * dpr, size * dpr)
     pm.setDevicePixelRatio(dpr)
@@ -366,7 +366,11 @@ def _boat_pixmap(size: int) -> QPixmap:
 
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing, True)
-    s = float(size * dpr)
+    # ⚠ 坐标一律用**逻辑**尺寸（就是 size），别自己乘 dpr：
+    #   QPainter 画在设过 devicePixelRatio 的 QPixmap 上时，会自动把逻辑
+    #   坐标乘 dpr 落到设备像素上。再乘一次就是画成两倍大 —— 18px 的小标
+    #   会只剩左下角一块，看着就是"一个尖尖"（真出过这个 bug）。
+    s = float(size)
     paint_boat(p, s / 2, s * 0.47, s * 0.86)
     p.end()
     return pm

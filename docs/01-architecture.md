@@ -53,12 +53,11 @@ canoe/
 │   ├── canoe.spec               PyInstaller 打包配置
 │   ├── build.bat                ★ 一键打包成 Canoe.exe
 │   ├── assets/
-│   │   ├── logo-source.png      设计稿原图（圆形徽章）
-│   │   ├── make_icon.py         抠圆 + 生成 .ico / png
-│   │   ├── canoe-logo.png       ★ 界面用的徽章（圆外透明）
-│   │   └── canoe.ico / .png
+│   │   ├── make_icon.py         画图标 + 生成 .ico / png（纯代码，无第三方依赖）
+│   │   ├── canoe-logo.png       ★ 界面用的那条船（透明底，512）
+│   │   └── canoe.ico / .png     桌面 / 任务栏 / 标题栏用的图标
 │   ├── bin/                     放 sing-box.exe / wintun.dll（自行下载）
-│   ├── tests/                   6 套，共 281 项
+│   ├── tests/                   6 套，共 447 项
 │   └── canoe_client/
 │       ├── app.py               入口 + 页面切换 + 托盘
 │       ├── api.py               与服务端通信（走 canoe_core 模型校验）

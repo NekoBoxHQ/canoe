@@ -47,9 +47,11 @@ class _TitleBar(QWidget):
         lay.setContentsMargins(12, 0, 6, 0)
         lay.setSpacing(8)
 
+        # 20px 而不是 18：18 那个尺寸下船小得认不出来（用户："根本看不出是船，
+        # 就一个尖尖"）。标题栏高 38px，20px 装得下，也不挤。
         mark = QLabel()
-        mark.setPixmap(A.app_mark(18))
-        mark.setFixedSize(18, 18)
+        mark.setPixmap(A.app_mark(20))
+        mark.setFixedSize(20, 20)
         lay.addWidget(mark)
 
         self.name = QLabel(BRAND_CN)

@@ -38,6 +38,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtGui import QImage  # noqa: E402
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton, QToolButton  # noqa: E402
 
 from canoe_core import (  # noqa: E402
@@ -1120,6 +1121,40 @@ def main() -> int:
     check("★ 提权重启前先放锁（不然新进程会以为自己撞上别人）",
           "release()" in _ins2.getsource(tun_relaunch),
           "relaunch_as_admin 没放锁")
+
+    # ------------------------------------------------------------------
+    # 标题栏那个小徽标：画出来的东西必须**在框里**（不贴边、大致居中、够大）。
+    #
+    # 这条是给一个真出过的 bug 立的：`_boat_pixmap` 把**设备像素**
+    # （size*dpr）传进了 paint_boat，而 Qt 画在设过 devicePixelRatio 的
+    # QPixmap 上时**会自己乘 dpr** —— 于是船被画成两倍大、位置也偏出去，
+    # 18px 的小标只剩左下角一块。用户原话："根本看不出是船，就一个尖尖"。
+    # 光看代码看不出来（两处都对，错在单位混用），只能靠渲染一版来钉。
+    # ------------------------------------------------------------------
+    print("\n[徽标] 小标得画在框里")
+    from canoe_client.ui import artwork as _art  # noqa: PLC0415
+
+    for _size in (18, 20, 24):
+        _pm = _art.app_mark(_size)
+        _img = _pm.toImage().convertToFormat(QImage.Format_ARGB32)
+        _w, _h = _img.width(), _img.height()
+        _cols = [x for x in range(_w)
+                 if any(_img.pixelColor(x, y).alpha() > 8 for y in range(_h))]
+        _rows = [y for y in range(_h)
+                 if any(_img.pixelColor(x, y).alpha() > 8 for x in range(_w))]
+        if not _cols or not _rows:
+            check(f"★ {_size}px 小标画出了东西", False, "整张透明")
+            continue
+        _l, _r, _t, _b = min(_cols), max(_cols), min(_rows), max(_rows)
+        _bw, _bh = _r - _l + 1, _b - _t + 1
+        _clipped = _l < 1 or _t < 1 or _r > _w - 2 or _b > _h - 2
+        _off = max(abs((_l + _r) / 2 - (_w - 1) / 2) / _w,
+                   abs((_t + _b) / 2 - (_h - 1) / 2) / _h)
+        _big = _bw >= _w * 0.5 and _bh >= _h * 0.5
+        check(f"★ {_size}px 小标不贴边、居中、够大",
+              (not _clipped) and _off < 0.15 and _big,
+              f"bbox=({_l},{_t})-({_r},{_b}) 画布={_w}x{_h} 偏移={_off:.2f} "
+              f"贴边={_clipped} 够大={_big}")
 
     print(f"\n{'=' * 48}")
     print(f"通过 {passed} 项，失败 {failed} 项，跳过 {skipped} 项")

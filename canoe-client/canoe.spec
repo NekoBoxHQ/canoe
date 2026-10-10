@@ -48,7 +48,9 @@ if bin_root.is_dir():
 # 图标和 Logo 一并带上（不写死文件名 —— 以后加素材不用改这里）。
 asset_files: list[tuple[str, str]] = []
 assets_root = BASE / "assets"
-#: 只用于「重新生成 Logo」的源文件，不进发布包（省 1.5MB 死重量）
+#: 只用于「重新生成 Logo」的**源文件**，不进发布包（省 1.5MB 死重量）。
+#: 现在图标是代码画的（assets/make_icon.py），仓库里已经没有这个文件了 ——
+#: 留着这条是防着以后谁再丢一张设计稿进来，别又打进去。
 ASSET_SKIP = {"logo-source.png"}
 if assets_root.is_dir():
     for path in sorted(assets_root.iterdir()):
