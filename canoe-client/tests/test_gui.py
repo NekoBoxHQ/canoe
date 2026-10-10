@@ -653,6 +653,23 @@ def main() -> int:
     check("★ QToolTip 也铺了底（Windows 上的应用内提示同理）",
           bool(_re.search(r"QToolTip\s*\{[^}]*background", sheet, _re.S)))
 
+    # ★ 带 letter-spacing 又居中的文字，必须补 `padding-left: <字距>px`。
+    #
+    # 字距会在**最后一个字后面**也留一截虚宽，而"居中"居的是含那截虚宽的
+    # 文本框 —— 于是字形看着偏左。实测（离屏渲染数像素）：#Brand 的"轻舟"
+    # 字距 10px 时墨迹中心偏左 5.5px，正好半个字距；#NodeName、#Status、
+    # #Version 同样各偏 3 / 1 / 1px。
+    #
+    # padding-left 把内容区往右推，文字中心跟着右移"半个 padding"，
+    # 所以 padding-left = 字距 正好抵掉。**漏一个，那一处就是偏的。**
+    offenders = [
+        sel.strip().splitlines()[-1]
+        for sel, body in _re.findall(r"([^{}]+)\{([^}]*)\}", sheet)
+        if "letter-spacing" in body and "padding-left" not in body and "padding:" not in body
+    ]
+    check("★ 带字距的文字都补了 padding-left（不然居中会偏左半个字距）",
+          not offenders, f"这些漏了：{offenders}")
+
     # --- 5.7 全局 QSS：系统消息框 ----------------
     # 同一个病，QMessageBox 也一样。用户截图里那个"轻舟已经在运行了"
     # （单实例提示，app.py）整框的字都是浅灰，几乎看不见 —— 就是白字浅底。

@@ -102,16 +102,35 @@ def qss() -> str:
         border-radius: 14px;
     }}
 
-    /* ---------------- 文字 ---------------- */
+    /* ---------------- 文字 ----------------
+     *
+     * ★ 带 letter-spacing 又要居中的文字，都得补一条 `padding-left: <字距>px`。
+     *
+     * 字距在**最后一个字后面**也留一截虚宽，而"居中"居的是含那截虚宽的
+     * 文本框 —— 于是字形看着偏左。离屏渲染数像素实测：字距 10px 时
+     * 「轻舟」的墨迹中心比控件中心偏左 5.5px，正是半个字距；#NodeName、
+     * #Status、#Version 分别偏 3 / 1 / 1px。
+     *
+     * 补多少：padding-left 把内容区往右推，文字中心跟着右移"半个 padding"，
+     * 所以 **padding-left = 字距** 正好抵掉（标签被布局拉满宽、和标签自己
+     * 包着文字，两种情况算下来都是这个数）。
+     *
+     * 下面凡是写了 letter-spacing 又居中的地方都跟着补了 —— 漏一个，那一处
+     * 就是偏的，一行行看过去会显得"没对齐"。改字距时这两个数要一起改。
+     * （test_gui 里有一条断言盯着：带字距的规则必须也带 padding-left。）
+     */
+    QLabel#Brand {{
     QLabel#Brand {{
         font-size: 36px;
         font-weight: 700;
         letter-spacing: 10px;
+        padding-left: 10px;
         color: {P.TEXT};
     }}
     QLabel#Slogan {{
         font-size: 13px;
         letter-spacing: 1px;
+        padding-left: 1px;
         color: {P.CYAN};
     }}
     QLabel#Title {{ font-size: 21px; font-weight: 700; color: {P.TEXT}; }}
@@ -121,16 +140,17 @@ def qss() -> str:
         font-size: 27px;
         font-weight: 700;
         letter-spacing: 2px;
+        padding-left: 2px;
         color: {P.TEXT};
     }}
     /* 注意：#RouteMode 这条规则没了 —— 界面上那行"出国模式 / 回国模式"
        被用户砍掉了（"干脆不用显示，看着别闹"）。方向仍然生效，只是不显示。 */
-    QLabel#Status {{ font-size: 14px; color: {P.TEXT_DIM}; letter-spacing: 2px; }}
+    QLabel#Status {{ font-size: 14px; color: {P.TEXT_DIM}; letter-spacing: 2px; padding-left: 2px; }}
     QLabel#Error  {{ color: {P.AMBER}; font-size: 12px; }}
     QLabel#Hint   {{ color: {P.TEXT_DIM}; font-size: 12px; }}
     /* 底部正中的版本号。压在水面上，得够淡才不抢戏，
        但也不能淡到看不见 —— TEXT_FAINT 是这套配色里最暗的一档。 */
-    QLabel#Version {{ color: {P.TEXT_FAINT}; font-size: 11px; letter-spacing: 1px; }}
+    QLabel#Version {{ color: {P.TEXT_FAINT}; font-size: 11px; letter-spacing: 1px; padding-left: 1px; }}
 
     /* 主界面顶部「轻舟」两侧的横线 */
     QFrame#Rule {{ background: {P.CARD_LINE}; border: none; }}
@@ -138,6 +158,7 @@ def qss() -> str:
         font-size: 13px;
         color: {P.TEXT_DIM};
         letter-spacing: 6px;
+        padding-left: 6px;
     }}
 
     /* ---------------- 输入框 ---------------- */
@@ -164,6 +185,7 @@ def qss() -> str:
         font-size: 16px;
         font-weight: 700;
         letter-spacing: 3px;
+        padding-left: 3px;
     }}
     QPushButton#Primary:hover {{
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
@@ -181,6 +203,7 @@ def qss() -> str:
         font-size: 14px;
         font-weight: 600;
         letter-spacing: 1px;
+        padding-left: 1px;
     }}
     QPushButton#Outline:hover {{
         background: rgba(34, 211, 238, 34);
@@ -197,6 +220,7 @@ def qss() -> str:
         font-size: 16px;
         font-weight: 700;
         letter-spacing: 3px;
+        padding-left: 3px;
     }}
     QPushButton#Dock:hover {{ border-color: {P.ACCENT}; color: {P.TEXT}; }}
     QPushButton#Dock:disabled {{ background: rgba(13, 27, 51, 90); color: #33465F; }}
@@ -230,7 +254,7 @@ def qss() -> str:
         font-size: 13px;
         font-weight: 600;
         letter-spacing: 1px;
-        padding: 6px 4px;
+        padding: 6px 4px 6px 5px;   /* 左边 4+1：那 1px 是字距的账 */
     }}
     QToolButton#ToolUpdate {{ color: {P.TOOL_UPDATE}; }}
     QToolButton#ToolUpdate:hover {{ background: rgba(76, 155, 255, 30); border-color: {P.TOOL_UPDATE}; }}

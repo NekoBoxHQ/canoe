@@ -55,7 +55,8 @@ html.booting #boot-screen {
 html.booting #login-screen { display: none; }
 
 .boot-logo { width: 56px; height: 56px; opacity: .85; }
-.boot-text { font-size: 13px; color: var(--dim); letter-spacing: 2px; }
+/* text-indent 2px：字距的账（这行也是"盒子跟着文字走"，补整个字距） */
+.boot-text { font-size: 13px; color: var(--dim); letter-spacing: 2px; text-indent: 2px; }
 .boot-bar {
   width: 128px; height: 2px; border-radius: 2px;
   background: var(--line); overflow: hidden;
@@ -139,10 +140,14 @@ html.booting #login-screen { display: none; }
   color: #ffb4b4; font-size: 13px; text-align: left;
 }
 
-/* 卡片底下那行小字，压在水面上 */
+/* 卡片底下那行小字，压在水面上。
+ *
+ * text-indent 4px = 字距的账：这行是 flex 项，盒子宽度跟着文字走（含最后
+ * 那一截虚宽），所以补**整个字距**才居中（补一半是"盒子被拉满宽"那种情况
+ * 的算法，见 .login-id）。 */
 .login-foot {
   position: relative; z-index: 1; margin: 0;
-  font-size: 12px; letter-spacing: 4px; color: var(--faint);
+  font-size: 12px; letter-spacing: 4px; text-indent: 4px; color: var(--faint);
 }
 
 /* 登录按钮跟上面两个输入框**同宽同高**。
@@ -157,6 +162,9 @@ html.booting #login-screen { display: none; }
 #login-form > .btn-primary {
   width: 100%; padding: 11px 12px; border-radius: 10px;
   margin-top: 28px; letter-spacing: 4px; font-weight: 600;
+  /* 按钮是满宽的，文字在里头居中 —— 这种情况补**一半**字距
+     （跟 .login-id 同一类；满宽和包文字两种算法差一倍，别抄错） */
+  text-indent: 2px;
   box-shadow: 0 10px 24px rgba(46,139,255,.26);
 }
 #login-form > .btn-primary:hover { box-shadow: 0 12px 30px rgba(46,139,255,.38); }
@@ -240,12 +248,15 @@ html.booting #login-screen { display: none; }
  * strong 是 block，宽度被撑到跟 small 一样（70px），所以 text-align:center
  * 居的就是 Canoe Server 的中线。
  *
- * ⚠ text-indent 那 3px 是补 letter-spacing 的账：字距会在**最后一个字
- *   后面**也留 3px，光写 text-align:center 的话"轻舟"整体会偏左 1.5px。
- *   text-indent 把行首右推 3px，正好抵掉。改字距时这个值要一起改。 */
+ * ⚠ text-indent 是补 letter-spacing 的账：字距会在**最后一个字后面**也留
+ *   一截虚宽，居中时它也算进去，字形就偏左半个字距。
+ *   这里是"盒子比文字宽"（宽度由 small 撑的），补**一半**字距 = 1.5px；
+ *   补整个字距是"盒子跟着文字走"那种情况的算法（见 .login-foot）。
+ *   （原来写的 3px 是补多了一倍 —— 1.5px 肉眼看不出来，但账要对。）
+ *   改字距时这个值要一起改。 */
 .brand strong {
   display: block; font-size: 15px; letter-spacing: 3px;
-  text-align: center; text-indent: 3px;
+  text-align: center; text-indent: 1.5px;
 }
 .brand small { color: var(--faint); font-size: 11px; }
 
