@@ -175,7 +175,17 @@ def notify_kick(user_id: int, reason: str = "管理员操作", *, permanent: boo
 
     permanent=True 表示连登录令牌一起废了（封禁）—— 客户端要回登录页，
     而不是"靠岸后还能再启航"。单独踢一次会话时它是 False。
+
+    ★ 必须带 `user_id=` 定向投递 —— 这是**点名**的事，不是广播。
+
+    这里漏过：payload 里明明有 user_id，但 `publish()` 不传 user_id 就是
+    **广播给所有在线连接**（payload 里那个字段只是给客户端看的，投递不看它）。
+    后果是真机上出过的：封禁 B 的时候，正开着客户端的 A 也一起被踹下线
+    （"我登录 A，封禁 B，A 就下线了"）。所以：
+      · 定向靠的是 publish(user_id=…)，payload 里那份是给客户端自查的；
+      · 客户端那边也认一下名字（main_view 的 kick 分支），两道都要有。
     """
     return hub.publish(
-        {"type": "kick", "user_id": user_id, "reason": reason, "permanent": permanent}
+        {"type": "kick", "user_id": user_id, "reason": reason, "permanent": permanent},
+        user_id=user_id,
     )
