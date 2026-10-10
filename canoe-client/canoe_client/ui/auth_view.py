@@ -34,7 +34,7 @@ from ..config import config
 from ..worker import Worker
 from . import artwork as A
 from .controls import CheckBox
-from .window_base import FramelessWindow
+from .window_base import WINDOW_H, WINDOW_W, FramelessWindow
 
 #: 与服务端 RegisterRequest 保持一致
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
@@ -51,7 +51,7 @@ def validate_credentials(username: str, password: str, confirm: str = "") -> str
         return "两次输入的密码不一致"
     return ""
 
-WINDOW_W = 380
+# 窗口宽高见 window_base：跟主界面**一样大**（那里有说明）
 PAD = 22                 # 正文左右留白
 SCENE_BAND = 150         # 卡片下方留给山水的高度
 FIELD_H = 40
@@ -65,7 +65,7 @@ class AuthView(FramelessWindow):
     logged_in = Signal(str)
 
     def __init__(self) -> None:
-        super().__init__(WINDOW_W, 560)
+        super().__init__(WINDOW_W, WINDOW_H)
 
         #: 登录成功时服务端告诉我们的节点显示名（主界面要用）
         self.last_node_name = ""
@@ -112,17 +112,18 @@ class AuthView(FramelessWindow):
         A.paint_night(painter, width, height, horizon=0.885, mountain=1.0)
 
     def _fit(self) -> None:
-        """窗口高度跟着**当前这一页**走，登录页比注册页矮一截。
+        """窗口尺寸**固定**，跟主界面一样大（见 window_base 里的 WINDOW_W/H）。
 
-        量之前必须先松开 min/max —— 上一次 setFixedSize 会把尺寸钉死，
-        sizeHint() 被钳住，换页时高度就不会变了。
+        以前是"窗口跟着当前页走"，登录页比注册页矮一截 —— 换个页面窗口就跳
+        一下，像换了个程序（用户要求统一）。现在窗口不动，只让里面那摞页面
+        按当前页的高度显示，多出来的高度归底下的山水。
         """
         page = self.stack.currentWidget()
         if page is not None:
             self.stack.setFixedHeight(page.sizeHint().height())
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
-        self.setFixedSize(WINDOW_W, self.sizeHint().height())
+        self.setFixedSize(WINDOW_W, WINDOW_H)
 
     # ------------------------------------------------------------------
     def _card(self) -> tuple[QFrame, QVBoxLayout]:

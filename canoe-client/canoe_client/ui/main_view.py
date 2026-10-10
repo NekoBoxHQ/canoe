@@ -55,26 +55,28 @@ from . import artwork as A
 from .controls import CheckBox, RadioButton
 from .nodelights import NodeLights
 from .update_dialog import UpdateDialog
-from .window_base import FramelessWindow
+from .window_base import WINDOW_H, WINDOW_W, FramelessWindow
 
 LOG_POLL_MS = 300
 
-WINDOW_W = 420
 SIDE_PAD = 20            # 正文左右留白
-#: 底部这一块的总预算。原来是"全给水面"，现在里面住着「线路方向」那行 ——
-#: 三个空当（灯→字、字→版本、版本→下沿）加起来别超过它，
-#: 超了窗口就变高（用户为这个抱怨过两回："越拉越长 / 界面太长不好看"）。
-SCENE_BAND = 74
-#: 加「线路方向」那行**之前**的主界面高度（1.0.32）。那行字是从底部原有的
-#: 空当里借的位置，所以窗高不该越过它。测试拿这个数卡着，见 test_gui。
-HEIGHT_BEFORE_ROUTE = 674
-BOTTOM_PAD = 10          # 版本号离窗口下沿
-#: 节点灯 →「线路方向」那行。用户挑完那一档之后又说"上移一点点"，
-#: 于是 20 -> 14，多出来的 6px 补给下面的 WATER_GAP —— 整窗高度不变。
-ROUTE_GAP = 14
-WATER_GAP = 16           # 「线路方向」那行 → 版本号（剩下的水纹就画在这块里）
-#: 「线路方向」那行本身的高度（27px 的字，行高约 36）—— 标注用。
-ROUTE_LINE_H = 36
+#: ★ 界面上**所有**层级之间都用这一个距离。用户原话：「界面每个层级保持
+#:   距离搞一致啊，太难受了」—— 之前是 10/2/14/6/10/10/18/4/0/46 一堆
+#:   不同的数，看着就乱。现在连底部那片水面留白也收进来了（"上面红框的
+#:   距离抹掉，整个界面就变协调了，高度也短了"）。
+#:   只剩两处例外，都在下面就近写了原因：节点名→状态 2px（一组）、
+#:   按钮→报错行 4px（报错是按钮的反馈）。
+GAP = 12
+#: 页脚（按钮 → 账号行 → 版本号）比正文紧一点。用户看完正文那版说
+#: 「启航 靠岸 底下还缩点」—— 这三样是收尾信息，挨紧些整幅才收得住。
+FOOT_GAP = 8
+#: 主界面在"还没有那行字"时的高度。窗高不许越过它 —— 为这行字用户来回
+#: 改过三回（"越拉越长 / 是高度不是长度"），别再让它长回去。
+#: 实测 674；留 4px 给字体度量的抖动（show() 前后能差 2px，别让测试偶发红）。
+HEIGHT_BEFORE_ROUTE = 678
+BOTTOM_PAD = 14          # 版本号离窗口下沿（页脚，见 FOOT_GAP）
+#: ↑ 用户：「用户名 离舟 版本 都高一点点」—— 底下多留一点，这两行
+#:   就一起抬起来（整窗跟着高这一点点）。
 TOOL_H = 66
 #: 三个工具按钮等宽：(窗口宽 - 两侧留白 - 两个间隔) / 3
 TOOL_W = (WINDOW_W - SIDE_PAD * 2 - 20) // 3
@@ -185,7 +187,11 @@ class MainView(FramelessWindow):
         # 布局定型后再把窗口收到内容高度 —— 底下不留空白带
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
-        self.setFixedSize(WINDOW_W, self.sizeHint().height())
+        # ★ 用共享的 WINDOW_H，**不是** sizeHint().height()：登录页那个窗口
+        #   也是这个数，两边写死成同一个值，切页面才不会忽高忽低（差几
+        #   像素就会跳一下）。内容比它高的话由底部的间隔吸收；test_gui
+        #   里有一条盯着「内容自然高度约等于 WINDOW_H」。
+        self.setFixedSize(WINDOW_W, WINDOW_H)
 
         # 结果框定时拉增量
         self._log_timer = QTimer(self)
@@ -256,7 +262,7 @@ class MainView(FramelessWindow):
         root.setSpacing(0)
 
         root.addWidget(self._kicker())
-        root.addSpacing(10)
+        root.addSpacing(GAP)
 
         # --- 1) 节点名称 ---
         self.node_label = QLabel("—")
@@ -270,9 +276,46 @@ class MainView(FramelessWindow):
         root.addSpacing(2)
         root.addWidget(self.status_label)
 
-        root.addSpacing(14)
+        root.addSpacing(GAP)
 
-        # --- 2) 启航  3) 靠岸 ---
+        # --- 2) 节点灯 ---
+        #   一个灯 = 订阅里一个能用的节点，亮着就是有。点一下切过去。
+        #   不写字：上面那行大字就是当前节点的名字，底下再标一遍又挤又重复。
+        #   ★ 位置：紧跟着节点名。用户嫌原来"头重脚轻"（那颗大蓝按钮压在
+        #     顶上、底下反倒空着），把灯和下面那两个按钮对调了。
+        self.lights = NodeLights()
+        self.lights.node_selected.connect(self._switch_node)
+        root.addWidget(self.lights)
+
+        root.addSpacing(GAP)
+
+        # --- 可选设置 ---
+        root.addWidget(self._options_card())
+        root.addSpacing(GAP)
+
+        # --- 工具按钮 ---
+        tools = QHBoxLayout()
+        tools.setSpacing(10)
+        self.update_btn = self._tool_button(Text.BTN_UPDATE, "ToolUpdate", "refresh",
+                                            P.TOOL_UPDATE, self._do_update)
+        self.tcping_btn = self._tool_button(Text.BTN_TCPING, "ToolPing", "terminal",
+                                            P.TOOL_PING, self._do_tcping)
+        self.urltest_btn = self._tool_button(Text.BTN_URLTEST, "ToolUrl", "link",
+                                             P.TOOL_URL, self._do_urltest)
+        tools.addWidget(self.update_btn)
+        tools.addWidget(self.tcping_btn)
+        tools.addWidget(self.urltest_btn)
+        root.addLayout(tools)
+
+        root.addSpacing(GAP)
+
+        # --- 输出结果 ---
+        root.addWidget(self._result_card())
+        root.addSpacing(GAP)
+
+        # --- 3) 启航  4) 靠岸 ---
+        #   ★ 挪到最底下了（用户："把节点灯和启航靠岸对换一下位置，
+        #     现在头重脚轻"）。底下压着水纹，整块看着才稳。
         buttons = QHBoxLayout()
         buttons.setSpacing(12)
 
@@ -296,37 +339,18 @@ class MainView(FramelessWindow):
         self.error_label.setObjectName("Error")
         self.error_label.setWordWrap(True)
         self.error_label.setAlignment(Qt.AlignCenter)
-        self.error_label.setMinimumHeight(24)
+        # ★ 不设最小高度：空的时候它高度是 0，所以按钮和账号行之间的间距
+        #   还是 GAP —— 跟别处一样齐。早先写死 24px，等于平时也留着一块
+        #   看不见的空白，用户一眼就看出"这块比别处宽"。
+        #   真出错时它顶出来的高度从下面的水面里借（窗是定高的）。
         root.addSpacing(4)
         root.addWidget(self.error_label)
 
-        root.addSpacing(6)
-
-        # --- 可选设置 ---
-        root.addWidget(self._options_card())
-        root.addSpacing(10)
-
-        # --- 工具按钮 ---
-        tools = QHBoxLayout()
-        tools.setSpacing(10)
-        self.update_btn = self._tool_button(Text.BTN_UPDATE, "ToolUpdate", "refresh",
-                                            P.TOOL_UPDATE, self._do_update)
-        self.tcping_btn = self._tool_button(Text.BTN_TCPING, "ToolPing", "terminal",
-                                            P.TOOL_PING, self._do_tcping)
-        self.urltest_btn = self._tool_button(Text.BTN_URLTEST, "ToolUrl", "link",
-                                             P.TOOL_URL, self._do_urltest)
-        tools.addWidget(self.update_btn)
-        tools.addWidget(self.tcping_btn)
-        tools.addWidget(self.urltest_btn)
-        root.addLayout(tools)
-
-        root.addSpacing(10)
-
-        # --- 输出结果 ---
-        root.addWidget(self._result_card())
-        root.addSpacing(8)
+        root.addSpacing(FOOT_GAP)
 
         # --- 账号 ---
+        #   ★ 挪到按钮底下了（用户："用户名和离舟移到下面来"）——
+        #     登出这种"退出类"的操作压在主动作上头，读起来是反的。
         bottom = QHBoxLayout()
         bottom.setContentsMargins(2, 0, 2, 0)
         self.account_label = QLabel("")
@@ -340,31 +364,15 @@ class MainView(FramelessWindow):
         bottom.addWidget(logout_btn)
         root.addLayout(bottom)
 
-        # --- 节点灯 ---
-        #   一个灯 = 订阅里一个能用的节点，亮着就是有。点一下切过去。
-        #   不写字：节点名上面那行大字已经有了，底下再标一遍又挤又重复。
-        root.addSpacing(10)
-        self.lights = NodeLights()
-        self.lights.node_selected.connect(self._switch_node)
-        root.addWidget(self.lights)
-
-        # --- 线路方向（出国 / 回国）---
-        #   节点灯下面，紧跟着那排灯。**只显示、不可点** —— 方向是服务端
-        #   给定的，客户端没有改的入口。
-        #   字号跟节点名一样大（用户点名要的）。
-        root.addSpacing(ROUTE_GAP)
-        self.route_label = QLabel(Route.LABELS[Route.OUT])
-        self.route_label.setObjectName("RouteMode")
-        self.route_label.setAlignment(Qt.AlignCenter)
-        root.addWidget(self.route_label)
-
         # --- 底部水面 ---
-        #   ★ 这行字占的位置是**从底部这块预算里借的**，不是往上加的。
-        #     早先写成"灯下面留 30px + 字 + 完整的 74px 水面"，等于把窗口
-        #     往上顶了 76px —— 用户看到的就是"这块空当越拉越长，界面太长
-        #     不好看"。三个空当加起来（灯→字、字→版本、版本→下沿）不许超过
-        #     SCENE_BAND，整窗高度才跟加这行字之前一个量级。
-        root.addSpacing(WATER_GAP)
+        #   ⚠ 这里**不要**再往界面上加"出国模式 / 回国模式"那行字。
+        #     加过三版、用户改了四回，最后由他自己拍板："干脆不用显示，
+        #     看着别闹"。方向仍然生效（服务端定、在航时被切会重连），
+        #     只是不在界面上占地方 —— 想要的话看「分流」那个提示。
+        #   底部这块留白也收成 FOOT_GAP（用户：「上面红框的距离抹掉，
+        #   整个界面就变协调了，高度就变短了好看点」）。水纹是**画上去的
+        #   背景**，不靠留白撑 —— 它就是窗底那一层，内容压上去也看得见。
+        root.addSpacing(FOOT_GAP)
 
         # --- 版本号 ---
         #   压在底边正中。用户报问题时第一句常常是"我装的是哪个版本"，
@@ -517,18 +525,17 @@ class MainView(FramelessWindow):
     # 线路方向（服务端给的，只显示）
     # ------------------------------------------------------------------
     def _sync_route_label(self) -> None:
-        """把当前方向刷到界面和提示里。
+        """把当前方向刷到提示里。
 
-        「分流」是什么意思**跟着方向变**：出国是"大陆直连"，回国是
-        "国外直连"。光在底下写个"回国模式"，用户点开那一排还是不知道
-        该选哪个，所以这个提示也得跟着换。
+        界面上**不显示**方向（用户："干脆不用显示，看着别闹"），但那个
+        「分流」的提示得跟着方向换 —— 「分流」是什么意思本来就跟方向走：
+        出国是"大陆直连"，回国是"国外直连"。这是唯一还看得见方向的地方，
+        鼠标停上去就能确认自己是哪种。
         """
         mode = Route.clean(self._opts.route_mode)
-        self.route_label.setText(Route.LABELS[mode])
-        self.route_label.setToolTip(
-            "线路模式由服务端指定：" + Route.HINTS[mode]
+        self.rb_split.setToolTip(
+            f"线路模式由服务端指定：{Route.HINTS[mode]}"
         )
-        self.rb_split.setToolTip(Route.HINTS[mode])
 
     def _apply_route_mode(self, value: str | None, reconnect: bool = True) -> str:
         """收下服务端给的线路方向。变了就返回一句提示，没变返回空串。

@@ -711,53 +711,45 @@ def main() -> int:
     view._set_state(STATE_SAILED)
 
     # --- 8.5 线路方向（出国 / 回国）---
-    # ★ 它是**服务端定死**的：客户端只在节点灯底下显示一行字，不给任何
-    #   可点的入口。在航的时候被切了要自动重连 —— 方向挂在分流规则上，
-    #   不重连就只是界面上换了个字，底下还按老规矩走。
-    print("\n[8.5] 线路方向（服务端定死，客户端只显示）")
+    # ★ 它是**服务端定死**的，而且界面上**不显示**（用户改到第四版拍的板：
+    #   "干脆不用显示，看着别闹"）。方向仍然生效，唯一看得见它的地方是
+    #   「分流」那个提示。在航时被切要自动重连 —— 方向挂在分流规则上。
+    print("\n[8.5] 线路方向（服务端定死，界面上不显示）")
 
-    check("★ 底下那行是只读的 QLabel（不是能点的控件）",
-          isinstance(view.route_label, QLabel)
-          and view.route_label.focusPolicy() == Qt.NoFocus)
+    check("★ 界面上没有那行字（用户砍掉的）",
+          not hasattr(view, "route_label"))
+    check("★ QSS 里也没有它的规则",
+          not _re.search(r"QLabel#RouteMode\s*\{", sheet))
+    # ★ 两个窗口**逐像素一样大**。登录页和主界面切换时窗口忽大忽小，
+    #   看着像换了个程序（用户点名要求统一）。两边都写死成 window_base 里
+    #   那一对常量，这里钉住。
+    check("★ 主界面就是共享尺寸 WINDOW_W × WINDOW_H",
+          (view.width(), view.height()) == (mv.WINDOW_W, mv.WINDOW_H),
+          f"{view.width()}x{view.height()} vs {mv.WINDOW_W}x{mv.WINDOW_H}")
+    check("★ 登录页也是同一个尺寸",
+          (auth.width(), auth.height()) == (mv.WINDOW_W, mv.WINDOW_H),
+          f"{auth.width()}x{auth.height()}")
+    # 主界面的高度现在是**写死**的（跟登录页同一个数），不再是内容撑出来的。
+    # 内容哪天长得超过这个框子就会被挤 —— 这条盯着它：余量不对就去调 WINDOW_H。
+    # ⚠ 量之前必须 processEvents：布局是懒重算的，松开尺寸的当下读到的还是旧值
+    #   （第一版少了这句，量出来 594，白白红了一次）。
+    view.setMinimumSize(0, 0)
+    view.setMaximumSize(16777215, 16777215)
+    pump(app, 0.05)
+    natural = view.sizeHint().height()
+    view.setFixedSize(mv.WINDOW_W, mv.WINDOW_H)     # 量完复原
+    check("★ 窗口装得下内容，余量也不离谱（现在是 20 上下）",
+          0 <= mv.WINDOW_H - natural <= 30,
+          f"内容 {natural} vs 窗口 {mv.WINDOW_H}")
 
-    # 那行字是**从底部那块里借**的位置，不是往上加的。
-    # 用户为这个抱怨过两回：加这行的时候窗口被顶高了 70px（灯下面 30px +
-    # 字底下又留了整条 74px 水面），看到的就是"这块空当越拉越长 / 界面太长
-    # 不好看"。这里拿"加这行字之前的高度"卡着，超了就是又犯了同一个错。
-    check(f"★ 主界面不比加这行字之前高（{mv.HEIGHT_BEFORE_ROUTE}）",
-          view.height() <= mv.HEIGHT_BEFORE_ROUTE,
-          f"{view.width()}x{view.height()}")
-    check("★ 线路那行贴在底部那块预算里（没有从别处又借一笔）",
-          mv.ROUTE_GAP + mv.ROUTE_LINE_H + mv.WATER_GAP + mv.BOTTOM_PAD
-          <= mv.SCENE_BAND + 2,
-          f"{mv.ROUTE_GAP}+{mv.ROUTE_LINE_H}+{mv.WATER_GAP}+{mv.BOTTOM_PAD}"
-          f" vs SCENE_BAND={mv.SCENE_BAND}")
-
-    # 字号跟节点名一模一样 —— 用户点名要的
-    node_css = _re.search(r"QLabel#NodeName\s*\{[^}]*font-size:\s*(\d+)px", sheet, _re.S)
-    mode_block = _re.search(r"QLabel#RouteMode\s*\{([^}]*)\}", sheet, _re.S)
-    mode_rule = mode_block.group(1) if mode_block else ""
-    mode_size = _re.search(r"font-size:\s*(\d+)px", mode_rule)
-    check("★ 方向那行的字号就是节点名的字号",
-          bool(node_css) and bool(mode_size)
-          and node_css.group(1) == mode_size.group(1),
-          f"node={node_css and node_css.group(1)} mode={mode_size and mode_size.group(1)}")
-    check("★ 没有底色、没有边框（用户点名：不要底色）",
-          bool(mode_block) and "background" not in mode_rule, mode_rule)
-    # 高亮绿 —— 跟结果行那个绿同一个色号（用户比过白字，说绿的舒服）
-    check("★ 颜色是结果行那个高亮绿",
-          bool(mode_block) and P.GREEN.lower() in mode_rule.lower(), mode_rule)
-
-    # 服务端说改 -> 推送 -> 客户端跟着改
+    # 服务端说改 -> 推送 -> 客户端跟着改（只是不在界面上写出来）
     fake_api.route_mode = Route.IN
     fake_api.revision = "rev-in"
     view.on_push_event({"type": "config_changed", "revision": "rev-in"})
     ok = wait_for(app, lambda: view._opts.route_mode == Route.IN, timeout=10)
     check("★ 收到推送后线路方向跟着变", ok, view._opts.route_mode)
-    check("★ 底下那行字变成「回国模式」",
-          view.route_label.text() == "回国模式", view.route_label.text())
-    check("★「分流」的说明换成回国的口径（出国的说法在这边是错的）",
-          view.rb_split.toolTip() == Route.HINTS[Route.IN], view.rb_split.toolTip())
+    check("★「分流」的说明换成回国的口径（这是唯一能看见方向的地方）",
+          Route.HINTS[Route.IN] in view.rb_split.toolTip(), view.rb_split.toolTip())
     check("★ 方向落了盘（冷启动没网时先用它顶着）",
           '"in"' in cfg_mod.CONFIG_FILE.read_text(encoding="utf-8"),
           cfg_mod.CONFIG_FILE.read_text(encoding="utf-8")[-200:])
@@ -777,7 +769,7 @@ def main() -> int:
         kernel.start, kernel.stop = real_start, real_stop
     check("★ 在航时被切方向会重连（内核确实重启了一次）",
           restarts.count(1) >= 1, str(restarts))
-    check("方向回到出国", view.route_label.text() == "出国模式", view.route_label.text())
+    check("方向回到出国", view._opts.route_mode == Route.OUT, view._opts.route_mode)
 
     view.on_push_event({"type": "kick", "reason": "管理员把你踢下线了", "permanent": False})
     pump(app, 0.4)

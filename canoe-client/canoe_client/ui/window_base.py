@@ -106,6 +106,15 @@ class _TitleBar(QWidget):
         super().mouseReleaseEvent(event)
 
 
+#: ★ 两个窗口的尺寸 —— **登录页和主界面一样大**。
+#: 切页面时窗口忽大忽小，看着像换了个程序（用户点名要求统一）。
+#: 主界面那个高度是内容撑出来的（main_view._build 里 GAP 那一串），
+#: 这里把它抄成常量给登录页用；test_gui 有一条把两者钉在一起，
+#: 哪天主界面高度变了，那条会红，提醒你回来改这个数。
+WINDOW_W = 420
+WINDOW_H = 621
+
+
 class FramelessWindow(QWidget):
     """圆角无边框窗口。子类用 `self.body_layout` 摆内容。"""
 
