@@ -299,8 +299,8 @@ def main() -> int:
 
     # 底部正中的版本号。用户报问题时第一句常常是"我装的是哪个版本"，
     # 而更新弹窗只在有新版本时才出来 —— 得有个地方随时能看。
-    check("★ 底部有版本号，写作「当前版本:V{版本}」",
-          view.version_label.text() == f"当前版本:V{VERSION}",
+    check("★ 底部有版本号，写作「版本:V{版本}」",
+          view.version_label.text() == f"版本:V{VERSION}",
           view.version_label.text())
     check("★ 版本号居中",
           bool(view.version_label.alignment() & Qt.AlignHCenter),
@@ -450,10 +450,19 @@ def main() -> int:
 
     # 结果框的可见性规则（安全要求）
     from canoe_client.logbus import bus as log_bus
+
+    # 用户原话："首次使用 应该为空 现在有个 点 杠"。
+    # 也就是刚打开、一条结果都还没出过的时候，那行必须是**空的** ——
+    # 既不能预置一个 "—"，也不该先亮着一个绿点。
+    check("★ 首次使用（还没出过结果）时输出行是空的",
+          view.result_view.text() == "", repr(view.result_view.text()))
+    check("★ 那会儿绿点也是藏着的（不是只把文字清空）", view.result_dot.isHidden())
+
     log_bus.result("TCP 延迟：65ms")
     pump(app, 0.4)
     shown = view.result_view.text()
     check("★ 结果行会显示", "TCP 延迟：65ms" in shown, shown[-160:])
+    check("★ 有结果之后才把绿点放出来", not view.result_dot.isHidden())
 
     log_bus.system("这行是系统日志，不该显示")
     log_bus.kernel("outbound/shadowsocks[proxy]: to secret.example.com:443")

@@ -339,7 +339,9 @@ class MainView(FramelessWindow):
         # --- 版本号 ---
         #   压在底边正中。用户报问题时第一句常常是"我装的是哪个版本"，
         #   而更新弹窗只在有新版本时才出来 —— 得有个地方随时能看。
-        self.version_label = QLabel(f"当前版本:V{VERSION}")
+        #   写法就"版本:V1.0.30" —— 原来写的是"当前版本"，用户嫌啰嗦
+        #   （原话："当前版本 改成 版本 这样正规点"）。
+        self.version_label = QLabel(f"版本:V{VERSION}")
         self.version_label.setObjectName("Version")
         self.version_label.setAlignment(Qt.AlignCenter)
         root.addWidget(self.version_label)
@@ -427,12 +429,16 @@ class MainView(FramelessWindow):
         row.setContentsMargins(12, 0, 12, 0)
         row.setSpacing(10)
 
-        dot = QLabel()
-        dot.setObjectName("Dot")
-        dot.setFixedSize(9, 9)
-        row.addWidget(dot)
+        # ★ 还没出过任何结果时**整行是空的** —— 绿点和文字都先藏起来。
+        #   以前这儿预置了一个 "—"，用户原话："首次使用 应该为空 现在有个 点 杠"。
+        #   点要跟着一起藏：只清文字的话，那行还孤零零亮着个绿点。
+        self.result_dot = QLabel()
+        self.result_dot.setObjectName("Dot")
+        self.result_dot.setFixedSize(9, 9)
+        self.result_dot.hide()
+        row.addWidget(self.result_dot)
 
-        self.result_view = QLabel("—")
+        self.result_view = QLabel("")
         self.result_view.setObjectName("ResultText")
         # 定死一行高 —— 不定的话未 show() 时是控件默认的 480，布局也不可控
         self.result_view.setFixedHeight(22)
@@ -456,6 +462,8 @@ class MainView(FramelessWindow):
         self._result_seq = new[-1].seq + 1
 
         line = new[-1]
+        # 有结果了才把绿点放出来（没结果时整行是空的，见 _result_card）
+        self.result_dot.show()
         # 结果行本身不含域名；错误行可能含，再过一道遮罩
         self.result_view.setText(_escape(_mask_secrets(line.message)))
         color = TAG_COLORS.get(line.tag, RESULT_COLOR)
