@@ -236,8 +236,9 @@ class MainView(FramelessWindow):
 
     def _build(self) -> None:
         root = self.body_layout
-        # 底部留 6px —— 最后一行是版本号，贴着窗口下沿会像被切掉一截
-        root.setContentsMargins(SIDE_PAD, 10, SIDE_PAD, 6)
+        # 底部留白。最后一行是版本号，原来只留 6px —— 用户反馈"太贴底"，
+        # 现在留 16px，压在水面上方一点，看着才是"刻在那儿"而不是"被切掉一截"。
+        root.setContentsMargins(SIDE_PAD, 10, SIDE_PAD, 16)
         root.setSpacing(0)
 
         root.addWidget(self._kicker())
@@ -615,8 +616,13 @@ class MainView(FramelessWindow):
             self._reload_subscription()
 
         elif kind == "release":
+            # 这条广播是**发布**时推给所有人的，不是"给这个客户的升级通知"。
+            # 所以必须先跟自己比一比：跟自己一样（或更低）就一个字都别说 ——
+            # 明明已经是最新的版本了，结果框里却跳一句「有新版本：1.0.31」，
+            # 只会让人以为更新没成功（用户就是这么撞上的）。
             version = payload.get("version") or ""
-            bus.result(f"有新版本：{version}" if version else "有新版本")
+            if version and update.compare_versions(version, VERSION) > 0:
+                bus.result(f"发现新版本：V{version}")
 
         elif kind == "kick":
             reason = payload.get("reason") or "已被管理员下线"
@@ -1007,7 +1013,7 @@ class MainView(FramelessWindow):
             try:
                 rel = api.latest_release()
                 if update.compare_versions(rel.version, VERSION) > 0:
-                    parts.append(f"更新：{VERSION} → {rel.version}")
+                    parts.append(f"发现新版本：V{rel.version}")
                     # 服务端返回的是接口模型，这里转成 update 模块那套 ——
                     # 摘要和大小要跟着走，下载完得靠它们核对。
                     newer = update.UpdateInfo(
@@ -1016,7 +1022,10 @@ class MainView(FramelessWindow):
                         min_version=rel.min_version,
                     )
                 else:
-                    parts.append(f"更新：{VERSION} 最新")
+                    # 跟自己一样、或比自己低，都是"已是最新"。
+                    # （以前这句写的是「更新：1.0.31 最新」—— 跟上面那条广播
+                    #   一样容易被读成"我是不是没更新成功"。）
+                    parts.append(f"当前已是最新版本 V{VERSION}")
             except CanoeApiError as exc:
                 parts.append(f"更新：{exc.message}")
 

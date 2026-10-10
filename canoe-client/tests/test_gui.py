@@ -38,7 +38,15 @@ if hasattr(sys.stdout, "reconfigure"):
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QToolButton  # noqa: E402
 
-from canoe_core import VERSION, Route, Text, new_sub_key, seal, unseal  # noqa: E402
+from canoe_core import (  # noqa: E402
+    VERSION,
+    Palette as P,
+    Route,
+    Text,
+    new_sub_key,
+    seal,
+    unseal,
+)
 
 from canoe_client.api import CanoeApiError  # noqa: E402
 from canoe_client.kernel import kernel  # noqa: E402
@@ -484,15 +492,46 @@ def main() -> int:
     check("★ 结果行只有一行高（<= 46px）", view.result_view.height() <= 46,
           str(view.result_view.height()))
 
-    # 「更新」按钮一次查两条
+    # 「更新」按钮一次查两条。
+    # ⚠ 结果框只留最后一行，而"更新"完了还会顺手重载订阅（又往结果框里
+    #   写一句「订阅已更新」）—— 所以不能等尘埃落定再读控件，得把这一轮
+    #   发出去的话都录下来。上一版是碰巧过的：那句「订阅已更新」里正好
+    #   有个"更新"二字，把断言蒙对了。
     fake_api.calls.clear()
-    view.update_btn.click()
-    pump(app, 0.8)
+    said: list[str] = []
+    real_result = log_bus.result
+    log_bus.result = lambda msg: (said.append(str(msg)), real_result(msg))[1]
+    try:
+        view.update_btn.click()
+        pump(app, 1.0)
+    finally:
+        log_bus.result = real_result
     check("★ 「更新」同时查了客户端版本和订阅",
           "latest_release" in fake_api.calls and "subscription" in fake_api.calls,
           str(fake_api.calls))
-    check("★ 两条结果拼成一行", "更新" in view.result_view.text() and "订阅" in view.result_view.text(),
-          view.result_view.text())
+    check("★ 两条结果拼成一行（版本 + 订阅）",
+          any("最新版本" in s and "订阅" in s for s in said), str(said))
+    # FakeApi 报的版本比当前低 -> 只能说"已是最新"，不许冒充"发现新版本"
+    check("★ 远程版本不高于当前 -> 「当前已是最新版本 V…」",
+          any(f"当前已是最新版本 V{VERSION}" in s for s in said), str(said))
+    # 注意别写成 "新版本" not in s —— "当前已是**最新版本**"本来就有这三个字
+    check("★ 这个情况下不许说『有新版本 / 发现新版本』",
+          not any(("有新版本" in s or "发现新版本" in s) for s in said), str(said))
+
+    # --- 8.6 版本提示：只在**真的更新**时才出现 ---
+    # 用户撞上的：自己就是 V1.0.31，结果框里却跳一句「有新版本：1.0.31」。
+    # 服务端一**发布**就广播 release，客户端以前是照单全收、不做比较。
+    print("\n[8.6] 版本提示的措辞")
+    before = view.result_view.text()
+    view.on_push_event({"type": "release", "version": VERSION})
+    pump(app, 0.3)
+    check("★ 广播的版本跟自己一样 -> 结果框一个字都不动（不冒充『有新版本』）",
+          view.result_view.text() == before,
+          f"{before!r} -> {view.result_view.text()!r}")
+    view.on_push_event({"type": "release", "version": "9.9.9"})
+    pump(app, 0.3)
+    check("★ 广播的版本比自己高 -> 「发现新版本：V9.9.9」",
+          "发现新版本：V9.9.9" in view.result_view.text(), view.result_view.text())
 
     # 未启航时点 URL 测试
     view.urltest_btn.click()
@@ -683,13 +722,18 @@ def main() -> int:
 
     # 字号跟节点名一模一样 —— 用户点名要的
     node_css = _re.search(r"QLabel#NodeName\s*\{[^}]*font-size:\s*(\d+)px", sheet, _re.S)
-    mode_css = _re.search(r"QLabel#RouteMode\s*\{[^}]*font-size:\s*(\d+)px", sheet, _re.S)
+    mode_block = _re.search(r"QLabel#RouteMode\s*\{([^}]*)\}", sheet, _re.S)
+    mode_rule = mode_block.group(1) if mode_block else ""
+    mode_size = _re.search(r"font-size:\s*(\d+)px", mode_rule)
     check("★ 方向那行的字号就是节点名的字号",
-          bool(node_css) and bool(mode_css)
-          and node_css.group(1) == mode_css.group(1),
-          f"node={node_css and node_css.group(1)} mode={mode_css and mode_css.group(1)}")
-    check("★ 没有底色（用户点名：就白字）",
-          bool(mode_css) and "background" not in mode_css.group(0).replace("QLabel#RouteMode", ""))
+          bool(node_css) and bool(mode_size)
+          and node_css.group(1) == mode_size.group(1),
+          f"node={node_css and node_css.group(1)} mode={mode_size and mode_size.group(1)}")
+    check("★ 没有底色、没有边框（用户点名：不要底色）",
+          bool(mode_block) and "background" not in mode_rule, mode_rule)
+    # 高亮绿 —— 跟结果行那个绿同一个色号（用户比过白字，说绿的舒服）
+    check("★ 颜色是结果行那个高亮绿",
+          bool(mode_block) and P.GREEN.lower() in mode_rule.lower(), mode_rule)
 
     # 服务端说改 -> 推送 -> 客户端跟着改
     fake_api.route_mode = Route.IN
