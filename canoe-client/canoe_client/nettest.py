@@ -21,7 +21,21 @@ from dataclasses import dataclass, field
 import requests
 
 TCPING_TIMEOUT = 3.0
+
+#: URL 测试打的靶子。**得挑一个"这个方向上确实走代理"的站** ——
+#: 测试是经本地代理发出去的，靶子要是恰好落在直连那一侧，那节点挂了
+#: 也照样绿灯，这个按钮就白点了。
+#:   出国：随便一个墙外的 204（它就是走代理那侧的）
+#:   回国：得是国内的站
 DEFAULT_URL = "http://www.gstatic.com/generate_204"
+DEFAULT_URL_CN = "http://connect.rom.miui.com/generate_204"
+
+
+def target_url(route_mode: str) -> str:
+    """按线路方向挑测试目标。见上面那两条的说明。"""
+    from canoe_core import Route
+
+    return DEFAULT_URL_CN if Route.clean(route_mode) == Route.IN else DEFAULT_URL
 
 
 @dataclass

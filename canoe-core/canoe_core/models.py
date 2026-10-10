@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .constants import PROTOCOL_VERSION
+from .constants import PROTOCOL_VERSION, Route
 from .crypto import Envelope
 
 # --------------------------------------------------------------------------
@@ -107,6 +107,10 @@ class ConfigResponse(BaseModel):
     expires_at: int
     heartbeat_interval: int = 30
     revision: str = Field(default="", description="订阅指纹，用于判断要不要重新拉订阅")
+    route_mode: str = Field(
+        default=Route.OUT,
+        description="线路方向（服务端定死，客户端只读）：out=出国 / in=回国",
+    )
 
 
 
@@ -131,6 +135,10 @@ class SubscriptionResponse(BaseModel):
     expires_at: int | None = Field(default=None, description="账号到期时间")
     heartbeat_interval: int = 30
     revision: str = Field(default="", description="订阅指纹，客户端拿它判断要不要更新")
+    route_mode: str = Field(
+        default=Route.OUT,
+        description="线路方向（服务端定死，客户端只读）：out=出国 / in=回国",
+    )
     envelope: Envelope = Field(
         default_factory=Envelope,
         description="加密后的订阅载荷；为空表示服务端不给",

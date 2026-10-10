@@ -21,6 +21,7 @@ from canoe_core import (
     Api,
     ClientReleaseResponse,
     Envelope,
+    Route,
     SubscriptionResponse,
     assert_no_leaks,
     seal,
@@ -309,6 +310,10 @@ def subscription_revision(user: User, text: str) -> str:
         hashlib.sha256((text or "").encode("utf-8")).hexdigest(),
         user.status,
         str(epoch(user.expire_at) or ""),
+        # ★ 线路方向也算在里面。不算的话管理员把客户从出国改成回国、
+        #   指纹却没变 —— 客户端不会来重新拉，那次改动就石沉大海，
+        #   得等下一次别的原因触发更新才生效。
+        Route.clean(user.route_mode),
     ]
     blob = "|".join(parts).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()[:16]
@@ -345,6 +350,7 @@ def subscription_for(db: DBSession, user: User, sub_key: str) -> SubscriptionRes
         expires_at=epoch(user.expire_at),
         heartbeat_interval=settings.heartbeat_interval,
         revision=revision,
+        route_mode=Route.clean(user.route_mode),
         envelope=envelope,
     )
     # 信封的 data 是密文，明文链接不可能出现在这里；泄漏了就直接炸。

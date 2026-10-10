@@ -123,6 +123,16 @@ def qss() -> str:
         letter-spacing: 2px;
         color: {P.TEXT};
     }}
+    /* 线路方向（出国 / 回国）。★ 字号跟节点名一模一样 —— 用户点名要的
+       （"和节点那个字体一样 大小一样"）：它孤零零落在节点灯下面那块空当
+       里，大一点才压得住，小一号就成了没人看得见的脚注。
+       无底色、无边框，就是一行近白的字。 */
+    QLabel#RouteMode {{
+        font-size: 27px;
+        font-weight: 700;
+        letter-spacing: 2px;
+        color: {P.TEXT};
+    }}
     QLabel#Status {{ font-size: 14px; color: {P.TEXT_DIM}; letter-spacing: 2px; }}
     QLabel#Error  {{ color: {P.AMBER}; font-size: 12px; }}
     QLabel#Hint   {{ color: {P.TEXT_DIM}; font-size: 12px; }}

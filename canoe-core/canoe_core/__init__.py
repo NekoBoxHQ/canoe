@@ -22,6 +22,7 @@ from .constants import (
     Api,
     ErrorCode,
     Palette,
+    Route,
     Text,
 )
 from .models import (
@@ -60,7 +61,7 @@ __all__ = [
     "NAMESPACE_CLIENT", "NAMESPACE_SERVER", "PROTOCOL_VERSION",
     "SERVER_NAME", "SLOGAN_CN", "SLOGAN_EN",
     "VERSION", "__version__",
-    "Api", "ErrorCode", "Palette", "Text",
+    "Api", "ErrorCode", "Palette", "Route", "Text",
     "hash_password", "verify_password", "new_token", "token_hash",
     "ApiError", "ConfigResponse", "DeviceInfo",
     "HeartbeatRequest", "HeartbeatResponse", "HealthResponse",

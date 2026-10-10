@@ -32,14 +32,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from canoe_core import BRAND_CN, VERSION, Palette as P, Text
+from canoe_core import BRAND_CN, VERSION, Palette as P, Route, Text
 
 from .. import links, sysproxy, update
 from ..api import CanoeApiError, api
 from ..config import config
 from ..kernel import kernel
 from ..logbus import TAG_ERROR, TAG_RESULT, bus
-from ..nettest import tcping, url_test
+from ..nettest import target_url, tcping, url_test
 from ..options import (
     LABEL_SYSTEM_PROXY,
     LABEL_TUN,
@@ -333,6 +333,17 @@ class MainView(FramelessWindow):
         self.lights.node_selected.connect(self._switch_node)
         root.addWidget(self.lights)
 
+        # --- 线路方向（出国 / 回国）---
+        #   节点灯下面那块空当里，居中。**只显示、不可点** —— 方向是服务端
+        #   给定的，客户端没有改的入口。
+        #   字号跟节点名一样大（用户点名要的）：它一个人占着这块空当，
+        #   小了就成脚注，跟上面那排灯也不成比例。
+        root.addSpacing(30)
+        self.route_label = QLabel(Route.LABELS[Route.OUT])
+        self.route_label.setObjectName("RouteMode")
+        self.route_label.setAlignment(Qt.AlignCenter)
+        root.addWidget(self.route_label)
+
         # --- 底部水面 ---
         root.addSpacing(SCENE_BAND)
 
@@ -481,6 +492,60 @@ class MainView(FramelessWindow):
         self.cb_tun.setChecked(self._opts.use_tun)
         self._loading = False
         self._update_tun_tooltip()
+        self._sync_route_label()
+
+    # ------------------------------------------------------------------
+    # 线路方向（服务端给的，只显示）
+    # ------------------------------------------------------------------
+    def _sync_route_label(self) -> None:
+        """把当前方向刷到界面和提示里。
+
+        「分流」是什么意思**跟着方向变**：出国是"大陆直连"，回国是
+        "国外直连"。光在底下写个"回国模式"，用户点开那一排还是不知道
+        该选哪个，所以这个提示也得跟着换。
+        """
+        mode = Route.clean(self._opts.route_mode)
+        self.route_label.setText(Route.LABELS[mode])
+        self.route_label.setToolTip(
+            "线路模式由服务端指定：" + Route.HINTS[mode]
+        )
+        self.rb_split.setToolTip(Route.HINTS[mode])
+
+    def _apply_route_mode(self, value: str | None, reconnect: bool = True) -> str:
+        """收下服务端给的线路方向。变了就返回一句提示，没变返回空串。
+
+        变了而且在航的话：靠岸 -> 按新方向重新启航。这不是可选项 ——
+        方向挂在**分流规则**上，不重连就只是界面上换了个字，底下还按
+        老规矩走。断一下（TUN 拆网卡要一两秒）比"显示的和实际的不一致"
+        强得多。
+
+        reconnect=False 给"调用方自己马上要重连一次"的场合用（拉订阅那条
+        路本来就会因为节点变化重启内核）—— 免得连着重启两回。
+
+        ⚠ 必须在主线程调用（要动内核和控件）。推送那条路是信号排队过来的，
+          本来就在主线程上；启航那条路在工作线程，那边只改 _opts 里的数据，
+          界面的字等回到主线程再刷（见 _do_start_kernel 的 on_ok）。
+        """
+        if value is None:
+            return ""
+        new = Route.clean(value)
+        if new == Route.clean(self._opts.route_mode):
+            return ""
+
+        self._opts.route_mode = new
+        config.set_and_save(options=self._opts.to_dict())
+        self._sync_route_label()
+
+        if reconnect and session.sailing:
+            link = self._active_link()
+            if link is not None:
+                try:
+                    self._dock()
+                    kernel.start(link.outbound, self._opts)
+                    self._set_state(STATE_SAILED)
+                except Exception as exc:              # noqa: BLE001
+                    self._set_state(STATE_STORM, f"切换线路方向失败：{exc}")
+        return f"线路已切到{Route.SHORT[new]}"
 
     def _on_options_changed(self) -> None:
         if getattr(self, "_loading", False):
@@ -589,6 +654,8 @@ class MainView(FramelessWindow):
             # 节点列表落到界面上（点亮底下那排灯）。放在这里而不是
             # _do_start_kernel 里，是因为那边在工作线程，碰控件不安全。
             self._apply_links(found, index)
+            # 线路方向同理：工作线程只改了 _opts 里的值，这里的字得在这刷
+            self._sync_route_label()
             session.node_name = self._node_name
             self.refresh()
             self._set_state(STATE_SAILED)
@@ -650,13 +717,18 @@ class MainView(FramelessWindow):
         Worker(self._refresh_after_login).run_with(self._on_reloaded, self._on_reload_failed)
 
     def _on_reloaded(self, payload) -> None:
-        revision, text = payload
+        revision, text, route_mode = payload
         self._revision = revision
+        # 先把方向收下：下面的重连就按新方向来，不用连两次。
+        # reconnect=False —— 这个函数自己就会重启内核。
+        note = self._apply_route_mode(route_mode, reconnect=False)
         if not self._apply_subscription(text):
             self._wipe_subscription()
             if session.sailing:
                 bus.error("订阅已停止分发，自动靠岸")
                 self._dock()
+            elif note:
+                bus.result(note)
             else:
                 bus.result("订阅：已停止分发")
             return
@@ -664,6 +736,7 @@ class MainView(FramelessWindow):
         link = self._active_link()
         # 在航的时候订阅换了节点：把新节点用起来，别让界面显示的和实际
         # 连着的对不上（管理员改了链接，这条路径会走到）。
+        # 线路方向换了也走这儿 —— 反正都要按新的 opts 重启一次。
         if session.sailing and link is not None:
             try:
                 kernel.stop()
@@ -671,7 +744,8 @@ class MainView(FramelessWindow):
             except Exception as exc:                  # noqa: BLE001
                 self._set_state(STATE_STORM, f"重新启航失败：{exc}")
                 return
-        bus.result(f"订阅已更新：{link.name}" if link else "订阅已更新")
+        tail = f"订阅已更新：{link.name}" if link else "订阅已更新"
+        bus.result(f"{note} · {tail}" if note else tail)
 
     def _on_reload_failed(self, code: str, message: str) -> None:
         if code in ("unauthorized", "banned", "expired"):
@@ -762,10 +836,15 @@ class MainView(FramelessWindow):
 
         每次启航、每次点「更新」都会走这里 —— 这就是"每次交互都要
         重新证明身份"的那个闭环。服务端想收回，下一次交互就拿不到了。
+
+        ⚠ 这个函数会在**工作线程**里被调用（启航那条路），所以这里只把
+          route_mode 落到 _opts 这个数据结构上，不碰任何控件 —— 界面上的
+          那行字由主线程的 on_ok 去刷。
         """
         resp, text = api.subscription_text()
         self._revision = resp.revision
         self._sub_text = text
+        self._opts.route_mode = Route.clean(resp.route_mode)
         return text
 
     def _do_start_kernel(self):
@@ -785,6 +864,8 @@ class MainView(FramelessWindow):
             mode = "system_proxy"
         # 先建会话：被封/到期在这里就会被挡下，不用等到启航一半
         cfg = api.fetch_config(mode)
+        # 这次启航的线路方向，以服务端这次给的为准（工作线程：只改数据）
+        self._opts.route_mode = Route.clean(cfg.route_mode)
 
         # 每次都重新拉，不吃缓存 —— 管理员刚清空订阅的话，这次启航就得失败
         text = self._fetch_subscription()
@@ -922,6 +1003,7 @@ class MainView(FramelessWindow):
             newer = None
             revision = ""
             wiped = False
+            route_mode = ""
             try:
                 rel = api.latest_release()
                 if update.compare_versions(rel.version, VERSION) > 0:
@@ -943,6 +1025,7 @@ class MainView(FramelessWindow):
                     # 和启航走的是同一条路：重新证明身份 -> 解密订阅
                     sub, text = api.subscription_text()
                     revision = sub.revision
+                    route_mode = sub.route_mode
                     names = [n.name for n in links.parse(text).links] if text.strip() else []
                     if not names:
                         # 空的 / 认不出的 —— 服务端没给，本地那份必须销毁
@@ -957,18 +1040,25 @@ class MainView(FramelessWindow):
                         parts.append(f"订阅：{here}{extra}{suffix}")
                 except CanoeApiError as exc:
                     parts.append(f"订阅：{exc.message}")
-            return " · ".join(parts), newer, revision, wiped
+            return " · ".join(parts), newer, revision, wiped, route_mode
 
         def on_ok(payload) -> None:
             self.update_btn.setEnabled(True)
-            text, newer, revision, wiped = payload
+            text, newer, revision, wiped, route_mode = payload
             if wiped:
                 self._wipe_subscription()
+                self._apply_route_mode(route_mode, reconnect=False)
                 if session.sailing:
                     bus.error("订阅已停止分发，自动靠岸")
                     self._dock()
             elif revision:
                 self._revision = revision
+                # 线路方向也在这条路上收：它算在指纹里，变了 revision 必变。
+                # reconnect=False —— 下面那句 _reload_subscription 自己会
+                # 按新的 opts 重启一次内核。
+                note = self._apply_route_mode(route_mode, reconnect=False)
+                if note:
+                    text = f"{note} · {text}"
                 # 订阅可能变了（管理员加了/改了节点），把本地那份跟着刷新，
                 # 底下的灯也就跟着变。
                 self._reload_subscription()
@@ -1131,7 +1221,9 @@ class MainView(FramelessWindow):
             self.urltest_btn.setEnabled(True)
             bus.error(f"URL 耗时：{message}")
 
-        Worker(url_test, port).run_with(on_ok, on_err)
+        # 靶子按线路方向挑：回国模式下 gstatic 是**直连**的，拿它测等于
+        # 没测代理（节点挂了也是绿的）。见 nettest.target_url。
+        Worker(url_test, port, target_url(self._opts.route_mode)).run_with(on_ok, on_err)
 
     # ==================================================================
     # 退出
@@ -1215,13 +1307,18 @@ class MainView(FramelessWindow):
         )
 
     def _refresh_after_login(self):
-        """登录后立刻拉一次订阅，把节点名和那排灯显示出来。"""
+        """登录后立刻拉一次订阅，把节点名和那排灯显示出来。
+
+        顺手把线路方向也带回去 —— 它跟订阅走同一份响应（/api/subscription
+        里有 route_mode），登舟之后不用再单独问一次。
+        """
         resp, text = api.subscription_text()
-        return resp.revision, text
+        return resp.revision, text, resp.route_mode
 
     def _on_subscription_ready(self, payload) -> None:
-        revision, text = payload
+        revision, text, route_mode = payload
         self._revision = revision
+        self._apply_route_mode(route_mode)
         if not self._apply_subscription(text):
             self._wipe_subscription()
             bus.error("服务端没有下发订阅，请联系管理员")

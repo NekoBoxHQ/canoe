@@ -41,6 +41,10 @@ DEFAULTS: dict[str, Any] = {
     # 界面选项（见 options.py 的 RunOptions）
     "options": {
         "profile": "split",         # 分流：绕过局域网和大陆
+        # 线路方向。★ 这个不是"用户选项" —— 服务端说了算，本地存的这份
+        # 只是缓存（冷启动没网时先顶一下），每次拿到服务端的值就覆盖。
+        # 默认出国：这也是老版本的行为。
+        "route_mode": "out",
         "use_system_proxy": True,   # 默认勾系统代理
         "use_tun": False,           # TUN 默认关，可与系统代理同时开
         "tun_ipv6": True,           # TUN 恒双栈

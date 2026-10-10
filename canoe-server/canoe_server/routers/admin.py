@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session as DBSession
 
-from canoe_core import MAX_NODES_PER_USER, Api
+from canoe_core import MAX_NODES_PER_USER, Api, Route
 
 from ..config import settings
 from ..database import get_db
@@ -41,7 +41,13 @@ from ..models import (
     utcnow,
 )
 from ..security import hash_password
-from ..services.broadcast import hub, notify_config_changed, notify_kick, notify_release
+from ..services.broadcast import (
+    hub,
+    notify_config_changed,
+    notify_kick,
+    notify_release,
+    notify_subscription_changed,
+)
 from ..services.nodes import (
     bound_node_ids,
     count_nodes,
@@ -113,6 +119,8 @@ class UserCreate(BaseModel):
     expire_days: int | None = None
     max_devices: int | None = None
     remark: str = ""
+    #: 线路方向。不给就是出国（老客户、老面板都是这个行为）
+    route_mode: str = Route.OUT
 
 
 class UserUpdate(BaseModel):
@@ -130,6 +138,8 @@ class UserUpdate(BaseModel):
     max_devices: int | None = None
     remark: str | None = None
     role: str | None = None
+    #: 线路方向：out=出国 / in=回国。认不出来的值 422，别让它悄悄改成出国。
+    route_mode: str | None = None
 
 
 class BindUserNodes(BaseModel):
@@ -160,6 +170,8 @@ def _user_view(db: DBSession, user: User) -> dict:
         "expire_at": epoch(user.expire_at),
         "max_devices": user.max_devices,
         "remark": user.remark,
+        #: 线路方向。面板拿它显示那一栏，也拿它填编辑表单的默认值。
+        "route_mode": Route.clean(user.route_mode),
         #: 绑了哪些节点（面板上要显示勾选状态）
         "node_ids": bound_node_ids(db, user),
         #: 最终发给客户端的订阅有几行（就是绑定的节点数）
@@ -204,6 +216,10 @@ def create_user(
         raise HTTPException(409, {"code": "username_taken", "detail": "用户名已存在"})
 
     days = body.expire_days if body.expire_days is not None else settings.default_expire_days
+    if not Route.is_valid(body.route_mode):
+        raise HTTPException(
+            422, {"code": "bad_route_mode", "detail": "线路方向只能是 out 或 in"}
+        )
     user = User(
         username=body.username,
         password_hash=hash_password(body.password),
@@ -211,6 +227,7 @@ def create_user(
         status="active",
         max_devices=body.max_devices or settings.default_max_devices,
         remark=body.remark,
+        route_mode=body.route_mode,
         expire_at=utcnow() + timedelta(days=days) if days else None,
     )
     db.add(user)
@@ -261,6 +278,23 @@ def update_user(
         user.role = body.role
         changes.append(f"角色 → {body.role}")
 
+    # 线路方向：改了要**当场推给这个人** —— 不然在航的客户端要等到
+    # 下一次心跳才发现（最迟 30 秒），而"服务端说改就改"是这套东西的
+    # 卖点。推送里不带内容，客户端收到自己去拉订阅，那份带 route_mode。
+    mode_changed = False
+    if body.route_mode is not None:
+        if not Route.is_valid(body.route_mode):
+            raise HTTPException(
+                422, {"code": "bad_route_mode", "detail": "线路方向只能是 out 或 in"}
+            )
+        if body.route_mode != Route.clean(user.route_mode):
+            changes.append(
+                f"线路 {Route.LABELS[Route.clean(user.route_mode)]} → "
+                f"{Route.LABELS[body.route_mode]}"
+            )
+            user.route_mode = body.route_mode
+            mode_changed = True
+
     db.commit()
     db.add(
         AuditLog(
@@ -270,7 +304,13 @@ def update_user(
         )
     )
     db.commit()
-    return {"ok": True, "username": user.username, "changed": changes}
+
+    pushed = 0
+    if mode_changed:
+        pushed = notify_subscription_changed(
+            user.id, subscription_revision(user, subscription_text_for(db, user))
+        )
+    return {"ok": True, "username": user.username, "changed": changes, "pushed": pushed}
 
 
 @router.post(Api.ADMIN_USERS + "/{user_id}/ban")
@@ -471,8 +511,6 @@ def bind_user_nodes(
     db.commit()
 
     # 绑的是这个人，只推给他 —— 广播会把无关的人全叫醒
-    from ..services.broadcast import notify_subscription_changed
-
     pushed = notify_subscription_changed(user.id, subscription_revision(user, subscription_text_for(db, user)))
     return {"ok": True, "node_ids": bound_node_ids(db, user), "pushed": pushed}
 

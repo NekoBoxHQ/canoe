@@ -59,9 +59,9 @@ const FIXTURES = [
     push: { connections: 4, users: 2 },
   }],
   [/\/api\/admin\/users\?/, { max_nodes_per_user: 6, items: [
-    { id: 1, username: 'admin', role: 'admin', status: 'active', online: true, expire_at: 0, max_devices: 3, remark: '主账号', last_login_at: 1790000000, subscription: '', subscription_lines: 0 },
+    { id: 1, username: 'admin', role: 'admin', status: 'active', online: true, expire_at: 0, max_devices: 3, remark: '主账号', last_login_at: 1790000000, subscription: '', subscription_lines: 0, route_mode: 'in' },
     { id: 2, username: 'demo', role: 'user', status: 'banned', online: false, expire_at: 1799000000, max_devices: 3, remark: '', last_login_at: null,
-      node_ids: [3], subscription: '', subscription_lines: 1 },
+      node_ids: [3], subscription: '', subscription_lines: 1, route_mode: 'out' },
   ]}],
   // 节点给 7 个：一个客户最多绑 6 个，第 7 个正好用来验"勾满就置灰"
   [/\/api\/admin\/nodes$/, { max_nodes_per_user: 6, items: [
@@ -371,16 +371,30 @@ check('★ 用户名回填了当前值',
       userModal.querySelector('#f_username')?.value === 'admin',
       String(userModal.querySelector('#f_username')?.value));
 
+// 线路方向：客户端那边不给改，**这里是唯一的开关**
+const routeSel = userModal.querySelector('#f_route_mode');
+check('★ 编辑弹窗里有「线路」下拉', !!routeSel, userModal.textContent.slice(0, 200));
+check('★ 两个方向都能选（出国 / 回国）',
+      routeSel && [...routeSel.querySelectorAll('option')].map((o) => o.value).join(',') === 'out,in',
+      routeSel ? [...routeSel.querySelectorAll('option')].map((o) => o.value).join(',') : '');
+check('★ 回填了服务端当前给这个客户的方向',
+      routeSel?.value === 'in', String(routeSel?.value));
+
 // 改个名字提交，看看请求体里到底带了什么
 bodies.length = 0;
 userModal.querySelector('#f_username').value = 'captain';
 userModal.querySelector('#f_password').value = '';
+// select 的 value 在 linkedom 上是**只读**的（app.js 那边也踩过这个，
+// 所以它是靠 option.selected 回填的）—— 这里也得照那个路子改
+for (const opt of routeSel.options) opt.selected = opt.value === 'out';
 document.querySelector('#modal-ok').dispatchEvent(new window.Event('click', { bubbles: true }));
 await settle();
 
 const patch = bodies.find((b) => b.method === 'PATCH' && /\/api\/admin\/users\/\d+/.test(b.path));
 check('★ 提交时发的是 PATCH', !!patch, JSON.stringify(bodies));
 check('★ 请求体里带着新用户名', patch?.body?.username === 'captain', JSON.stringify(patch));
+check('★ 请求体里带着线路方向（改了才生效）',
+      patch?.body?.route_mode === 'out', JSON.stringify(patch));
 check('没填密码就不发 password（不会把密码清空）',
       patch && !('password' in patch.body), JSON.stringify(patch));
 check('★ 管理员改自己的名字后，侧边栏跟着换（不是登出前的旧快照）',

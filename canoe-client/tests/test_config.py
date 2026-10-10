@@ -27,6 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+from canoe_core import Route  # noqa: E402
+
 from canoe_client.config import config  # noqa: E402
 from canoe_client.kernel import LAN_CIDRS, build_config  # noqa: E402
 from canoe_client.options import (  # noqa: E402
@@ -212,6 +214,56 @@ def main() -> int:
           "detour" not in d_remote, str(d_remote))
     ok_d, msg_d = singbox_check(direct_cfg)
     check("★ direct 出站的配置能通过 sing-box check", ok_d, msg_d[:300])
+
+    # --- 8. 回国模式（线路方向由服务端定）---
+    #
+    # 出国是"大陆直连、其余走代理"；回国**整个反过来**：国外直连、
+    # 大陆走代理。规则集是同一份（geosite-cn / geoip-cn），只是出站
+    # 反过来指；DNS 也跟着翻。
+    print("\n[8] 回国模式：国外直连、国内走代理")
+    home = RunOptions(use_system_proxy=True, profile=PROFILE_SPLIT,
+                      route_mode=Route.IN)
+    hcfg = build_config(outbound, home)
+    hroute = hcfg["route"]
+
+    check("兜底出站变成直连", hroute["final"] == "direct", str(hroute["final"]))
+    hused = [r for r in hroute["rules"] if "rule_set" in r]
+    check("还是那两条规则集规则", len(hused) == 2, str(hused))
+    check("★ 大陆规则指向代理（跟出国反着来）",
+          all(r["outbound"] == "proxy" for r in hused), str(hused))
+    check("规则集没变（还是 geosite-cn / geoip-cn）",
+          {rs["tag"] for rs in hroute["rule_set"]} == {"geosite-cn", "geoip-cn"})
+    hlan = next((r for r in hroute["rules"] if r.get("ip_cidr") == LAN_CIDRS), None)
+    check("★ 局域网仍然直连（两个方向都一样）",
+          hlan is not None and hlan["outbound"] == "direct", str(hlan))
+
+    # DNS：大陆域名走**代理**去国内查，其余走**直连**的国外 DNS
+    hservers = {s["tag"]: s for s in hcfg["dns"]["servers"]}
+    check("多出来一个走代理的国内 DNS", "cn" in hservers, str(list(hservers)))
+    check("★ 大陆域名交给那个走代理的国内 DNS",
+          any(r.get("server") == "cn" for r in hcfg["dns"].get("rules", [])),
+          str(hcfg["dns"].get("rules")))
+    check("国外 DNS 在回国模式下不绕代理",
+          "detour" not in hservers["remote"], str(hservers["remote"]))
+    check("★ 解析入口的那个国内 DNS 仍然直连（绕了就死循环）",
+          "detour" not in hservers["local"], str(hservers["local"]))
+    check("★ default_domain_resolver 指的是直连的那个 DNS",
+          hroute["default_domain_resolver"] == {"server": "local"},
+          str(hroute.get("default_domain_resolver")))
+
+    # 全局模式不挂规则 —— 两个方向下都一样，方向对"全局"没有影响
+    hglobal = build_config(outbound, RunOptions(profile=PROFILE_GLOBAL,
+                                                route_mode=Route.IN))
+    check("★ 全局模式下方向不起作用（还是没规则集）",
+          "rule_set" not in hglobal["route"] and hglobal["route"]["final"] == "proxy")
+
+    ok_h, msg_h = singbox_check(hcfg)
+    check("★ 回国模式的配置能通过 sing-box check", ok_h, msg_h[:300])
+
+    # 认不出来的方向值一律当出国 —— 老配置、老服务端都会走到这儿
+    check("★ 认不出的 route_mode 落回出国",
+          RunOptions.from_dict({"route_mode": "乱写"}).route_mode == Route.OUT
+          and RunOptions.from_dict({}).route_mode == Route.OUT)
 
     print(f"\n{'=' * 48}")
     print(f"通过 {passed} 项，失败 {failed} 项")

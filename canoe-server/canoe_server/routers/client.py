@@ -28,6 +28,7 @@ from canoe_core import (
     HeartbeatRequest,
     HeartbeatResponse,
     PROTOCOL_VERSION,
+    Route,
     SubscriptionResponse,
     VERSION,
     assert_no_leaks,
@@ -104,6 +105,7 @@ def get_config(
         expires_at=epoch(row.expire_at) or 0,
         heartbeat_interval=settings.heartbeat_interval,
         revision=subscription_revision(user, subscription_text_for(db, user)),
+        route_mode=Route.clean(user.route_mode),
     )
     # 出网前的最后一道自检：万一将来有人往模型里塞了节点链接，
     # 这里直接 500，而不是静默把它发给客户端。

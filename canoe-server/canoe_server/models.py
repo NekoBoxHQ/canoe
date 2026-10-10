@@ -24,6 +24,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from canoe_core import Route
+
 from .config import settings
 from .database import Base
 
@@ -66,6 +68,10 @@ class User(Base):
     expire_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     max_devices: Mapped[int] = mapped_column(Integer, default=3)
     remark: Mapped[str] = mapped_column(String(255), default="")
+    #: 线路方向：out=出国（大陆直连，默认）/ in=回国（国外直连，国内走代理）。
+    #: ★ 这个值只有管理员能改，客户端拉回去只显示、不给改 —— 跟订阅一样，
+    #:   属于"服务端完全可控"那一层。见 canoe_core.constants.Route。
+    route_mode: Mapped[str] = mapped_column(String(8), default=Route.OUT)
     #: 【已废弃】上一版是"每个客户手打订阅文本"，现在是"节点 + 分配给谁"。
     #: 列留着是为了不破坏老库；代码里已经不再读写它。
     subscription: Mapped[str] = mapped_column(Text, default="")

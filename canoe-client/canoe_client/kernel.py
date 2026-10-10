@@ -26,9 +26,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+from canoe_core import Route
+
 from .config import BIN_DIR, config
 from .logbus import bus
-from .options import RunOptions
+from .options import OUT_DIRECT, RunOptions
 
 # 内核启动后等多久删临时配置。sing-box 启动瞬间就把配置读完了，
 # 2 秒足够，同时避免"还没读文件就被删"的竞争。
@@ -258,47 +260,67 @@ def _ruleset_defs(opts: RunOptions) -> list[dict[str, Any]]:
 
 
 def _dns_config(opts: RunOptions, proxy_is_direct: bool = False) -> dict[str, Any]:
-    """分流 DNS。
+    """分流 DNS —— 两个方向正好反过来。
 
-    大陆域名用国内 DNS 解析（走直连），其余走代理解析，
-    避免"用国外 DNS 解析国内站"导致的 CDN 就近失效和解析污染。
+    出国：大陆域名用国内 DNS **直连**解析（就近、不被污染），其余用
+          国外 DNS **走代理**解析。
+    回国：大陆域名用国内 DNS **走代理**解析（人在国外，直接问 223.5.5.5
+          会被绕远、被污染，而且我们要的就是"国内那侧看到的结果"），
+          其余用国外 DNS **直连**解析。
 
     ⚠ 必须用 sing-box 1.12+ 的**新** DNS 格式（type + server）。
        旧格式（address 字段）在 1.12 废弃、1.14 已彻底移除，
        写了会直接 decode 失败。这是 `sing-box check` 抓出来的。
 
     proxy_is_direct：proxy 出站是不是 direct。
-        是的话**不能**给 remote 写 detour —— sing-box 认为
+        是的话**谁都不能**写 detour=proxy —— sing-box 认为
         "让 DNS 绕一个 direct 出站"毫无意义，会直接拒绝启动：
             FATAL start dns/https[remote]: detour to an empty
             direct outbound makes no sense
         生产里 proxy 恒为 vless，走不到这条分支；但本机联调、
         以及任何把出站换成 direct 的场景都会踩到，所以这里判一下。
     """
-    remote: dict[str, Any] = {
-        "type": "https",
-        "tag": "remote",
-        "server": "1.1.1.1",
-    }
-    if not proxy_is_direct:
-        remote["detour"] = "proxy"
+    via_proxy = "" if proxy_is_direct else "proxy"
+    home = opts.route_mode == Route.IN
+
+    # 国内 DNS，tag 恒为 local、**永远直连**。它同时是 default_domain_resolver，
+    # 用来解析节点入口自己的域名 —— 这个绝不能走代理（"解析代理的地址要先
+    # 经过代理"是死循环，sing-box 直接拒绝启动）。标国内 DNS 是因为：回国
+    # 节点的入口在国内，要让它的域名解析到国内那个真实 IP，别人给的
+    # 境外 CDN 边缘会把你指到绕远的地方。
+    # 不写 detour —— 不指定就是直连。显式写 "detour": "direct" 同样会报
+    # "detour to an empty direct outbound makes no sense"。
+    servers: list[dict[str, Any]] = [
+        {"type": "udp", "tag": "local", "server": "223.5.5.5"},
+    ]
+
+    # 国外 DNS。出国时它要绕代理出去；回国时它就是普通直连（tag 说的
+    # 是"用哪台服务器"，不是"怎么走"）。
+    intl: dict[str, Any] = {"type": "https", "tag": "remote", "server": "1.1.1.1"}
+    if not home and via_proxy:
+        intl["detour"] = via_proxy
+    servers.append(intl)
+
+    if home:
+        cn_via_proxy: dict[str, Any] = {
+            "type": "udp", "tag": "cn", "server": "223.5.5.5",
+        }
+        if via_proxy:
+            cn_via_proxy["detour"] = via_proxy
+        servers.append(cn_via_proxy)
+        dns_rules = [{"rule_set": "geosite-cn", "server": "cn"}]
+    else:
+        dns_rules = [{"rule_set": "geosite-cn", "server": "local"}]
 
     dns: dict[str, Any] = {
-        "servers": [
-            {
-                # 不写 detour —— 不指定就是直连。
-                # 显式写 "detour": "direct" 同样会让 sing-box 报
-                # "detour to an empty direct outbound makes no sense"。
-                "type": "udp",
-                "tag": "local",
-                "server": "223.5.5.5",
-            },
-            remote,
-        ],
+        "servers": servers,
         "final": "remote",
     }
-    if opts.bypass_china:
-        dns["rules"] = [{"rule_set": "geosite-cn", "server": "local"}]
+    # ⚠ default_domain_resolver 不在这儿 —— 它挂在 route 上（见 _route_config）。
+    #   放错地方 sing-box 直接 decode 失败：
+    #       dns.default_domain_resolver: json: unknown field
+    if opts.split_active:
+        dns["rules"] = dns_rules
     return dns
 
 
@@ -310,23 +332,27 @@ def _route_config(opts: RunOptions) -> dict[str, Any]:
     # 2) DNS 查询本身不要走代理
     rules.append({"protocol": "dns", "action": "hijack-dns"})
 
-    # 3) 局域网直连
+    # 3) 局域网直连 —— 两个方向都一样：家里的打印机不该绕出国去
     if opts.bypass_lan:
-        rules.append({"ip_cidr": LAN_CIDRS, "outbound": "direct"})
+        rules.append({"ip_cidr": LAN_CIDRS, "outbound": OUT_DIRECT})
 
-    # 4) 大陆直连
+    # 4) 大陆域名 / IP —— 走哪个出站**按线路方向定**：
+    #    出国直连（人在国内，别绕），回国走代理（人在国外，要绕回去）。
     rule_sets: list[dict[str, Any]] = []
-    if opts.bypass_china:
+    if opts.split_active:
         rule_sets = _ruleset_defs(opts)
-        rules.append({"rule_set": ["geosite-cn"], "outbound": "direct"})
-        rules.append({"rule_set": ["geoip-cn"], "outbound": "direct"})
+        china = opts.china_outbound
+        rules.append({"rule_set": ["geosite-cn"], "outbound": china})
+        rules.append({"rule_set": ["geoip-cn"], "outbound": china})
 
     route: dict[str, Any] = {
         "rules": rules,
-        "final": "proxy",
-        # 出站服务器是域名（中转入口），必须指定用哪个 DNS 解析它。
-        # 这里用 local（直连的国内 DNS）—— 不能用代理解析代理自己的地址，
-        # 那是死循环。sing-box 1.12+ 强制要求这个字段。
+        "final": opts.final_outbound,
+        # 出站服务器是域名（节点入口），必须指定用哪个 DNS 解析它。
+        # 这里恒用 local（直连的国内 DNS）—— 两个方向都一样：不能用代理
+        # 解析代理自己的地址，那是死循环。回国模式下尤其要这样：节点入口
+        # 在国内，得让它解析到国内那个真实 IP。sing-box 1.12+ 强制要求
+        # 这个字段。
         "default_domain_resolver": {"server": "local"},
     }
     if rule_sets:

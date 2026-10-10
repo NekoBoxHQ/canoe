@@ -29,7 +29,7 @@ import httpx
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from canoe_core import MAX_NODES_PER_USER, Api, Envelope  # noqa: E402
+from canoe_core import MAX_NODES_PER_USER, Api, Envelope, Route  # noqa: E402
 
 def _admin_credentials() -> tuple[str, str]:
     """管理员账号密码。
@@ -513,6 +513,55 @@ def main() -> int:
     client.put(f"{Api.ADMIN_USERS}/{sub_uid}/nodes", headers=admin_h, json={"node_ids": []})
     for nid in cap_ids:
         client.delete(f"{Api.ADMIN_NODES}/{nid}", headers=admin_h)
+
+    # ======================================================================
+    # 14.6 线路方向（出国 / 回国）—— 服务端定死，客户端只读
+    # ======================================================================
+    print("\n[14.6] 线路方向")
+    r = client.get(Api.SUBSCRIPTION, headers=sub_h)
+    sub = r.json() if r.status_code == 200 else {}
+    check("★ 订阅响应里带着 route_mode", sub.get("route_mode") == Route.OUT,
+          str(sub.get("route_mode")))
+    check("★ 默认是出国（老客户、老面板的行为不变）",
+          sub.get("route_mode") == Route.OUT)
+    rev_before_mode = sub.get("revision", "")
+
+    r = client.patch(f"{Api.ADMIN_USERS}/{sub_uid}", headers=admin_h,
+                     json={"route_mode": Route.IN})
+    check("改线路 200", r.status_code == 200, r.text[:200])
+    check("★ 改动写进了审计", "线路" in str(r.json().get("changed", [])),
+          str(r.json())[:200])
+
+    r = client.get(Api.SUBSCRIPTION, headers=sub_h)
+    sub = r.json() if r.status_code == 200 else {}
+    check("★ 客户端再拉就是回国了", sub.get("route_mode") == Route.IN,
+          str(sub.get("route_mode")))
+    # ★ 这条最要紧：不算进指纹的话，客户端根本不会来重新拉，
+    #   管理员那次改动就石沉大海了。
+    check("★ 改线路会改变订阅指纹（不然客户端不会来更新）",
+          sub.get("revision", "") != rev_before_mode,
+          f"{rev_before_mode} -> {sub.get('revision')}")
+
+    r = client.get(Api.CONFIG, headers=sub_h,
+                   params={"device_id": "smoke-sub-0001", "mode": "system_proxy"})
+    check("★ /api/config 也带着同一个方向",
+          r.status_code == 200 and r.json().get("route_mode") == Route.IN,
+          r.text[:200])
+
+    # 认不出来的值要被拒，不能悄悄改成出国
+    r = client.patch(f"{Api.ADMIN_USERS}/{sub_uid}", headers=admin_h,
+                     json={"route_mode": "乱写"})
+    check("★ 认不出的路线方向 422（不静默改写）", r.status_code == 422, r.text[:160])
+
+    r = client.get(Api.ADMIN_USERS, headers=admin_h, params={"size": 200})
+    rows = r.json().get("items", []) if r.status_code == 200 else []
+    mine = next((x for x in rows if x.get("id") == sub_uid), {})
+    check("★ 面板列表里带 route_mode（那一栏靠它显示）",
+          mine.get("route_mode") == Route.IN, str(mine)[:200])
+
+    # 改回出国，别把状态留给后面的用例
+    client.patch(f"{Api.ADMIN_USERS}/{sub_uid}", headers=admin_h,
+                 json={"route_mode": Route.OUT})
 
     # ======================================================================
     # 15. 推送（SSE /api/events）

@@ -311,12 +311,20 @@ async function statsGrid() {
  * 页面：用户
  * ========================================================================= */
 
+//: 线路方向那两个选项。客户端界面上不给改 —— 这里是唯一的开关。
+const routeOptions = [
+  { value: 'out', label: '出国模式（大陆直连，其余走代理）' },
+  { value: 'in', label: '回国模式（国外直连，国内走代理）' },
+];
+
 const userFields = [
   { key: 'username', label: '用户名', required: true, placeholder: '3-32 位字母数字下划线' },
   { key: 'password', label: '密码', type: 'password', required: true, help: '至少 8 位' },
   { key: 'expire_days', label: '有效天数', type: 'number', default: 30, help: '留空或 0 表示永不过期' },
   { key: 'max_devices', label: '设备数上限', type: 'number', default: 3 },
   { key: 'remark', label: '备注' },
+  { key: 'route_mode', label: '线路', type: 'select', options: routeOptions, default: 'out',
+    help: '客户端只显示、不给改。改了在航的客户端会立刻收到并重连' },
 ];
 
 async function pageUsers(root) {
@@ -328,13 +336,15 @@ async function pageUsers(root) {
     h('button', {
       class: 'btn btn-primary btn-sm', text: '新建用户',
       onclick: () => openModal({
-        title: '新建用户', fields: userFields, values: { expire_days: 30, max_devices: 3 },
+        title: '新建用户', fields: userFields,
+        values: { expire_days: 30, max_devices: 3, route_mode: 'out' },
         onSubmit: async (v) => {
           await api('/api/admin/users', { method: 'POST', body: {
             username: v.username, password: v.password,
             expire_days: v.expire_days === '' || v.expire_days === null ? null : Number(v.expire_days),
             max_devices: v.max_devices ? Number(v.max_devices) : null,
             remark: v.remark || '',
+            route_mode: v.route_mode || 'out',
           }});
           toast('用户已创建', 'ok'); closeModal(); render();
         },
@@ -349,6 +359,12 @@ async function pageUsers(root) {
     { title: '状态', render: (r) => r.status === 'active' ? tag('正常', 'ok') : tag('已封禁', 'bad') },
     { title: '在线', render: (r) => r.online ? tag('在线', 'ok') : tag('离线') },
     { title: '到期', render: (r) => fmtExpire(r.expire_at) },
+    {
+      title: '线路',
+      render: (r) => (r.route_mode === 'in'
+        ? tag('回国', 'admin')
+        : tag('出国')),
+    },
     {
       title: '分发',
       render: (r) => (r.subscription_lines
@@ -383,13 +399,16 @@ function editUser(r) {
       { key: 'expire_date', label: '到期日期', type: 'date', help: '留空 = 永不过期' },
       { key: 'max_devices', label: '设备数上限', type: 'number' },
       { key: 'remark', label: '备注' },
+      { key: 'route_mode', label: '线路', type: 'select', options: routeOptions,
+        help: '客户端只显示、不给改。改成回国后，在航的客户端会立刻收到并重连' },
       { key: 'role', label: '角色', type: 'select', options: [
         { value: 'user', label: '普通用户' }, { value: 'admin', label: '管理员' }] },
     ],
     values: { username: r.username, max_devices: r.max_devices, remark: r.remark,
-              role: r.role, expire_date: expire },
+              role: r.role, expire_date: expire, route_mode: r.route_mode || 'out' },
     onSubmit: async (v) => {
-      const body = { max_devices: Number(v.max_devices) || 0, remark: v.remark || '', role: v.role };
+      const body = { max_devices: Number(v.max_devices) || 0, remark: v.remark || '',
+                     role: v.role, route_mode: v.route_mode || 'out' };
       if (v.username && v.username !== r.username) body.username = v.username;
       if (v.password) body.password = v.password;
       body.expire_at = v.expire_date ? Math.floor(new Date(v.expire_date + 'T23:59:59').getTime() / 1000) : 0;

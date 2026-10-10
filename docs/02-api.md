@@ -139,7 +139,8 @@ Authorization: Bearer <token>
   "node_name": null,
   "expires_at": 1790000300,
   "heartbeat_interval": 30,
-  "revision": "fca8e285fa5cbc53"
+  "revision": "fca8e285fa5cbc53",
+  "route_mode": "out"
 }
 ```
 
@@ -150,6 +151,16 @@ Authorization: Bearer <token>
 
 `revision` 是订阅指纹（明文，只取哈希，不含任何订阅内容片段）——
 客户端拿它和手里的比一比就知道要不要重新拉订阅。
+
+### 线路方向 `route_mode`
+
+`"out"` = 出国（大陆直连，其余走代理，**默认**）/ `"in"` = 回国
+（国外直连，国内走代理）。它由管理员在面板上给**每个客户**单独设，
+客户端只显示、不给改。
+
+它决定的是「分流」在客户端那边的含义 —— 全局模式下两个方向没区别。
+`route_mode` 也算进 `revision`：改了它指纹就变，客户端收到推送会重新拉，
+在航的会当场靠岸重连。
 
 ---
 
@@ -229,7 +240,7 @@ Authorization: Bearer <token>
 |---|---|---|
 | GET | `/api/admin/users?page=1&size=50&q=` | 用户列表（含在线状态） |
 | POST | `/api/admin/users` | 建号 |
-| PATCH | `/api/admin/users/{id}` | 改用户名 / 密码 / 到期 / 设备上限 / 备注 / 角色 |
+| PATCH | `/api/admin/users/{id}` | 改用户名 / 密码 / 到期 / 设备上限 / 备注 / 角色 / **线路方向** |
 | POST | `/api/admin/users/{id}/ban` | 封禁 → 立即吊销令牌与会话 |
 | POST | `/api/admin/users/{id}/unban` | 解封 |
 | DELETE | `/api/admin/users/{id}` | 删号 |
@@ -238,7 +249,7 @@ Authorization: Bearer <token>
 
 ```http
 PATCH /api/admin/users/12
-{ "username": "新名字", "password": "新密码", "remark": "备注" }
+{ "username": "新名字", "password": "新密码", "remark": "备注", "route_mode": "in" }
 ```
 
 字段全部可选，只改传上来的那几项。**用户名是可以改的**，包括管理员把自己
@@ -247,6 +258,10 @@ PATCH /api/admin/users/12
 - 改名会查重：撞上已有的名字返回 `409 username_taken`（不是静默变成两个同名账号）
 - 格式 `3-32` 位字母、数字、下划线或减号，不合规 `422`
 - 改名 / 改密码 / 改角色都写审计（`audit_logs.detail` 里是「用户名 A → B」）
+- `route_mode` 只认 `out` / `in`，别的值 `422`（**不静默落回出国** ——
+  悄悄改写等于运营以为自己切了、客户却还按老路子走）
+- **改 `route_mode` 会当场定向推给这个客户**（`config_changed`），在航的
+  客户端收到就重新拉订阅、按新方向重连。改别的字段不推。
 
 服务端上还有个不用开面板的入口：`canoe passwd`，或者菜单里
 「6 修改配置 → 3 改管理员账号」—— 改的就是管理员自己的用户名和密码。
@@ -365,6 +380,7 @@ PUT /api/admin/users/12/nodes
   "expires_at": 1799000000,
   "heartbeat_interval": 30,
   "revision": "3f9c1e0a2b7d4e51",
+  "route_mode": "out",
   "envelope": {
     "alg": "AES-256-GCM",
     "salt": "9f3K...",
@@ -375,7 +391,13 @@ PUT /api/admin/users/12/nodes
 }
 ```
 
-`revision` 是**订阅指纹**：订阅内容 / 账号状态 / 到期时间任一变化都会让它变。
+`route_mode` 和 `/api/config` 里那份是同一个值（见上面的「线路方向」）。
+它是**明文**的 —— 不是秘密，跟 `expires_at` 一个级别；放明文而不是塞进
+信封，是为了让**还没更新的老客户端**直接忽略它（塞进信封的话，老客户端
+会把整份信封解析不出节点，等于当场掉线）。
+
+`revision` 是**订阅指纹**：订阅内容 / 账号状态 / 到期时间 / 线路方向
+任一变化都会让它变。
 客户端存住上一轮的字符串比一比即可：
 
 ```

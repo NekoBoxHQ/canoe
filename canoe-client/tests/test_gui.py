@@ -38,7 +38,7 @@ if hasattr(sys.stdout, "reconfigure"):
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QToolButton  # noqa: E402
 
-from canoe_core import VERSION, Text, new_sub_key, seal, unseal  # noqa: E402
+from canoe_core import VERSION, Route, Text, new_sub_key, seal, unseal  # noqa: E402
 
 from canoe_client.api import CanoeApiError  # noqa: E402
 from canoe_client.kernel import kernel  # noqa: E402
@@ -114,6 +114,8 @@ class FakeApi:
         #: 当前订阅正文。置空 = 服务端停止分发。
         self.sub_text = self.DEFAULT_SUB
         self.revision = "rev-1"
+        #: 线路方向。改它 = 管理员在面板上把这个客户改成回国了。
+        self.route_mode = Route.OUT
 
     # -- 认证 --
     def register(self, username: str, password: str) -> dict:
@@ -152,7 +154,7 @@ class FakeApi:
         return SimpleNamespace(
             protocol=1, session_id="sess-0001", node_name=None,
             expires_at=1790000000, heartbeat_interval=30,
-            revision=self._revision(),
+            revision=self._revision(), route_mode=self.route_mode,
         )
 
     def _revision(self) -> str:
@@ -172,7 +174,7 @@ class FakeApi:
         self.calls.append("subscription")
         return SimpleNamespace(
             node_name=None, revision=self._revision(),
-            expires_at=None, heartbeat_interval=30,
+            expires_at=None, heartbeat_interval=30, route_mode=self.route_mode,
             envelope=seal(self.sub_text, self.SUB_KEY, revision=self._revision()),
         )
 
@@ -422,8 +424,10 @@ def main() -> int:
     view.rb_global.setChecked(True)
     pump(app, 0.2)
     check("★ 切到「全局」不影响下排的 TUN", view.cb_tun.isChecked())
-    check("全局模式下 bypass 都为假",
-          not view._opts.bypass_lan and not view._opts.bypass_china)
+    # 全局模式：不挂任何规则，两个方向对它都没影响
+    check("★ 全局模式下不挂分流规则、兜底走代理",
+          not view._opts.bypass_lan
+          and view._opts.final_outbound == "proxy")
 
     view.cb_tun.setChecked(False)
     view.rb_split.setChecked(True)
@@ -666,6 +670,57 @@ def main() -> int:
     # 恢复：下面还要测踢下线
     fake_api.sub_text = fake_api.DEFAULT_SUB
     view._set_state(STATE_SAILED)
+
+    # --- 8.5 线路方向（出国 / 回国）---
+    # ★ 它是**服务端定死**的：客户端只在节点灯底下显示一行字，不给任何
+    #   可点的入口。在航的时候被切了要自动重连 —— 方向挂在分流规则上，
+    #   不重连就只是界面上换了个字，底下还按老规矩走。
+    print("\n[8.5] 线路方向（服务端定死，客户端只显示）")
+
+    check("★ 底下那行是只读的 QLabel（不是能点的控件）",
+          isinstance(view.route_label, QLabel)
+          and view.route_label.focusPolicy() == Qt.NoFocus)
+
+    # 字号跟节点名一模一样 —— 用户点名要的
+    node_css = _re.search(r"QLabel#NodeName\s*\{[^}]*font-size:\s*(\d+)px", sheet, _re.S)
+    mode_css = _re.search(r"QLabel#RouteMode\s*\{[^}]*font-size:\s*(\d+)px", sheet, _re.S)
+    check("★ 方向那行的字号就是节点名的字号",
+          bool(node_css) and bool(mode_css)
+          and node_css.group(1) == mode_css.group(1),
+          f"node={node_css and node_css.group(1)} mode={mode_css and mode_css.group(1)}")
+    check("★ 没有底色（用户点名：就白字）",
+          bool(mode_css) and "background" not in mode_css.group(0).replace("QLabel#RouteMode", ""))
+
+    # 服务端说改 -> 推送 -> 客户端跟着改
+    fake_api.route_mode = Route.IN
+    fake_api.revision = "rev-in"
+    view.on_push_event({"type": "config_changed", "revision": "rev-in"})
+    ok = wait_for(app, lambda: view._opts.route_mode == Route.IN, timeout=10)
+    check("★ 收到推送后线路方向跟着变", ok, view._opts.route_mode)
+    check("★ 底下那行字变成「回国模式」",
+          view.route_label.text() == "回国模式", view.route_label.text())
+    check("★「分流」的说明换成回国的口径（出国的说法在这边是错的）",
+          view.rb_split.toolTip() == Route.HINTS[Route.IN], view.rb_split.toolTip())
+    check("★ 方向落了盘（冷启动没网时先用它顶着）",
+          '"in"' in cfg_mod.CONFIG_FILE.read_text(encoding="utf-8"),
+          cfg_mod.CONFIG_FILE.read_text(encoding="utf-8")[-200:])
+
+    # 在航时被切：必须真的重连一次
+    restarts: list[int] = []
+    real_start, real_stop = kernel.start, kernel.stop
+    kernel.start = lambda *a, **k: restarts.append(1)
+    kernel.stop = lambda *a, **k: restarts.append(0)
+    try:
+        view._set_state(STATE_SAILED)
+        fake_api.route_mode = Route.OUT
+        fake_api.revision = "rev-out-2"
+        view.on_push_event({"type": "config_changed", "revision": "rev-out-2"})
+        wait_for(app, lambda: view._opts.route_mode == Route.OUT, timeout=10)
+    finally:
+        kernel.start, kernel.stop = real_start, real_stop
+    check("★ 在航时被切方向会重连（内核确实重启了一次）",
+          restarts.count(1) >= 1, str(restarts))
+    check("方向回到出国", view.route_label.text() == "出国模式", view.route_label.text())
 
     view.on_push_event({"type": "kick", "reason": "管理员把你踢下线了", "permanent": False})
     pump(app, 0.4)

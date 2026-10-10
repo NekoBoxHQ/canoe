@@ -32,7 +32,12 @@ def get_db() -> Iterator[Session]:
 #: 后加的列 -> 补列语句。create_all 只建**缺的表**，已有表少字段它不管，
 #: 所以升级时得自己补，否则老库跑新代码会报 "no such column"。
 _ADDED_COLUMNS: dict[str, dict[str, str]] = {
-    "users": {"subscription": "TEXT DEFAULT ''"},
+    # 老库里的 users 一行都没有 route_mode 的话，补上就当"出国" ——
+    # 存量客户本来就是出国用的，别把他们的分流方式改了。
+    "users": {
+        "subscription": "TEXT DEFAULT ''",
+        "route_mode": "VARCHAR(8) DEFAULT 'out'",
+    },
     "tokens": {"sub_key": "VARCHAR(64) DEFAULT ''"},
     "nodes": {"link": "TEXT DEFAULT ''"},
 }
