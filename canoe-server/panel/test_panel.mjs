@@ -170,6 +170,11 @@ check('没有「加载失败」', !page.textContent.includes('加载失败'), pa
 // （config_version 是订阅模式之前的字段，早没了）。
 check('★ 页面上不出现 undefined', !/undefined/.test(page.textContent),
       page.textContent.slice(0, 300));
+// 角色那列写全称。写「用户」的时候，它跟这个页面本身的名字（用户管理）
+// 撞在一起，看着分不清是"这个人的角色"还是"这个页面"（用户提的）。
+check('★ 角色列写「普通用户」，跟编辑表单一致（不是光秃秃的「用户」）',
+      /普通用户/.test(page.textContent), page.textContent.slice(0, 300));
+check('管理员那格还是「管理员」', /管理员/.test(page.textContent));
 
 console.log('\n[4] 逐个标签页渲染');
 // 「加载中…」占位已删 —— 它 append 上去之后一直没删，每次切页都在内容

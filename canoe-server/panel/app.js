@@ -355,7 +355,10 @@ async function pageUsers(root) {
   root.append(h('div', { class: 'card' }, renderTable([
     { title: 'ID', key: 'id' },
     { title: '用户名', key: 'username' },
-    { title: '角色', render: (r) => r.role === 'admin' ? tag('管理员', 'admin') : tag('用户') },
+    // 列表里也写「普通用户」，跟编辑表单那栏一个字都不差 ——
+    // 只写「用户」的时候，"用户"既是这个页面的名字（用户管理）、又是
+    // 一种角色的名字，看着别扭。
+    { title: '角色', render: (r) => r.role === 'admin' ? tag('管理员', 'admin') : tag('普通用户') },
     { title: '状态', render: (r) => r.status === 'active' ? tag('正常', 'ok') : tag('已封禁', 'bad') },
     { title: '在线', render: (r) => r.online ? tag('在线', 'ok') : tag('离线') },
     { title: '到期', render: (r) => fmtExpire(r.expire_at) },
