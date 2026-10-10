@@ -118,6 +118,9 @@ class FakeApi:
 
     def __init__(self) -> None:
         self.token = ""
+        #: 当前账号 id。真 api 是登录响应里存的，界面靠它对 kick 事件的
+        #: user_id 认名字（封 B 不该把在线的 A 一起踢下线）。
+        self.user_id = 0
         self.calls: list[str] = []
         self.node_name = "测试节点-甲"
         self.revoked = False
@@ -139,6 +142,7 @@ class FakeApi:
         if password != "canoe-pass-123":
             raise CanoeApiError("bad_credentials", "用户名或密码不对")
         self.token = f"tok-{username}"
+        self.user_id = 1
         return SimpleNamespace(
             token=self.token,
             expires_in=86400,
@@ -150,6 +154,7 @@ class FakeApi:
     def logout(self, session_id=None) -> None:
         self.calls.append("logout")
         self.token = ""
+        self.user_id = 0
 
     def me(self) -> dict:
         return {"id": 1, "username": "u", "status": "active"}
@@ -415,6 +420,11 @@ def main() -> int:
     view.start_with_node(username, auth.last_node_name)
     check("★ 显示了服务端给的节点名称", view.node_label.text() == fake_api.node_name,
           view.node_label.text())
+    # ★ 登录时得把账号 id 一起带进会话 —— 服务端推来的 kick 是"点名"的，
+    #   界面靠这个 id 认名字。忘了带的话防线形同虚设（id 恒为 0），
+    #   封别人照样把自己踢下线。
+    check("★ 登录时把账号 id 带进了会话（kick 认名字要用）",
+          session.user_id == fake_api.user_id == 1, f"{session.user_id}")
     view.account_label.setText(username)
     check("显示了账号名", view.account_label.text() == username)
 
@@ -779,9 +789,30 @@ def main() -> int:
           restarts.count(1) >= 1, str(restarts))
     check("方向回到出国", view._opts.route_mode == Route.OUT, view._opts.route_mode)
 
+    # ★ 封 B 不该把在线的 A 一起踢下线（真机上出过：A 登录着，管理员封 B，
+    #   A 被踹回登录页）。两个成因都得堵住 —— 服务端 notify_kick 漏传 user_id
+    #   变成广播，客户端又"谁的 kick 都当自己的"。这里盯客户端这一半。
+    kicked_out: list[int] = []
+    view.logged_out.connect(lambda: kicked_out.append(1))
+
+    # 别人的（99999）—— 还挑最狠的 permanent=True（封禁），照样一点反应没有
+    view.on_push_event({"type": "kick", "user_id": 99999,
+                        "reason": "账号已被封禁", "permanent": True})
+    pump(app, 0.3)
+    check("★ 别人的 kick 不动我：还在航", session.state == STATE_SAILED, session.state)
+    check("★ 别人的封禁通知不把我踹回登录页", not kicked_out, str(kicked_out))
+
+    # 不带 user_id 的（老服务端 / 手写脚本）：保守认下来，照旧靠岸
     view.on_push_event({"type": "kick", "reason": "管理员把你踢下线了", "permanent": False})
     pump(app, 0.4)
-    check("★ 被踢下线后自动靠岸", session.state == STATE_DOCKED, session.state)
+    check("★ 不带 user_id 的 kick 照旧靠岸（不认名字的老服务端也管用）",
+          session.state == STATE_DOCKED, session.state)
+
+    # 点名给自己的（permanent）—— 靠岸之后还得回登录页
+    view.on_push_event({"type": "kick", "user_id": session.user_id,
+                        "reason": "账号已被封禁", "permanent": True})
+    pump(app, 0.4)
+    check("★ 点名给自己的封禁通知才把人踹回登录页", kicked_out == [1], str(kicked_out))
 
     # --- 9. 离舟 ---
     print("\n[9] 离舟")

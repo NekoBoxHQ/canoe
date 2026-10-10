@@ -654,6 +654,16 @@ class MainView(FramelessWindow):
                 bus.result(f"发现新版本：V{version}")
 
         elif kind == "kick":
+            # ★ 这条事件是**点名**的：只该踢被封的那个人。客户端这边认一下
+            #   名字再动手 —— 服务端漏传过 user_id，`publish()` 就把这条推给
+            #   了**所有**在线客户端，于是"我登录 A，封禁 B，A 也下线了"
+            #   （用户真机上撞的）。服务端那头已经改成定向投递，这里是第二道：
+            #   以后谁再漏一次，也不会连累无关的人。
+            #   target 没有（老服务端）或者自己还不知道 id 时按原来的办 ——
+            #   宁可多踢一次自己，也不要漏掉真的踢人通知。
+            target = payload.get("user_id")
+            if target is not None and session.user_id and target != session.user_id:
+                return
             reason = payload.get("reason") or "已被管理员下线"
             bus.error(f"{reason}，自动靠岸")
             if session.sailing:
@@ -1331,7 +1341,7 @@ class MainView(FramelessWindow):
         后台拉一次订阅补上。拉不到也不拦着进主界面：用户至少能看到
         "为什么没有节点"，而不是卡在登录页。
         """
-        session.login(username, node_name)
+        session.login(username, node_name, user_id=api.user_id)
         self._session_id = ""
         self._revision = ""
         self._sub_text = ""

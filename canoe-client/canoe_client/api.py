@@ -84,6 +84,10 @@ class CanoeApi:
         self.token: str | None = None
         #: 会话级订阅密钥。**只在内存**，登舟时拿到，离舟时丢掉。
         self.sub_key: str = ""
+        #: 当前账号的 id（登录响应里带）。服务端推来的 kick 事件里也有
+        #: 一个 user_id —— 那是"这条踢人通知是给谁的"，得跟这个对上才算
+        #: 自己的（见 ui/main_view 的 kick 分支）。0 = 还不知道。
+        self.user_id: int = 0
 
     @property
     def base(self) -> str:
@@ -184,6 +188,7 @@ class CanoeApi:
         # 落盘的话就变成"关掉客户端还能解订阅"，服务端也就没法靠
         # 吊销会话来收回控制权了。
         self.sub_key = result.sub_key
+        self.user_id = result.user.id
         return result
 
     def logout(self, session_id: str | None = None) -> None:
@@ -195,6 +200,7 @@ class CanoeApi:
             pass
         self.token = None
         self.sub_key = ""
+        self.user_id = 0
 
     def me(self) -> dict:
         return self._request("GET", Api.ME)

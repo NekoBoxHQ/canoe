@@ -30,6 +30,10 @@ STATE_TEXT = {
 class Session:
     # 账号
     username: str = ""
+    #: 当前账号在服务端的 id。服务端推来的 kick 事件是**点名**的，
+    #: 里面带一个 user_id —— 对不上就不是发给我的，别把自己踹下线
+    #: （封 B 把在线的 A 一起踢掉，真机上出过）。0 = 还不知道。
+    user_id: int = 0
     logged_in: bool = False
 
     # 节点
@@ -47,8 +51,9 @@ class Session:
     def status_text(self) -> str:
         return STATE_TEXT.get(self.state, Text.ST_DISCONNECTED)
 
-    def login(self, username: str, node_name: str) -> None:
+    def login(self, username: str, node_name: str, user_id: int = 0) -> None:
         self.username = username
+        self.user_id = user_id
         self.logged_in = True
         self.node_name = node_name
         self.state = STATE_DOCKED
@@ -56,6 +61,7 @@ class Session:
 
     def logout(self) -> None:
         self.username = ""
+        self.user_id = 0
         self.logged_in = False
         self.node_name = ""
         self.state = STATE_DOCKED
