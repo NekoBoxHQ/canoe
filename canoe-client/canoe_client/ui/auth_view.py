@@ -34,7 +34,7 @@ from ..config import config
 from ..worker import Worker
 from . import artwork as A
 from .controls import CheckBox
-from .window_base import WINDOW_H, WINDOW_W, FramelessWindow
+from .window_base import AUTH_WINDOW_H, WINDOW_W, FramelessWindow
 
 #: 与服务端 RegisterRequest 保持一致
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
@@ -53,7 +53,7 @@ def validate_credentials(username: str, password: str, confirm: str = "") -> str
 
 # 窗口宽高见 window_base：跟主界面**一样大**（那里有说明）
 PAD = 22                 # 正文左右留白
-SCENE_BAND = 150         # 卡片下方留给山水的高度
+SCENE_BAND = 60          # 卡片下方留给山水的高度（窗口矮了 89px，就是从这儿让出来的）
 FIELD_H = 40
 BTN_H = 44
 BTN_H2 = 40
@@ -65,7 +65,7 @@ class AuthView(FramelessWindow):
     logged_in = Signal(str)
 
     def __init__(self) -> None:
-        super().__init__(WINDOW_W, WINDOW_H)
+        super().__init__(WINDOW_W, AUTH_WINDOW_H)
 
         #: 登录成功时服务端告诉我们的节点显示名（主界面要用）
         self.last_node_name = ""
@@ -81,13 +81,9 @@ class AuthView(FramelessWindow):
         lay.setContentsMargins(PAD, 8, PAD, 0)
         lay.setSpacing(0)
 
-        logo = QLabel()
-        logo.setPixmap(A.sailboat_logo(56))
-        logo.setAlignment(Qt.AlignCenter)
-        lay.addWidget(logo)
-
-        lay.addSpacing(3)
-
+        # 顶上原来是 56px 的帆船徽标，用户让去掉了（"徽标都要"→不要），
+        # 空出来的高度**不留在顶上**（那会是一块空洞），让它落到最下面那条
+        # 夜景带里去 —— 窗口高度动不了，理由见下面 _fit() 的注释。
         brand = QLabel(BRAND_CN)
         brand.setObjectName("Brand")
         brand.setAlignment(Qt.AlignCenter)
@@ -117,18 +113,28 @@ class AuthView(FramelessWindow):
         A.paint_night(painter, width, height, horizon=0.885, mountain=1.0)
 
     def _fit(self) -> None:
-        """窗口尺寸**固定**，跟主界面一样大（见 window_base 里的 WINDOW_W/H）。
+        """窗口尺寸**固定**（`WINDOW_W × AUTH_WINDOW_H`），登舟/造舟两页共用。
 
         以前是"窗口跟着当前页走"，登录页比注册页矮一截 —— 换个页面窗口就跳
         一下，像换了个程序（用户要求统一）。现在窗口不动，只让里面那摞页面
         按当前页的高度显示，多出来的高度归底下的山水。
+
+        ★ 高度为什么是 503 而不是跟主界面一样（2026-10-10）：
+          · 去掉帆船徽标之后，用户要求"底下的空间往上缩、整个高度变矮"
+            （"否则删徽标意义何在"）。让出来的是卡片下面那条山水带，见
+            SCENE_BAND —— 不是从内容里抠的。
+          · **主界面到不了 533**：它的自然高度 `sizeHint()` = `minimumSizeHint()`
+            = 577，加底边 BOTTOM_PAD 14 = 592，test_gui 那条「内容正好填满窗口」
+            守的就是它。要压到 533 得砍掉 59px 内容，而它的间距是用户定死的 12px。
+          · 于是两个窗口不一样高了：登录成功切主界面时窗口会长高 59px。
+            这是"登录页要矮"和"主界面内容摆不下"之间唯一的选择。
         """
         page = self.stack.currentWidget()
         if page is not None:
             self.stack.setFixedHeight(page.sizeHint().height())
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
-        self.setFixedSize(WINDOW_W, WINDOW_H)
+        self.setFixedSize(WINDOW_W, AUTH_WINDOW_H)
 
     # ------------------------------------------------------------------
     def _card(self) -> tuple[QFrame, QVBoxLayout]:

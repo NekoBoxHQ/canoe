@@ -120,7 +120,6 @@ def qss() -> str:
      * （test_gui 里有一条断言盯着：带字距的规则必须也带 padding-left。）
      */
     QLabel#Brand {{
-    QLabel#Brand {{
         font-size: 36px;
         font-weight: 700;
         letter-spacing: 10px;

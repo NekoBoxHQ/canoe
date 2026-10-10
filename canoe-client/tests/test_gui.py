@@ -38,7 +38,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QToolButton  # noqa: E402
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton, QToolButton  # noqa: E402
 
 from canoe_core import (  # noqa: E402
     VERSION,
@@ -653,6 +653,15 @@ def main() -> int:
     check("★ QToolTip 也铺了底（Windows 上的应用内提示同理）",
           bool(_re.search(r"QToolTip\s*\{[^}]*background", sheet, _re.S)))
 
+    # ★ 花括号必须配对。少一个 `}`，Qt 的样式表解析器从那行起**整段放弃** ——
+    #   不报错、也不警告，只是后面的规则全部失效：输入框变回系统白底、
+    #   主按钮没了渐变。写 QSS 时最容易犯，而且肉眼完全看不出来
+    #   （今天就这么把 `QLabel#Brand {{` 写成了两行，输入框和按钮的样式
+    #    一起没了；查了半天才用"数花括号"定位到）。
+    check("★ QSS 花括号配对（少一个 } 会让后面的样式整段失效，且不报错）",
+          sheet.count("{") == sheet.count("}"),
+          f"{{ = {sheet.count('{')} 个，}} = {sheet.count('}')} 个")
+
     # ★ 带 letter-spacing 又居中的文字，必须补 `padding-left: <字距>px`。
     #
     # 字距会在**最后一个字后面**也留一截虚宽，而"居中"居的是含那截虚宽的
@@ -758,9 +767,25 @@ def main() -> int:
     check("★ 主界面就是共享尺寸 WINDOW_W × WINDOW_H",
           (view.width(), view.height()) == (mv.WINDOW_W, mv.WINDOW_H),
           f"{view.width()}x{view.height()} vs {mv.WINDOW_W}x{mv.WINDOW_H}")
-    check("★ 登录页也是同一个尺寸",
-          (auth.width(), auth.height()) == (mv.WINDOW_W, mv.WINDOW_H),
-          f"{auth.width()}x{auth.height()}")
+    # 登录页**故意**比主界面矮 59px：去掉帆船徽标之后用户要求"底下的空间往上
+    # 缩、整个高度变矮"（"否则删徽标意义何在"）。矮的这 59px 是从卡片下面那条
+    # 山水带里让出来的（auth_view.SCENE_BAND），不是从内容里抠的。
+    # ★ 宽度必须还是一样的；两个窗口现在**不一样高**，登录成功切主界面时窗口
+    #   会长高 59px —— 这是"登录页要矮"和"主界面内容摆不下（自然高度 577 +
+    #   底边 14 = 592）"之间唯一的选择。
+    check("★ 登录页比主界面矮（用户要求），宽度一样",
+          (auth.width(), auth.height()) == (mv.WINDOW_W, av.AUTH_WINDOW_H)
+          and av.AUTH_WINDOW_H < mv.WINDOW_H,
+          f"{auth.width()}x{auth.height()} vs {mv.WINDOW_W}x{av.AUTH_WINDOW_H}")
+    # 造舟页比登舟页高，窗口得装得下更高的那一页 —— 装不下就是把注册表单切了。
+    # 量的是**真东西**：切到造舟页之后，那张卡片的底边有没有超出窗口。
+    auth._switch(1)
+    pump(app, 0.05)
+    reg_card = auth.stack.widget(1).findChild(QFrame, "Card")
+    bottom = reg_card.mapTo(auth, reg_card.rect().bottomLeft()).y()
+    check("★ 更高的那一页（造舟）也装得下（卡片底边没被切）",
+          bottom < auth.height() - 10, f"卡片底边 {bottom}，窗口 {auth.height()}")
+    auth._switch(0)
     # 主界面的高度是**写死**的（跟登录页同一个数），不再是内容撑出来的 ——
     # 内容多一分少一分，多出来的空当会被 Qt 摊到某个间隔上（踩着过：删掉
     # 「输出结果」那排标题之后，按钮和账号行之间从 8px 悄悄变成 37px）。
