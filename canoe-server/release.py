@@ -168,7 +168,8 @@ def publish_from_github(args) -> int:
     print()
     print("=" * 56)
     print(f"  已发布    {version}    （库里一共 {enabled_total} 个版本）")
-    if before:
+    # 重发同一个版本时不打"上一版" —— 那会印成"上一版 1.0.31"，看着像没发上去
+    if before and before.version != version:
         print(f"  上一版    {before.version}")
     print(f"  来源      GitHub {settings.github_repo}"
           + (f"   tag {args.github}" if args.github else "   最新那个 Release"))
