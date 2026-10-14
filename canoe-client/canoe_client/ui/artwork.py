@@ -382,9 +382,12 @@ _LOGO_FILE = "canoe-logo.png"
 _logo_source: QPixmap | None = None
 _logo_missing = False
 
-#: 小于这个尺寸就用矢量版：圆环徽章缩到十几像素会糊成一团，
-#: 简单的线条反而认得出来。
-_VECTOR_BELOW = 26
+#: 小于这个尺寸就退回矢量画的船。
+#: 原来是 26 —— 旧徽章细节太多，缩到十几像素会糊成一团。现在这张徽标是
+#: 扁平大色块（深蓝圆底 + 浅蓝船），20px 下照样认得出来，所以降到 16：
+#: 标题栏那个 20px 小标就能用上真徽标、跟 exe 图标同一个形象。
+#: 再小（<16）还是矢量兜底，那时圆环已经变成一个点，线条反而清楚。
+_VECTOR_BELOW = 16
 
 
 def _load_logo_source() -> QPixmap | None:
@@ -404,8 +407,8 @@ def _load_logo_source() -> QPixmap | None:
 def sailboat_logo(size: int = 84) -> QPixmap:
     """轻舟徽标。带缓存，界面重建时不必重画。
 
-    优先用**设计稿**（`assets/canoe-logo.png`，圆环 + 点阵地图 + 帆船 + 水波）；
-    文件不在、或者尺寸太小（< 26px）时，退回矢量画的那叶小舟。
+    优先用**设计稿**（`assets/canoe-logo.png`，深蓝圆徽 + 蓝灰双环 + 帆船 + 一道水波）；
+    文件不在、或者尺寸太小（< 16px）时，退回矢量画的那叶小舟。
     """
     if size in _LOGO_CACHE:
         return _LOGO_CACHE[size]
