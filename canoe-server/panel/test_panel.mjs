@@ -249,6 +249,26 @@ check('节点页没有"入口 / 真实节点"那两列了',
         cells.slice(0, 8).map((c) => c.textContent.trim().slice(0, 20)).join(' | '));
 }
 
+// ★ 第一列是**序号**（列表里的位置），不是数据库 id。
+//   用户报过："删除节点后再添加节点，不自动补空位，还一直往上加" ——
+//   原来那列直接显示自增 id（3,4,5…），删掉中间的就空着号、新节点只能
+//   往后排，编号一路涨。id 不能复用（user_node / sessions.node_id / 审计
+//   都引用它），所以改成显示序号、真实 id 只留在 tooltip 里。
+{
+  const firstCol = [...document.querySelectorAll('#page tbody tr')]
+    .map((tr) => tr.children && tr.children[0])
+    .filter(Boolean);
+  const nums = firstCol.map((td) => td.textContent.trim());
+  check('★ 第一列是序号 1..N（连续，不从数据库 id 抄）',
+        nums.length > 0 && nums.every((v, i) => v === String(i + 1)),
+        '实际: ' + nums.join(','));
+  const titles = firstCol.map((td) => (td.firstChild && td.firstChild.getAttribute
+        ? td.firstChild.getAttribute('title') : ''));
+  check('★ 真实 id 藏在 tooltip 里（排查还要用）',
+        titles.length > 0 && titles.every((t) => /数据库 id=\d+/.test(t || '')),
+        '实际: ' + titles.join(' | '));
+}
+
 console.log('\n[6] 弹窗能构造出来');
 navItems[3].dispatchEvent(new window.Event("click", { bubbles: true }));   // 发布页
 await settle();

@@ -263,10 +263,11 @@ function renderTable(columns, rows, emptyText = '暂无数据') {
   if (!rows.length) return h('div', { class: 'empty', text: emptyText });
   const thead = h('thead', null, h('tr', null,
     columns.map((c) => h('th', { class: c.wrap ? 'wrap' : '' , text: c.title }))));
-  const tbody = h('tbody', null, rows.map((row) =>
+  const tbody = h('tbody', null, rows.map((row, i) =>
     h('tr', null, columns.map((c) => {
       const cell = h('td', { class: c.wrap ? 'wrap' : '' });
-      const v = c.render ? c.render(row) : row[c.key];
+      // render(row, i) —— 第二个参数是**行号**（0 起），给"序号"列用
+      const v = c.render ? c.render(row, i) : row[c.key];
       cell.append(v instanceof Node ? v : document.createTextNode(v === null || v === undefined ? '—' : String(v)));
       return cell;
     }))));
@@ -353,7 +354,13 @@ async function pageUsers(root) {
   ));
 
   root.append(h('div', { class: 'card' }, renderTable([
-    { title: 'ID', key: 'id' },
+    // 序号 = 列表里的位置，**不是数据库 id**。
+    // 原来直接显示 id：删掉中间的节点后号就空着（1,2,4），新节点只能往后
+    // 排、编号一路涨，看着像"不补空位"。id 是内部用的（user_node /
+    // sessions.node_id / 审计都引用它），**绝不能为了好看去复用 id** ——
+    // 复用会让旧引用指到新节点上。所以只在 tooltip 里露出来。
+    { title: '#', render: (r, i) => h('span', { class: 'mono', text: String(i + 1),
+        title: '数据库 id=' + r.id }) },
     { title: '用户名', key: 'username' },
     // 列表里也写「普通用户」，跟编辑表单那栏一个字都不差 ——
     // 只写「用户」的时候，"用户"既是这个页面的名字（用户管理）、又是
@@ -532,7 +539,13 @@ async function pageNodes(root) {
   ));
 
   root.append(h('div', { class: 'card' }, renderTable([
-    { title: 'ID', key: 'id' },
+    // 序号 = 列表里的位置，**不是数据库 id**。
+    // 原来直接显示 id：删掉中间的节点后号就空着（1,2,4），新节点只能往后
+    // 排、编号一路涨，看着像"不补空位"。id 是内部用的（user_node /
+    // sessions.node_id / 审计都引用它），**绝不能为了好看去复用 id** ——
+    // 复用会让旧引用指到新节点上。所以只在 tooltip 里露出来。
+    { title: '#', render: (r, i) => h('span', { class: 'mono', text: String(i + 1),
+        title: '数据库 id=' + r.id }) },
     { title: '名称', render: (r) => h('span', {},
         h('strong', { text: r.remark || r.name }),
         r.remark && r.name !== r.remark ? h('span', { class: 'muted', text: '  ' + r.name }) : '') },
