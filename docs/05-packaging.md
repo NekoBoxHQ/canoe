@@ -15,7 +15,7 @@ build.bat
 
 | 项 | 要求 |
 |---|---|
-| Python | 3.10+（开发用 3.13 + sing-box 1.14.3 验证过） |
+| Python | 3.10+（开发用 3.13 + sing-box 1.14.4 验证过） |
 | 依赖 | `build.bat` 会自动装 `pyinstaller` 和 `requirements.txt` |
 | 图标 | `assets/canoe.ico`（已有；改了设计稿就跑 `python assets/make_icon.py` 重新生成，需要 Pillow） |
 | 内核 | `bin/sing-box.exe` —— **没有也能打包**，但用户跑不起来 |
@@ -58,7 +58,7 @@ dist\Canoe.exe --selftest
   "bin_dir_exists": true,
   "singbox": "...\\_MEI000123456\\bin\\sing-box.exe",
   "singbox_found": true,
-  "singbox_version": "sing-box version 1.14.3",
+  "singbox_version": "sing-box version 1.14.4",
   "ruleset": { "geoip-cn.srs": 34185, "geosite-cn.srs": 56144 }
 }
 ```

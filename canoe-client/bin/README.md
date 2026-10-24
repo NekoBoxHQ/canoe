@@ -25,7 +25,7 @@ python scripts\upgrade_kernel.py --from <zip> # 已经自己下好 zip 时（国
 手工覆盖那条路最大的风险不是"装错版本"，而是没人去跑那一步检查。
 
 要手工下也行：<https://github.com/SagerNet/sing-box/releases>（本目录现在这份是
-**1.14.3**）。检查当前版本：
+**1.14.4**）。检查当前版本：
 
 ```bash
 bin\sing-box.exe version
@@ -39,7 +39,7 @@ bin\sing-box.exe version
 
 > 这里原本写着"推荐 1.9.x ~ 1.10.x，1.11 起 `inbounds[].sniff` 被废弃，
 > 本客户端生成的配置用的是旧写法"—— 早就不成立了：配置生成器走的是现行的
-> `route.rules` 里 `{"action": "sniff"}`，1.14.3 对系统代理 / TUN / 回国
+> `route.rules` 里 `{"action": "sniff"}`，1.14.4 对系统代理 / TUN / 回国
 > 三种配置 `check` 都是 rc=0 且一条警告都没有。
 
 ## wintun.dll
