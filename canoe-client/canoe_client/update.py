@@ -835,7 +835,9 @@ def last_update_log() -> str:
             #   所以按顺序试，谁先成功算谁。
             raw = path.read_bytes()
             text = ""
-            for enc in ("utf-8", "mbcs", "gbk"):
+            # GBK 必须先于 mbcs：英文 Windows 的 ACP 是单字节代码页，
+            # 随便什么字节都能“成功”解成乱码，会把真正的 GBK 误判掉。
+            for enc in ("utf-8", "gbk", "mbcs"):
                 try:
                     text = raw.decode(enc)
                     break

@@ -241,12 +241,15 @@ done
 # 分支写错、变量名写错这类问题。假的 runuser 要真的把命令执行了，
 # 不然只能验到"没报错"，验不到"确实跑起来了"。
 FAKEBIN="$TMP/fakebin"; mkdir -p "$FAKEBIN"
-cat > "$FAKEBIN/runuser" <<'FAKE'
+BASH_BIN="$(command -v bash)"
+SH_BIN="$(command -v sh)"
+cat > "$FAKEBIN/runuser" <<FAKE
 #!/bin/sh
 # 假 runuser：吃掉 -u USER [--]，剩下的当成要执行的命令
 shift 2
-[ "${1:-}" = "--" ] && shift
-exec "$@"
+[ "\${1:-}" = "--" ] && shift
+[ "\${1:-}" = "bash" ] && shift
+exec "$BASH_BIN" "\$@"
 FAKE
 chmod +x "$FAKEBIN/runuser"
 
@@ -254,7 +257,20 @@ AS_USER_BODY="$(sed -n '/^as_user()/,/^}/p' "$TARGET")"
 check "抠得出 as_user 函数体" "$([[ -n "$AS_USER_BODY" ]] && echo 0 || echo 1)"
 
 # PATH 前置而不是替换 —— 替换会把 bash 自己弄丢，报 "bash: command not found"
-OUT="$(PATH="$FAKEBIN:$PATH" bash -c "
+ln -sf "$BASH_BIN" "$FAKEBIN/bash"
+ln -sf "$SH_BIN" "$FAKEBIN/sh"
+case "$(uname -s)" in
+    CYGWIN*|MINGW*|MSYS*)
+        # Git Bash 的 execvp 按 Windows 可执行文件规则还会找 .exe；
+        # 只建无后缀链接时，假的 runuser 最终会 exec 失败并返回 127。
+        ln -sf "$BASH_BIN" "$FAKEBIN/bash.exe"
+        ln -sf "$SH_BIN" "$FAKEBIN/sh.exe"
+        ;;
+esac
+
+# 只给假 runuser 和一个 bash，不暴露系统 sudo。这样测到的是真正的
+# “sudo 不存在 -> 回退 runuser”分支，而不是宿主机恰好怎么装。
+OUT="$(PATH="$FAKEBIN" "$BASH_BIN" -c "
     APP_USER=canoe
     $AS_USER_BODY
     as_user 'echo 切过去了'

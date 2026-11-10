@@ -261,14 +261,14 @@ def main() -> int:
 
     # --- 4. 交班脚本 ---
     print("\n[4] 替换脚本（.bat）")
-    fake_exe2 = tmp / "Canoe2.exe"
+    fake_exe2 = (tmp / "Canoe2.exe").resolve()
     fake_exe2.write_bytes(b"MZ old")
     # ★ 中转目录挪进沙箱：一是别往真实的 %LOCALAPPDATA%\Canoe\update 写东西，
     #   二是要把"程序旁边"和"中转目录"摆成两个地方来验 ——
     #   程序旁边就是用户的桌面，那儿一个交班文件都不许出现。
     staged_dir = tmp / "staging"
     staged_dir.mkdir(exist_ok=True)
-    staged2 = staged_dir / "Canoe.exe.new"
+    staged2 = (staged_dir / "Canoe.exe.new").resolve()
     staged2.write_bytes(b"MZ new")
     handover_old = staged_dir / "Canoe.exe.old"
     handover_bad = staged_dir / "Canoe.exe.bad"
