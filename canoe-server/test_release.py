@@ -367,6 +367,32 @@ def main() -> int:
     finally:
         github._get_json = real_json
 
+    real_open = _urlreq.urlopen
+    try:
+        captured = {}
+
+        class _AssetResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def _fake_open(req, timeout=0):
+            captured["timeout"] = timeout
+            return _AssetResp()
+
+        _urlreq.urlopen = _fake_open
+        github.open_asset({
+            "browser_download_url": "https://example.invalid/Canoe.zip",
+        })
+        check("★ 大安装包下载使用独立的长读取超时",
+              captured.get("timeout") == github.ASSET_TIMEOUT
+              and github.ASSET_TIMEOUT >= 300,
+              str(captured))
+    finally:
+        _urlreq.urlopen = real_open
+
     # --- 10. 从 Release 拉包并发布（pull_from_github）---
     #
     # 这一段是真跑：把"Release 资产"的下载地址指向本地文件（file:// 走的是

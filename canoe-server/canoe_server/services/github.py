@@ -23,6 +23,9 @@ API = "https://api.github.com"
 #: 元数据请求的超时（秒）。下载大包走的是另一个 socket，超时按每次读写算，
 #: 所以 83MB 不会被这个值卡住。
 TIMEOUT = 30
+#: 安装包下载的读取超时。GitHub Release 资产会 302 到 CDN，80 MB 级文件
+#: 在网络抖动时很容易出现单次读取停顿；30 秒会把整次拉取直接打断。
+ASSET_TIMEOUT = 300
 UA = "canoe-server"
 
 
@@ -110,4 +113,4 @@ def open_asset(asset: dict):
     GitHub 的下载地址会 302 到它自己的 CDN，urlopen 默认跟着跳。
     """
     req = urllib.request.Request(asset["browser_download_url"], headers={"User-Agent": UA})
-    return urllib.request.urlopen(req, timeout=TIMEOUT)
+    return urllib.request.urlopen(req, timeout=ASSET_TIMEOUT)
