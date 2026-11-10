@@ -43,7 +43,6 @@ from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton, QToolBu
 
 from canoe_core import (  # noqa: E402
     VERSION,
-    Palette as P,
     Route,
     Text,
     new_sub_key,
@@ -99,9 +98,10 @@ class FakeSysProxy:
         self.calls.append(("set", host, port))
         self._active = True
 
-    def clear_proxy(self) -> None:
+    def clear_proxy(self) -> bool:
         self.calls.append(("clear",))
         self._active = False
+        return True
 
     def has_backup(self) -> bool:
         return self._active
@@ -804,32 +804,44 @@ def main() -> int:
           f"{view.height() - v_bottom}，该是 {mv.BOTTOM_PAD}")
 
     # 服务端说改 -> 推送 -> 客户端跟着改（只是不在界面上写出来）
-    fake_api.route_mode = Route.IN
-    fake_api.revision = "rev-in"
-    view.on_push_event({"type": "config_changed", "revision": "rev-in"})
-    ok = wait_for(app, lambda: view._opts.route_mode == Route.IN, timeout=10)
-    check("★ 收到推送后线路方向跟着变", ok, view._opts.route_mode)
-    check("★「分流」的说明换成回国的口径（这是唯一能看见方向的地方）",
-          Route.HINTS[Route.IN] in view.rb_split.toolTip(), view.rb_split.toolTip())
-    check("★ 方向落了盘（冷启动没网时先用它顶着）",
-          '"in"' in cfg_mod.CONFIG_FILE.read_text(encoding="utf-8"),
-          cfg_mod.CONFIG_FILE.read_text(encoding="utf-8")[-200:])
-
-    # 在航时被切：必须真的重连一次
     restarts: list[int] = []
     real_start, real_stop = kernel.start, kernel.stop
     kernel.start = lambda *a, **k: restarts.append(1)
     kernel.stop = lambda *a, **k: restarts.append(0)
+    fake_api.route_mode = Route.IN
+    fake_api.revision = "rev-in"
     try:
+        view.on_push_event({"type": "config_changed", "revision": "rev-in"})
+        ok = wait_for(
+            app,
+            lambda: view._opts.route_mode == Route.IN
+            and len(restarts) >= 2
+            and session.state == STATE_SAILED,
+            timeout=10,
+        )
+        check("★ 收到推送后线路方向跟着变", ok, view._opts.route_mode)
+        check("★「分流」的说明换成回国的口径（这是唯一能看见方向的地方）",
+              Route.HINTS[Route.IN] in view.rb_split.toolTip(), view.rb_split.toolTip())
+        check("★ 方向落了盘（冷启动没网时先用它顶着）",
+              '"in"' in cfg_mod.CONFIG_FILE.read_text(encoding="utf-8"),
+              cfg_mod.CONFIG_FILE.read_text(encoding="utf-8")[-200:])
+
+        # 在航时被切：必须真的重连一次
         view._set_state(STATE_SAILED)
         fake_api.route_mode = Route.OUT
         fake_api.revision = "rev-out-2"
         view.on_push_event({"type": "config_changed", "revision": "rev-out-2"})
-        wait_for(app, lambda: view._opts.route_mode == Route.OUT, timeout=10)
+        wait_for(
+            app,
+            lambda: view._opts.route_mode == Route.OUT
+            and restarts.count(1) >= 2
+            and session.state == STATE_SAILED,
+            timeout=10,
+        )
     finally:
         kernel.start, kernel.stop = real_start, real_stop
     check("★ 在航时被切方向会重连（内核确实重启了一次）",
-          restarts.count(1) >= 1, str(restarts))
+          restarts.count(1) >= 2, str(restarts))
     check("方向回到出国", view._opts.route_mode == Route.OUT, view._opts.route_mode)
 
     # ★ 封 B 不该把在线的 A 一起踢下线（真机上出过：A 登录着，管理员封 B，
@@ -963,7 +975,11 @@ def main() -> int:
     # 起 TUN 之前也要等一拍，不能只在停 TUN 之后等。
     import inspect as _inspect
 
-    start_src = _inspect.getsource(k_mod.SingBoxKernel.start)
+    start_src = (
+        _inspect.getsource(k_mod.SingBoxKernel.start)
+        + "\n"
+        + _inspect.getsource(k_mod.SingBoxKernel._start_locked)
+    )
     check("★ 起 TUN 之前会等一拍（切换那条路上补的）",
           "_ever_ran" in start_src and "TUN_TEARDOWN_GRACE" in start_src,
           "start() 里没找到起 TUN 前的等待")

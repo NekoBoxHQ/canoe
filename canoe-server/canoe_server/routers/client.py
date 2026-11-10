@@ -46,6 +46,7 @@ from ..deps import (
 from ..models import AuditLog, User, epoch
 from ..services.broadcast import hub
 from ..services.sessions import CanoeError, heartbeat as svc_heartbeat, start_session
+from ..security import token_hash
 from ..services.nodes import subscription_text_for
 from ..services.updates import (
     latest_release,
@@ -258,6 +259,7 @@ async def events(request: Request):
     with SessionLocal() as db:
         user = authenticate(db, raw)      # 令牌无效/被封禁/已到期都会在这里抛
         user_id = user.id
+    token_key = token_hash(raw or "")
 
     ok, why = hub.can_accept(user_id)
     if not ok:
@@ -270,7 +272,7 @@ async def events(request: Request):
 
     async def generate():
         try:
-            async for event in hub.stream(user_id, hello):
+            async for event in hub.stream(user_id, hello, token_key=token_key):
                 yield _sse_frame(event)
         except asyncio.CancelledError:
             # 客户端断开 / 服务端关闭，属正常路径，交给 finally 清理

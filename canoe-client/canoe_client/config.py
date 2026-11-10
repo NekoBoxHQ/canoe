@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
@@ -96,13 +97,25 @@ class ClientConfig:
                 self._data[key] = value
 
     def save(self) -> None:
+        temp_path: Path | None = None
         try:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            CONFIG_FILE.write_text(
-                json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8"
+            fd, name = tempfile.mkstemp(
+                prefix=".client.", suffix=".tmp", dir=str(CONFIG_DIR)
             )
+            temp_path = Path(name)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(self._data, indent=2, ensure_ascii=False))
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(temp_path, CONFIG_FILE)
         except OSError:
-            pass  # 写不了配置不该让程序崩
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            # 写不了配置不该让程序崩，旧文件也保持完整。
 
     def __getitem__(self, key: str) -> Any:
         return self._data.get(key, DEFAULTS.get(key))

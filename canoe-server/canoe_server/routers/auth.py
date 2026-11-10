@@ -29,6 +29,7 @@ from ..database import get_db
 from ..deps import client_ip, get_current_user
 from ..models import AuditLog, Token, User, as_aware, epoch, utcnow
 from ..security import dummy_verify, hash_password, token_hash, verify_password
+from ..services.broadcast import hub, notify_kick
 from ..services.ratelimit import (
     ip_key,
     login_failed,
@@ -218,6 +219,10 @@ def logout(
         revoke_login_token(db, creds.credentials)
 
     _audit(db, row.user_id, "logout", "all_devices" if all_devices else "", client_ip(request))
+    if all_devices:
+        notify_kick(row.user_id, "账号已从所有设备退出", permanent=True)
+    else:
+        hub.disconnect_token(row.user_id, token_hash(creds.credentials))
     return {"ok": True}
 
 

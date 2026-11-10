@@ -243,7 +243,7 @@ python tests/test_sysproxy.py
 #   自己开临时 APPDATA 跑，不动你本机那份 client.json
 python tests/test_remember.py
 
-# GUI 端到端 —— 离屏，会真的登舟一次（93 项）
+# GUI 端到端 —— 离屏，会真的登舟一次
 set QT_QPA_PLATFORM=offscreen
 python tests/test_gui.py
 

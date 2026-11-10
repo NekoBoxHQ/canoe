@@ -35,7 +35,9 @@ _CLOSE: dict[str, Any] = {"type": "__close__"}
 
 class EventHub:
     def __init__(self) -> None:
-        self._subs: dict[asyncio.Queue, int] = {}   # queue -> user_id
+        #: queue -> (user_id, token_hash)。保留令牌哈希是为了单设备登出时
+        #: 精确关闭对应长连接，而不是把同账号的其他设备一起断开。
+        self._subs: dict[asyncio.Queue, tuple[int, str]] = {}
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -52,11 +54,11 @@ class EventHub:
 
     def connections_of(self, user_id: int) -> int:
         with self._lock:
-            return sum(1 for uid in self._subs.values() if uid == user_id)
+            return sum(1 for uid, _token in self._subs.values() if uid == user_id)
 
     def stats(self) -> dict[str, int]:
         with self._lock:
-            users = len({uid for uid in self._subs.values()})
+            users = len({uid for uid, _token in self._subs.values()})
             return {"connections": len(self._subs), "users": users}
 
     # -- 订阅 ----------------------------------------------------------
@@ -65,24 +67,30 @@ class EventHub:
         with self._lock:
             if len(self._subs) >= settings.sse_max_connections:
                 return False, "连接数已达上限"
-            mine = sum(1 for uid in self._subs.values() if uid == user_id)
+            mine = sum(1 for uid, _token in self._subs.values() if uid == user_id)
             if mine >= settings.sse_max_per_user:
                 return False, "该账号长连接数已达上限"
         return True, ""
 
-    def _register(self, user_id: int) -> asyncio.Queue:
+    def _register(self, user_id: int, token_key: str = "") -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_SIZE)
         with self._lock:
-            self._subs[queue] = user_id
+            self._subs[queue] = (user_id, token_key)
         return queue
 
     def _drop(self, queue: asyncio.Queue) -> None:
         with self._lock:
             self._subs.pop(queue, None)
 
-    async def stream(self, user_id: int, hello: dict[str, Any]) -> AsyncIterator[dict]:
+    async def stream(
+        self,
+        user_id: int,
+        hello: dict[str, Any],
+        *,
+        token_key: str = "",
+    ) -> AsyncIterator[dict]:
         """一条连接的完整生命周期。产出 dict，由路由层转成 SSE 帧。"""
-        queue = self._register(user_id)
+        queue = self._register(user_id, token_key)
         try:
             yield {"type": "hello", **hello}
             while True:
@@ -114,7 +122,9 @@ class EventHub:
         """
         with self._lock:
             targets = [
-                q for q, uid in self._subs.items() if user_id is None or uid == user_id
+                q
+                for q, (uid, _token) in self._subs.items()
+                if user_id is None or uid == user_id
             ]
         if not targets:
             return 0
@@ -139,6 +149,27 @@ class EventHub:
           没断"，不是数据泄漏。）
         """
         return self.publish(_CLOSE, user_id=user_id)
+
+    def disconnect_token(self, user_id: int, token_key: str) -> int:
+        """只关闭某个登录令牌对应的长连接，同账号其他设备保持连接。"""
+        if not token_key:
+            return 0
+        with self._lock:
+            targets = [
+                q
+                for q, (uid, stored_key) in self._subs.items()
+                if uid == user_id and stored_key == token_key
+            ]
+        if not targets:
+            return 0
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return len(targets)
+        try:
+            loop.call_soon_threadsafe(self._fanout, _CLOSE, targets)
+        except RuntimeError:
+            return 0
+        return len(targets)
 
     def _fanout(self, event: dict[str, Any], targets: list[asyncio.Queue]) -> None:
         """在事件循环线程里执行。

@@ -389,7 +389,9 @@ def main() -> int:
     check(f"匿名 GET {Api.CLIENT_LATEST} 200", r.status_code == 200, r.text[:250])
     latest = r.json() if r.status_code == 200 else {}
     check("返回版本号", latest.get("version") == release_version, str(latest)[:200])
-    check("返回下载地址", str(latest.get("url", "")).endswith("Canoe-smoke.zip"))
+    expected_name = f"Canoe-smoke-{digest[:16]}.zip"
+    check("返回下载地址", str(latest.get("url", "")).endswith(expected_name),
+          str(latest.get("url", "")))
     check("返回 sha256", latest.get("sha256") == digest)
     check("★ 更新响应里没有任何节点信息", not scan_leaks(latest), str(latest)[:200])
 
@@ -678,6 +680,15 @@ def main() -> int:
                 if host and not host.startswith("127.0.0.1") and not host.startswith("localhost"):
                     external.append(f"{path}: {token}{host}")
     check("★ 面板不引用任何外部资源（无 CDN）", not external, str(external[:5]))
+    csp = r.headers.get("content-security-policy", "")
+    check("★ 面板启用了严格 CSP",
+          "script-src 'self'" in csp and "frame-ancestors 'none'" in csp, csp)
+    check("★ 面板不能再被 iframe 嵌入",
+          r.headers.get("x-frame-options") == "DENY",
+          r.headers.get("x-frame-options", ""))
+    boot_js = panel_client.get("/panel/boot.js")
+    check("★ 启动脚本作为静态资源可加载", boot_js.status_code == 200,
+          str(boot_js.status_code))
 
     # 面板本身不需要令牌就能下载（它只是个前端），
     # 真正的权限在 /api/admin/* —— 这一条确认"藏 HTML"不是我们的防护手段

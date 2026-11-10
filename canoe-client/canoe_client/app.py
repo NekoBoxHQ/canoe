@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -16,7 +17,6 @@ from .events import stream
 from .kernel import kernel
 from .logbus import bus
 from .options import RunOptions
-from .session import session
 from .ui.auth_view import AuthView
 from .ui.main_view import MainView
 from .ui.style import qss
@@ -106,9 +106,14 @@ class CanoeApp:
         try:
             stream.stop()
             if sysproxy.has_backup():
-                sysproxy.clear_proxy()
-            if session.sailing or kernel.running:
-                kernel.stop()
+                for attempt in range(3):
+                    if sysproxy.clear_proxy():
+                        break
+                    if attempt < 2:
+                        time.sleep(0.1 * (attempt + 1))
+            # 无条件 stop：启航 Worker 可能已经拿到操作权但内核还没显示为
+            # running，条件判断会漏掉这一刻。内核内部用启停互斥锁收口。
+            kernel.stop()
         except Exception:  # noqa: BLE001 - 退出流程不能抛
             try:
                 sysproxy.clear_proxy()

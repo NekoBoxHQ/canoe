@@ -13,7 +13,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import (
-    JSON,
     Boolean,
     DateTime,
     ForeignKey,
@@ -28,6 +27,7 @@ from canoe_core import Route
 
 from .config import settings
 from .database import Base
+from .security import decrypt_node_link, encrypt_node_link
 
 
 def utcnow() -> datetime:
@@ -158,9 +158,10 @@ class Node(Base):
     remark: Mapped[str] = mapped_column(String(255), default="")
 
     # --- ★ 节点本体：一行链接 ---
-    #: 管理员贴进来的原始链接（ss:// vmess:// vless:// trojan://）。
-    #: 这就是发给客户端的东西，原样存、原样发，不做改写。
-    link: Mapped[str] = mapped_column(Text, default="")
+    #: 静态加密后的链接。旧库的明文列暂时保留为 legacy_link，供启动迁移读取；
+    #: 新写入只进 link_enc，迁移后会把旧列清空。
+    link_enc: Mapped[str] = mapped_column(Text, default="")
+    legacy_link: Mapped[str] = mapped_column("link", Text, default="")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -171,6 +172,19 @@ class Node(Base):
         back_populates="node", cascade="all, delete-orphan"
     )
 
+    @property
+    def link(self) -> str:
+        """仅供服务端和管理接口读取的明文链接，不直接映射到数据库列。"""
+        if self.link_enc:
+            return decrypt_node_link(self.link_enc)
+        return self.legacy_link or ""
+
+    @link.setter
+    def link(self, value: str) -> None:
+        raw = (value or "").strip()
+        self.link_enc = encrypt_node_link(raw)
+        self.legacy_link = ""
+
 
 # ==========================================================================
 # user_node  —— 需求指定的绑定表
@@ -180,8 +194,8 @@ class Node(Base):
 class UserNode(Base):
     """用户与节点的绑定。
 
-    一个用户可以绑多个节点；实际用哪个由 sessions.node_id 决定。
-    没绑任何节点的用户走自动分配（按 sort_order 取第一个可用节点）。
+    一个用户可以绑多个节点；客户端从加密订阅里自行选择。
+    没绑任何节点的用户会收到空订阅，不存在自动分配。
     """
 
     __tablename__ = "user_node"

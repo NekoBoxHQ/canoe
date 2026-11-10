@@ -191,6 +191,20 @@ def main() -> int:
         hub._drop(theirs)
         check("★ 一条连接都没有时 publish 返回 0，不抛异常",
               bc.notify_kick(1, "x") == 0)
+
+        print("\n[8] 单设备登出只断自己的推送连接")
+        hub._loop = loop
+        token_a = hub._register(7, "token-a")
+        token_b = hub._register(7, "token-b")
+        before = len(loop.calls)
+        closed = hub.disconnect_token(7, "token-a")
+        check("★ 只关闭目标令牌的一条连接", closed == 1, str(closed))
+        check("★ 关闭哨兵没有发给同账号其他设备",
+              loop.calls[before][0] == [token_a], str(loop.calls[before][0]))
+        check("★ 另一台设备的连接仍在登记",
+              hub.connections_of(7) == 2 and token_b in hub._subs)
+        hub._drop(token_a)
+        hub._drop(token_b)
     finally:
         cleanup(hub, mine, theirs, loop, old_loop)
 

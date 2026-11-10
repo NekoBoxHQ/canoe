@@ -10,9 +10,14 @@ canoe_core.crypto）。服务端随时可以不发 —— 空信封就是"没有
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import tempfile
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DBSession
@@ -30,6 +35,18 @@ from canoe_core import (
 from ..config import settings
 from ..models import ClientRelease, User, epoch
 from . import github
+
+
+#: 服务端按单进程部署（SSE 中心也要求单进程），因此进程内写锁足以把
+#: “校验文件 + 切换最终文件 + 更新数据库记录”串成一个不可交错的发布事务。
+_release_write_lock = threading.RLock()
+
+
+@contextmanager
+def release_write_guard() -> Iterator[None]:
+    """串行化发布文件与发布记录的更新。"""
+    with _release_write_lock:
+        yield
 
 
 # --------------------------------------------------------------------------
@@ -54,6 +71,20 @@ def safe_filename(name: str) -> str:
     base = Path(name).name
     base = re.sub(r"[^A-Za-z0-9._-]", "_", base)
     return base[:200] or "release.bin"
+
+
+def stored_release_name(filename: str, digest: str) -> str:
+    """生成内容寻址的最终文件名，避免不同包互相覆盖。
+
+    文件名仍保持原扩展名，方便下载器识别；摘要前缀足够区分版本。
+    即使两次上传并发，数据库最终指向哪份记录都不会出现“元数据和旧文件
+    内容混在一起”的状态。
+    """
+    safe = safe_filename(filename)
+    path = Path(safe)
+    suffix = path.suffix[:32]
+    stem = path.stem[: max(1, 180 - len(suffix))]
+    return f"{stem}-{digest[:16]}{suffix}"
 
 
 def sha256_file(path: Path) -> str:
@@ -115,11 +146,19 @@ def store_release_file(
       python313.dll，弹一句 "Failed to load Python DLL" 就没了。
       让发布方自己报数，是唯一能戳穿这种情况的办法。
     """
-    dest = release_dir() / safe_filename(filename)
+    directory = release_dir()
+    target_name = safe_filename(filename)
     limit = settings.max_release_mb * 1024 * 1024
     size = 0
+    fd = -1
+    temp_path: Path | None = None
     try:
-        with dest.open("wb") as out:
+        fd, temp_name = tempfile.mkstemp(
+            prefix=f".{target_name}.", suffix=".part", dir=str(directory)
+        )
+        temp_path = Path(temp_name)
+        with os.fdopen(fd, "wb") as out:
+            fd = -1
             while True:
                 chunk = src.read(1024 * 1024)
                 if not chunk:
@@ -130,21 +169,33 @@ def store_release_file(
                         f"安装包超过 {settings.max_release_mb} MB 上限"
                     )
                 out.write(chunk)
+            out.flush()
+            os.fsync(out.fileno())
     except BaseException:
-        dest.unlink(missing_ok=True)
+        if fd >= 0:
+            os.close(fd)
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
         raise
 
-    stored = sha256_file(dest)
+    stored = sha256_file(temp_path)
     if expected_size and size != expected_size:
-        dest.unlink(missing_ok=True)
+        temp_path.unlink(missing_ok=True)
         raise ReleaseMismatch(
             f"安装包不完整：发布方声明 {expected_size} 字节，实际收到 {size} 字节"
         )
     if expected_sha256 and stored.lower() != expected_sha256.strip().lower():
-        dest.unlink(missing_ok=True)
+        temp_path.unlink(missing_ok=True)
         raise ReleaseMismatch(
             f"安装包摘要对不上（服务端算出 {stored[:16]}…），上传可能被截断了"
         )
+
+    dest = directory / stored_release_name(target_name, stored)
+    try:
+        os.replace(temp_path, dest)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
     return dest, size, stored
 
 
@@ -265,30 +316,31 @@ def pull_from_github(
             "",
         )[:200]
 
-    try:
-        with github.open_asset(asset) as src:
-            _dest, size, sha = store_release_file(
-                src,
-                filename,
-                expected_size=int(asset.get("size") or 0),
-                expected_sha256=digest,
-            )
-    except github.GithubError as exc:
-        raise ReleaseSourceError(str(exc)) from exc
-    except (ReleaseTooLarge, ReleaseMismatch):
-        raise                      # 这两种调用方要单独认，别包成"上游问题"
-    except OSError as exc:
-        raise ReleaseSourceError(f"下载或写盘失败：{exc}") from exc
+    with release_write_guard():
+        try:
+            with github.open_asset(asset) as src:
+                dest, size, sha = store_release_file(
+                    src,
+                    filename,
+                    expected_size=int(asset.get("size") or 0),
+                    expected_sha256=digest,
+                )
+        except github.GithubError as exc:
+            raise ReleaseSourceError(str(exc)) from exc
+        except (ReleaseTooLarge, ReleaseMismatch):
+            raise                      # 这两种调用方要单独认，别包成"上游问题"
+        except OSError as exc:
+            raise ReleaseSourceError(f"下载或写盘失败：{exc}") from exc
 
-    row = publish_release(
-        db,
-        version=ver,
-        filename=filename,
-        size=size,
-        sha256=sha,
-        notes=notes,
-        min_version=min_version,
-    )
+        row = publish_release(
+            db,
+            version=ver,
+            filename=dest.name,
+            size=size,
+            sha256=sha,
+            notes=notes,
+            min_version=min_version,
+        )
     return row, bool(digest)
 
 

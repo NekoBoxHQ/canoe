@@ -72,12 +72,13 @@ def revoke_login_token(db: DBSession, raw_token: str) -> None:
     db.commit()
 
 
-def revoke_user_tokens(db: DBSession, user_id: int) -> int:
+def revoke_user_tokens(db: DBSession, user_id: int, *, commit: bool = True) -> int:
     """封禁/删除用户时调用：吊销其全部令牌，立即踢下线。"""
     result = db.execute(
         update(Token).where(Token.user_id == user_id, Token.revoked.is_(False)).values(revoked=True)
     )
-    db.commit()
+    if commit:
+        db.commit()
     return result.rowcount or 0
 
 
@@ -198,13 +199,14 @@ def stop_session(db: DBSession, session_id: str, user: User) -> None:
         db.commit()
 
 
-def revoke_user_sessions(db: DBSession, user_id: int) -> int:
+def revoke_user_sessions(db: DBSession, user_id: int, *, commit: bool = True) -> int:
     result = db.execute(
         update(SessionRow)
         .where(SessionRow.user_id == user_id, SessionRow.ended_at.is_(None))
         .values(revoked=True, ended_at=utcnow())
     )
-    db.commit()
+    if commit:
+        db.commit()
     return result.rowcount or 0
 
 

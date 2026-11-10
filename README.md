@@ -87,7 +87,7 @@ canoe/
 │   │   ├── sysproxy.py    Windows 系统代理（含自愈）
 │   │   └── ui/            界面（含 tray.py 托盘）
 │   ├── build.bat          一键打包成 Canoe.exe
-│   └── tests/             6 套，共 281 项
+│   └── tests/             8 套独立回归测试
 │
 ├── canoe-server/          服务端
 │   ├── serve.py           统一启动器（双端口，单进程）
@@ -203,6 +203,9 @@ canoe release --list     # 看已经发过哪些
 > 用 `bash -c "$(curl …)"`，**不要**用 `curl … | bash` ——
 > 管道会占掉 stdin，菜单和向导就再也读不到你敲的字了。
 
+发布包会先写入同目录临时文件，核对字节数和 SHA256 后原子改名；最终文件名
+带内容摘要。不同内容不会覆盖同名旧包，失败上传也不会破坏已经在线版本。
+
 安装向导会依次问：域名、面板端口、管理员账号、证书方式
 （Let's Encrypt / 自签 / 已有证书 / 不要 TLS）。
 **不问客户端端口** —— 它固定 `58588`，客户端把它写死在代码里了。
@@ -236,12 +239,13 @@ set CANOE_CA_BUNDLE=..\canoe-server\data\certs\local-cert.pem
 python tests/test_server.py     # 49 项
 
 # —— 服务端（canoe-server/）——
-python smoke_test.py https://127.0.0.1:8443 --insecure   # 105 项
+python smoke_test.py https://127.0.0.1:8443 --insecure
 cd panel && bun test_panel.mjs                            # 面板 DOM（30 项）
 bash deploy/test_canoe_sh.sh                              # 管理脚本（44 项）
 ```
 
-合计 **458 项**。
+各脚本使用自带临时目录和模拟服务，末尾会打印本次实际通过数。缺少
+`sing-box.exe` 的配置/真实代理检查会明确跳过，不会伪装成通过。
 
 ---
 

@@ -6,9 +6,7 @@
 """
 from __future__ import annotations
 
-from typing import Any, Literal
-
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from .constants import PROTOCOL_VERSION, Route
 from .crypto import Envelope

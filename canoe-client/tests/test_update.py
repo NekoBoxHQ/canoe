@@ -142,7 +142,17 @@ def main() -> int:
             update.prepare_update(noexe)
             check("包里没 exe 应当报错", False)
         except update.UpdateError as exc:
-            check("★ 包里没 exe -> 可读报错", "没有 exe" in exc.message, exc.message)
+            check("★ 包里没有约定主程序 -> 可读报错",
+                  "Canoe.exe" in exc.message, exc.message)
+
+        wrong_exe = tmp / "wrong-exe.zip"
+        make_zip(wrong_exe, member="helper.exe", payload=FAKE_EXE)
+        try:
+            update.prepare_update(wrong_exe)
+            check("包里有错名 exe 也应当报错", False)
+        except update.UpdateError as exc:
+            check("★ 不拿包里的任意 helper.exe 冒充主程序",
+                  "Canoe.exe" in exc.message, exc.message)
 
         # 坏的 zip
         bad = tmp / "bad.zip"

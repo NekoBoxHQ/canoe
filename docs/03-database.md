@@ -17,6 +17,9 @@ python seed.py --schema > schema.sql
 默认 SQLite（开箱即用）；生产建议 PostgreSQL，把 `DATABASE_URL` 换成
 `postgresql+psycopg://canoe:password@host/db` 即可，模型层不用改。
 
+SQLite 连接统一开启 `foreign_keys=ON`、`busy_timeout=5000` 和 WAL，
+避免开发库与生产库在外键级联和并发等待上的行为分叉。
+
 ---
 
 ## 1. `users` — 账号
@@ -47,6 +50,7 @@ python seed.py --schema > schema.sql
 | `user_id` | FK → users | 级联删除 |
 | `token_hash` | VARCHAR(64) UNIQUE | **令牌的 SHA-256** |
 | `device_id` | VARCHAR(64) | 签发时绑定的设备 |
+| `sub_key_enc` | TEXT | 会话级订阅密钥的 AES-GCM 密文（用途绑定 AAD） |
 | `revoked` | BOOLEAN | 吊销标记 |
 | `expire_at` | DATETIME | |
 | `created_at` | DATETIME | |
@@ -76,7 +80,8 @@ python seed.py --schema > schema.sql
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `id` | INTEGER PK | |
-| `link` | TEXT | ★ **节点链接原文**，如 `ss://…@host:port#名称` |
+| `link_enc` | TEXT | ★ 节点链接的 AES-GCM 静态密文 |
+| `link` | TEXT | 旧版明文兼容列；启动迁移后清空 |
 | `name` | VARCHAR(64) | 显示名（面板用；不指定就取链接里 `#` 后面那段） |
 | `remark` | VARCHAR(255) | 管理员给自己看的备注，**不进订阅** |
 | `enabled` | BOOLEAN | 需求里的 `status`；停用后不进订阅 |
@@ -90,9 +95,12 @@ sing-box 配置才需要的，现在服务端不碰流量，一个字段都不�
 面板列表里显示的协议 / 主机 / 端口是服务端**临时解析**出来的
 （`services/nodes.link_summary()`），不入库。
 
-> **`link` 是机密。** 它只允许出现在两个地方：加密订阅的信封里，
+> **节点链接是机密。** 明文只允许出现在两个地方：加密订阅的信封里，
 > 和 `/api/admin/nodes`（需 admin）。别的明文响应一律不许有 ——
 > 每个响应出网前过一遍 `canoe_core.assert_no_leaks()`。
+>
+> 新节点只写 `link_enc`，旧明文由 `_migrate_node_links()` 加密并清空。
+> 主密钥损坏时迁移会保留旧列，不会为了“迁移完成”而丢节点。
 
 ---
 

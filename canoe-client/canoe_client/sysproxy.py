@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import ctypes
 import json
+import os
 import socket
+import tempfile
 import winreg
 from pathlib import Path
 from typing import Any
@@ -148,13 +150,26 @@ def _port_alive(port: int, timeout: float = 0.25) -> bool:
 
 
 def _save_backup(values: dict[str, Any]) -> None:
+    temp_path: Path | None = None
     try:
         BACKUP_FILE.parent.mkdir(parents=True, exist_ok=True)
         # (值, 类型) 元组要转成列表才能进 JSON
         payload = {name: [pair[0], pair[1]] for name, pair in values.items()}
-        BACKUP_FILE.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        fd, name = tempfile.mkstemp(
+            prefix=".proxy.", suffix=".tmp", dir=str(BACKUP_FILE.parent)
+        )
+        temp_path = Path(name)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp_path, BACKUP_FILE)
     except (OSError, TypeError, IndexError):
-        pass
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _load_backup() -> dict[str, Any]:
@@ -224,7 +239,7 @@ def set_proxy(host: str, port: int, bypass: str = DEFAULT_BYPASS) -> None:
     _refresh_wininet()
 
 
-def clear_proxy() -> None:
+def clear_proxy() -> bool:
     """靠岸：还原到启航前的状态。
 
     两种情形：
@@ -236,6 +251,7 @@ def clear_proxy() -> None:
     """
     global _backup, _our_port, _active
     backup = _backup or _load_backup()
+    restored = True
     try:
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER, INTERNET_SETTINGS, 0, winreg.KEY_SET_VALUE
@@ -245,7 +261,7 @@ def clear_proxy() -> None:
                     try:
                         winreg.SetValueEx(k, name, 0, vtype, value)
                     except OSError:
-                        pass
+                        restored = False
                 if "AutoConfigURL" not in backup:
                     try:
                         winreg.DeleteValue(k, "AutoConfigURL")
@@ -255,13 +271,17 @@ def clear_proxy() -> None:
                 winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, 0)
             # else: 不是我们的，什么都不做
     except OSError:
-        pass
+        restored = False
 
-    _backup = {}
-    _our_port = None
-    _active = False
-    _drop_backup()
+    # 写入部分失败时保留内存和落盘备份，下一次启动/重试仍有机会恢复。
+    # 否则一次瞬时权限错误就会把用户原始代理设置永久丢掉。
+    if restored:
+        _backup = {}
+        _our_port = None
+        _active = False
+        _drop_backup()
     _refresh_wininet()
+    return restored
 
 
 def heal_on_start(port: int) -> bool:
@@ -282,8 +302,7 @@ def heal_on_start(port: int) -> bool:
     global _our_port, _backup
     _our_port = int(port)
     _backup = _load_backup()   # 有落盘备份就还回用户原本的设置
-    clear_proxy()
-    return True
+    return clear_proxy()
 
 
 def current_proxy() -> dict[str, Any]:

@@ -32,6 +32,8 @@ from pathlib import Path
 
 import requests
 
+from canoe_core import CLIENT_EXE
+
 from .config import CONFIG_DIR, config
 
 TIMEOUT = 15
@@ -39,6 +41,7 @@ TIMEOUT = 15
 #: 只给一个总数会在慢网络下中途断掉。
 DOWNLOAD_TIMEOUT = (10, 60)
 CHUNK = 256 * 1024
+MAX_EXTRACTED_EXE = 512 * 1024 * 1024
 
 
 @dataclass
@@ -282,18 +285,6 @@ def update_dir() -> Path:
       换文件仍然是一次同卷 move，改名就到位，不用拷 87MB。用户在别的盘办公
       也顶多多花几秒，不会错。
     """
-def update_dir() -> Path:
-    """更新用的中转目录（下下来的包、待换的 exe、交班脚本、失败日志都在这儿）。
-
-    ★ **不能放在程序旁边。** 我们的目标形态就是"解压出来一个 exe、拖到桌面"，
-      所以"程序旁边"十有八九就是**桌面**。交班那几秒桌面上会冒出
-      `Canoe.exe.new` / `Canoe.exe.old` / `canoe-update.bat` / `canoe-update.log`
-      —— 客户看见会以为出了什么事。用户原话："和哪些文件在桌面跑，这样客户反感"。
-
-      放 %LOCALAPPDATA%\\Canoe\\update：跟桌面**同一个卷**（都在用户目录下），
-      换文件仍然是一次同卷 move，改名就到位，不用拷 87MB。用户在别的盘办公
-      也顶多多花几秒，不会错。
-    """
     base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
     d = Path(base) / "Canoe" / "update"
     d.mkdir(parents=True, exist_ok=True)
@@ -331,12 +322,27 @@ def prepare_update(archive: Path) -> Path:
     try:
         with zipfile.ZipFile(archive) as z:
             names = [n for n in z.namelist() if not n.endswith("/")]
-            # 包里正常就一个 Canoe.exe；万一换了名字，取第一个 exe
-            member = next((n for n in names if n.lower().endswith(".exe")), None)
+            # 只接受约定的主程序名。包里混入 helper.exe 时，
+            # “取第一个 exe” 可能把错误文件装成主程序。
+            member = next(
+                (n for n in names if Path(n).name.casefold() == CLIENT_EXE.casefold()),
+                None,
+            )
             if member is None:
-                raise UpdateError("安装包里没有 exe", code="bad_archive")
+                raise UpdateError(f"安装包里没有 {CLIENT_EXE}", code="bad_archive")
+            written = 0
             with z.open(member) as src, open(dest, "wb") as out:
-                shutil.copyfileobj(src, out, 1 << 20)
+                while True:
+                    block = src.read(1 << 20)
+                    if not block:
+                        break
+                    written += len(block)
+                    if written > MAX_EXTRACTED_EXE:
+                        raise UpdateError(
+                            "安装包里的主程序解压后超过 512 MB，已拒绝",
+                            code="bad_archive",
+                        )
+                    out.write(block)
     except zipfile.BadZipFile as exc:
         raise UpdateError("安装包损坏（解不开）", code="bad_archive") from exc
     except PermissionError as exc:

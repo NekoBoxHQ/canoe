@@ -3,6 +3,7 @@
 fastapi>=0.115,<0.116
 uvicorn[standard]>=0.30,<0.35
 sqlalchemy>=2.0,<2.1
+# 生产改用 PostgreSQL 时再安装：psycopg[binary]>=3.2,<4
 pydantic>=2.7,<3
 pydantic-settings>=2.3,<3
 # 管理端上传安装包（multipart/form-data）需要它

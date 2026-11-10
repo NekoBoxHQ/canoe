@@ -447,6 +447,9 @@ class SingBoxKernel:
         #: "切换/重启"—— 后者要等一下系统的残局，前者不用白等。
         self._ever_ran = False
         self._reader: threading.Thread | None = None
+        #: 启动和停止互斥。关闭窗口时即使启航 Worker 还没走完，停止操作
+        #: 也会等启动事务结束后立刻收尾，不会在退出之后又冒出一个内核。
+        self._transition_lock = threading.RLock()
 
     @property
     def running(self) -> bool:
@@ -458,7 +461,21 @@ class SingBoxKernel:
         proxy_outbound: dict[str, Any],
         opts: RunOptions,
         _healed: bool = False,
+        *,
+        cancelled: threading.Event | None = None,
     ) -> None:
+        with self._transition_lock:
+            self._start_locked(proxy_outbound, opts, _healed, cancelled)
+
+    def _start_locked(
+        self,
+        proxy_outbound: dict[str, Any],
+        opts: RunOptions,
+        _healed: bool,
+        cancelled: threading.Event | None,
+    ) -> None:
+        if cancelled is not None and cancelled.is_set():
+            raise KernelError("启动已取消")
         if self.running:
             raise KernelError("内核已在运行")
 
@@ -511,13 +528,25 @@ class SingBoxKernel:
         # 内核只能从文件读配置，所以写临时文件；读完立刻删
         fd, tmp_name = tempfile.mkstemp(prefix="canoe-", suffix=".json")
         self._config_path = Path(tmp_name)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            self._remove_config()
+            raise
         del text
 
         creationflags = 0
         if os.name == "nt":
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        if cancelled is not None and cancelled.is_set():
+            self._remove_config()
+            raise KernelError("启动已取消")
 
         try:
             self._proc = subprocess.Popen(
@@ -536,6 +565,9 @@ class SingBoxKernel:
             raise KernelError(f"启动 sing-box 失败：{exc}") from exc
 
         time.sleep(1.2)
+        if cancelled is not None and cancelled.is_set():
+            self.stop()
+            raise KernelError("启动已取消")
         if self._proc.poll() is not None:
             code = self._proc.returncode
             # ★ 把内核的报错捞出来再抛。
@@ -562,7 +594,12 @@ class SingBoxKernel:
                 killed = heal_leftovers()
                 if killed:
                     bus.system(f"已清掉 {killed} 个上次没退干净的内核进程")
-                return self.start(proxy_outbound, opts, _healed=True)
+                return self.start(
+                    proxy_outbound,
+                    opts,
+                    _healed=True,
+                    cancelled=cancelled,
+                )
 
             # 清过一遍还是撞 —— 那就不是"残渣"，是**别人正占着**。
             # 把那句 "Cannot create a file when that file already exists"
@@ -598,6 +635,10 @@ class SingBoxKernel:
 
     # -- 停止 -----------------------------------------------------------
     def stop(self, timeout: float = 5.0) -> None:
+        with self._transition_lock:
+            self._stop_locked(timeout)
+
+    def _stop_locked(self, timeout: float) -> None:
         proc, self._proc = self._proc, None
         if proc is not None and proc.poll() is None:
             proc.terminate()

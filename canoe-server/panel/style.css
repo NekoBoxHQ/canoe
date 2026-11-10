@@ -41,7 +41,7 @@ code, .mono { font-family: "Cascadia Mono", Consolas, monospace; }
  * 有令牌时先显示它，等 /api/me 验完再决定进后台还是回登录页。
  *
  * 它是**默认隐藏**的，只有 <html class="booting"> 时才出现。
- * 那个类由 index.html 里的行内脚本打上 —— 必须赶在浏览器第一次绘制
+ * 那个类由 index.html 在 head 里加载的 boot.js 打上 —— 必须赶在首次绘制
  * 之前，否则登录框已经画出来闪过了。
  *
  * ⚠ 这里不能用 hidden 属性：样式表上面那条 [hidden]{display:none!important}
@@ -312,6 +312,23 @@ html.booting #login-screen { display: none; }
    不然一行孤零零的小按钮贴在卡片下面，看着像表格的一部分。
    差太多又会往表格那头坠 —— 20 / 18 是折中，上下都留得下。 */
 .card-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 18px; }
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: -8px 0 18px;
+}
+.toolbar-input {
+  width: min(320px, 100%);
+  height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card-2);
+  color: var(--text);
+}
+.toolbar-input:focus { outline: none; border-color: var(--accent); }
 
 /* 统计卡。底下留一段距离 —— 它现在贴在用户页顶上，紧挨着「新建用户」
    那一行会糊在一起，看着很挤（用户反馈过两次）。

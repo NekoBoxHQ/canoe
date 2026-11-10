@@ -131,7 +131,7 @@ check('★ 登录页不写「只有 role=admin 能进」那句（用户说没必
 check('主界面初始隐藏', document.querySelector('#app-screen').hidden);
 
 console.log('\n[2] 登录');
-// 模拟"刷新时带着令牌"：index.html 的行内脚本会先打上 booting 类，
+// 模拟"刷新时带着令牌"：head 里的 boot.js 会先打上 booting 类，
 // 把登录框按住、顶上启动屏。登录成功后 showApp() 必须把它收掉，
 // 否则用户会永远卡在「正在验证登录状态」。
 document.documentElement.classList.add('booting');
@@ -476,25 +476,30 @@ console.log('\n[10] 刷新时不该闪一下登录框');
 // 用户报的："每次刷新会弹一下登录框"。原因：HTML 里 #login-screen 默认
 // 就是可见的，而验令牌要一个网络来回 —— 那段时间登录卡片已经画出来了，
 // 看着像"我掉线了"，然后才消失。
-// 现在由 index.html 里的行内脚本赶在首次绘制之前打上 booting 类。
+// 现在由 head 里的外置 boot.js 赶在首次绘制之前打上 booting 类；
+// 外置是为了让面板能启用不允许内联脚本的严格 CSP。
 const bootHtml = readFileSync(`${PANEL}/index.html`, 'utf8');
 check('★ index.html 里有启动屏', /id="boot-screen"/.test(bootHtml));
-check('★ 行内脚本在 <head> 里（早于 body 绘制）',
-      bootHtml.indexOf('<script>') < bootHtml.indexOf('<body>'), '脚本跑到 body 后面去了');
+check('★ boot.js 在 <head> 里（早于 body 绘制）',
+      bootHtml.indexOf('<script src="boot.js"></script>') < bootHtml.indexOf('<body>'),
+      '启动脚本跑到 body 后面去了');
+check('★ 面板不使用内联脚本（严格 CSP 的前提）',
+      !/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/i.test(bootHtml),
+      '仍存在内联 <script> 内容');
 
-const inlineScript = (bootHtml.match(/<script>([\s\S]*?)<\/script>/) || [])[1] || '';
-check('抠出了行内脚本', inlineScript.includes('booting'), inlineScript.slice(0, 80));
+const bootScript = readFileSync(`${PANEL}/boot.js`, 'utf8');
+check('抠出了启动脚本', bootScript.includes('booting'), bootScript.slice(0, 80));
 
-// 真跑一遍那段行内脚本，看它到底会不会打上 booting
-const runInline = (token) => {
+// 真跑一遍 boot.js，看它到底会不会打上 booting
+const runBoot = (token) => {
   document.documentElement.classList.remove('booting');
   if (token) storage.setItem('canoe.panel.token', token);
   else storage.removeItem('canoe.panel.token');
-  new Function('sessionStorage', 'document', inlineScript)(storage, document);
+  new Function('sessionStorage', 'document', bootScript)(storage, document);
   return document.documentElement.classList.contains('booting');
 };
-check('★ 有令牌 -> 打上 booting（登录框被按住）', runInline('tok-admin') === true);
-check('★ 没令牌 -> 不打（照常显示登录框）', runInline('') === false);
+check('★ 有令牌 -> 打上 booting（登录框被按住）', runBoot('tok-admin') === true);
+check('★ 没令牌 -> 不打（照常显示登录框）', runBoot('') === false);
 
 const bootCss = readFileSync(`${PANEL}/style.css`, 'utf8');
 check('★ CSS: booting 时藏掉登录框',

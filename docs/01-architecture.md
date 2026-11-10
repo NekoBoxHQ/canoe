@@ -26,7 +26,7 @@ canoe/
 │   ├── run.py                   开发启动脚本
 │   ├── seed.py                  建表 / 管理员；--schema 输出 DDL
 │   ├── release.py               ★ 命令行发布客户端安装包
-│   ├── smoke_test.py            端到端冒烟测试（104 项）
+│   ├── smoke_test.py            端到端冒烟测试
 │   └── test_release.py          发布命令的测试（自带临时库）
 │   ├── schema.sql               ★ 建表语句（由 ORM 模型自动生成，不会漂移）
 │   ├── deploy/                  ★ 部署材料（install.sh / canoe.sh / systemd / Nginx）
@@ -58,7 +58,7 @@ canoe/
 │   │   ├── canoe-logo.png       ★ 界面用的徽标（透明底，512）
 │   │   └── canoe.ico / .png     桌面 / 任务栏 / 标题栏用的图标
 │   ├── bin/                     放 sing-box.exe / wintun.dll（自行下载）
-│   ├── tests/                   6 套，共 447 项
+│   ├── tests/                   8 套独立回归测试
 │   └── canoe_client/
 │       ├── app.py               入口 + 页面切换 + 托盘
 │       ├── api.py               与服务端通信（走 canoe_core 模型校验）

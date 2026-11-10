@@ -4,10 +4,7 @@
 """
 from __future__ import annotations
 
-import shutil
-import subprocess
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from fastapi import (
     APIRouter,
@@ -20,7 +17,6 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session as DBSession
@@ -50,7 +46,6 @@ from ..services.broadcast import (
 )
 from ..services.nodes import (
     bound_node_ids,
-    count_nodes,
     set_bound_nodes,
     subscription_text_for,
     to_node_view,
@@ -66,6 +61,7 @@ from ..services.updates import (
     publish_release,
     pull_from_github,
     release_dir,
+    release_write_guard,
     safe_filename,
     store_release_file,
     subscription_revision,
@@ -116,8 +112,8 @@ class NodeUpsert(BaseModel):
 class UserCreate(BaseModel):
     username: str = Field(min_length=3, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
     password: str = Field(min_length=8, max_length=128)
-    expire_days: int | None = None
-    max_devices: int | None = None
+    expire_days: int | None = Field(default=None, ge=0, le=36500)
+    max_devices: int | None = Field(default=None, ge=1, le=100)
     remark: str = ""
     #: 线路方向。不给就是出国（老客户、老面板都是这个行为）
     route_mode: str = Route.OUT
@@ -134,8 +130,8 @@ class UserUpdate(BaseModel):
         default=None, min_length=3, max_length=32, pattern=r"^[A-Za-z0-9_-]+$"
     )
     password: str | None = Field(default=None, min_length=8, max_length=128)
-    expire_at: int | None = None      # 0 = 永不过期
-    max_devices: int | None = None
+    expire_at: int | None = Field(default=None, ge=0)      # 0 = 永不过期
+    max_devices: int | None = Field(default=None, ge=1, le=100)
     remark: str | None = None
     role: str | None = None
     #: 线路方向：out=出国 / in=回国。认不出来的值 422，别让它悄悄改成出国。
@@ -158,10 +154,25 @@ class BindUserNodes(BaseModel):
 # ==========================================================================
 
 
-def _user_view(db: DBSession, user: User) -> dict:
-    online = any(
-        s.online for s in db.scalars(select(SessionRow).where(SessionRow.user_id == user.id)).all()
-    )
+def _user_view(
+    db: DBSession,
+    user: User,
+    *,
+    node_ids: list[int] | None = None,
+    subscription_lines: int | None = None,
+    online: bool | None = None,
+) -> dict:
+    if node_ids is None:
+        node_ids = bound_node_ids(db, user)
+    if subscription_lines is None:
+        subscription_lines = len(_lines(subscription_text_for(db, user)))
+    if online is None:
+        online = any(
+            s.online
+            for s in db.scalars(
+                select(SessionRow).where(SessionRow.user_id == user.id)
+            ).all()
+        )
     return {
         "id": user.id,
         "username": user.username,
@@ -173,9 +184,9 @@ def _user_view(db: DBSession, user: User) -> dict:
         #: 线路方向。面板拿它显示那一栏，也拿它填编辑表单的默认值。
         "route_mode": Route.clean(user.route_mode),
         #: 绑了哪些节点（面板上要显示勾选状态）
-        "node_ids": bound_node_ids(db, user),
+        "node_ids": node_ids,
         #: 最终发给客户端的订阅有几行（就是绑定的节点数）
-        "subscription_lines": len(_lines(subscription_text_for(db, user))),
+        "subscription_lines": subscription_lines,
         "created_at": epoch(user.created_at) or 0,
         "last_login_at": epoch(user.last_login_at),
         "online": online,
@@ -184,6 +195,50 @@ def _user_view(db: DBSession, user: User) -> dict:
 
 def _lines(text: str) -> list[str]:
     return [line.strip() for line in (text or "").splitlines() if line.strip()]
+
+
+def _user_list_metadata(
+    db: DBSession, users: list[User]
+) -> tuple[dict[int, list[int]], dict[int, int], set[int]]:
+    """一次取完当前页用户需要的绑定、订阅行数和在线状态。"""
+    user_ids = [u.id for u in users]
+    if not user_ids:
+        return {}, {}, set()
+
+    node_ids: dict[int, list[int]] = {uid: [] for uid in user_ids}
+    for uid, node_id in db.execute(
+        select(UserNode.user_id, UserNode.node_id)
+        .where(UserNode.user_id.in_(user_ids))
+        .order_by(UserNode.user_id, UserNode.id)
+    ):
+        node_ids[uid].append(node_id)
+
+    counts = dict(
+        db.execute(
+            select(UserNode.user_id, func.count(Node.id))
+            .join(Node, Node.id == UserNode.node_id)
+            .where(
+                UserNode.user_id.in_(user_ids),
+                Node.enabled.is_(True),
+                or_(Node.link_enc != "", Node.legacy_link != ""),
+            )
+            .group_by(UserNode.user_id)
+        ).all()
+    )
+    cutoff = utcnow() - timedelta(seconds=settings.online_timeout)
+    online = set(
+        db.scalars(
+            select(SessionRow.user_id)
+            .where(
+                SessionRow.user_id.in_(user_ids),
+                SessionRow.revoked.is_(False),
+                SessionRow.ended_at.is_(None),
+                SessionRow.last_seen >= cutoff,
+            )
+            .distinct()
+        ).all()
+    )
+    return node_ids, counts, online
 
 
 @router.get(Api.ADMIN_USERS)
@@ -199,9 +254,19 @@ def list_users(
         stmt = stmt.where(or_(User.username.contains(q), User.remark.contains(q)))
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     users = db.scalars(stmt.order_by(User.id).offset((page - 1) * size).limit(size)).all()
+    node_map, count_map, online = _user_list_metadata(db, list(users))
     return {
         "total": total, "page": page, "size": size,
-        "items": [_user_view(db, u) for u in users],
+        "items": [
+            _user_view(
+                db,
+                u,
+                node_ids=node_map.get(u.id, []),
+                subscription_lines=count_map.get(u.id, 0),
+                online=u.id in online,
+            )
+            for u in users
+        ],
         # 面板拿它来限制勾选（勾满就不让再勾了）。写死在前端的话，
         # 这个数改了要改两处。
         "max_nodes_per_user": MAX_NODES_PER_USER,
@@ -262,9 +327,10 @@ def update_user(
         changes.append(f"用户名 {user.username} → {body.username}")
         user.username = body.username
 
-    if body.password:
+    password_changed = bool(body.password)
+    if password_changed:
         user.password_hash = hash_password(body.password)
-        changes.append("改了密码")
+        changes.append("改了密码，并注销该账号全部设备")
     if body.expire_at is not None:
         user.expire_at = (
             None if body.expire_at == 0 else datetime.fromtimestamp(body.expire_at, tz=timezone.utc)
@@ -295,7 +361,12 @@ def update_user(
             user.route_mode = body.route_mode
             mode_changed = True
 
-    db.commit()
+    revoked_tokens = 0
+    revoked_sessions = 0
+    if password_changed:
+        revoked_tokens = revoke_user_tokens(db, user_id, commit=False)
+        revoked_sessions = revoke_user_sessions(db, user_id, commit=False)
+
     db.add(
         AuditLog(
             user_id=admin.id,
@@ -306,11 +377,22 @@ def update_user(
     db.commit()
 
     pushed = 0
-    if mode_changed:
+    if password_changed:
+        pushed = notify_kick(
+            user_id, "密码已由管理员修改，请重新登录", permanent=True
+        )
+    elif mode_changed:
         pushed = notify_subscription_changed(
             user.id, subscription_revision(user, subscription_text_for(db, user))
         )
-    return {"ok": True, "username": user.username, "changed": changes, "pushed": pushed}
+    return {
+        "ok": True,
+        "username": user.username,
+        "changed": changes,
+        "pushed": pushed,
+        "revoked_tokens": revoked_tokens,
+        "revoked_sessions": revoked_sessions,
+    }
 
 
 @router.post(Api.ADMIN_USERS + "/{user_id}/ban")
@@ -327,10 +409,9 @@ def ban_user(
         raise HTTPException(400, {"code": "cannot_ban_admin", "detail": "不能封禁管理员"})
 
     user.status = "banned"
-    db.commit()
     # 封禁必须立即生效：令牌失效 + 会话吊销，客户端下一次请求就会被踢回登录页
-    tokens = revoke_user_tokens(db, user_id)
-    sessions = revoke_user_sessions(db, user_id)
+    tokens = revoke_user_tokens(db, user_id, commit=False)
+    sessions = revoke_user_sessions(db, user_id, commit=False)
     db.add(
         AuditLog(
             user_id=admin.id,
@@ -373,13 +454,24 @@ def delete_user(
     if user.id == admin.id:
         raise HTTPException(400, {"code": "cannot_delete_self", "detail": "不能删除自己"})
 
-    revoke_user_tokens(db, user_id)
-    revoke_user_sessions(db, user_id)
+    tokens = revoke_user_tokens(db, user_id, commit=False)
+    sessions = revoke_user_sessions(db, user_id, commit=False)
     db.delete(user)
+    db.add(
+        AuditLog(
+            user_id=admin.id,
+            action="user_delete",
+            detail=f"{user_id} tokens={tokens} sessions={sessions}",
+        )
+    )
     db.commit()
-    db.add(AuditLog(user_id=admin.id, action="user_delete", detail=str(user_id)))
-    db.commit()
-    return {"ok": True}
+    pushed = notify_kick(user_id, "账号已被管理员删除", permanent=True)
+    return {
+        "ok": True,
+        "revoked_tokens": tokens,
+        "revoked_sessions": sessions,
+        "pushed": pushed,
+    }
 
 
 # ==========================================================================
@@ -527,24 +619,30 @@ def list_sessions(
     _: User = Depends(get_current_admin),
     db: DBSession = Depends(get_db),
 ):
-    rows = db.scalars(
-        select(SessionRow).order_by(SessionRow.last_seen.desc()).limit(limit)
-    ).all()
+    stmt = (
+        select(SessionRow, User.username, Node.name)
+        .outerjoin(User, User.id == SessionRow.user_id)
+        .outerjoin(Node, Node.id == SessionRow.node_id)
+        .order_by(SessionRow.last_seen.desc())
+    )
+    if online:
+        stmt = stmt.where(
+            SessionRow.revoked.is_(False),
+            SessionRow.ended_at.is_(None),
+            SessionRow.last_seen
+            >= utcnow() - timedelta(seconds=settings.online_timeout),
+        )
+    rows = db.execute(stmt.limit(limit)).all()
 
     items = []
-    for r in rows:
+    for r, username, node_name in rows:
         is_on = r.online
-        if online and not is_on:
-            continue
-        user = db.get(User, r.user_id)
-        # 订阅模式不让会话挂节点了，node_id 是空的 —— 别拿 None 去查
-        node = db.get(Node, r.node_id) if r.node_id else None
         items.append(
             {
                 "session_id": r.id,
                 "user_id": r.user_id,
-                "username": user.username if user else "?",
-                "node_name": node.name if node else "",
+                "username": username or "?",
+                "node_name": node_name or "",
                 "device_id": r.device_id,
                 "client_ip": r.client_ip,
                 "mode": r.mode,
@@ -580,20 +678,34 @@ def stats(_: User = Depends(get_current_admin), db: DBSession = Depends(get_db))
     active = db.scalar(select(func.count()).select_from(User).where(User.status == "active")) or 0
     n_total = db.scalar(select(func.count()).select_from(Node)) or 0
     n_enabled = db.scalar(select(func.count()).select_from(Node).where(Node.enabled.is_(True))) or 0
-    sessions = db.scalars(select(SessionRow)).all()
+    sessions_total = db.scalar(select(func.count()).select_from(SessionRow)) or 0
+    sessions_online = (
+        db.scalar(
+            select(func.count())
+            .select_from(SessionRow)
+            .where(
+                SessionRow.revoked.is_(False),
+                SessionRow.ended_at.is_(None),
+                SessionRow.last_seen
+                >= utcnow() - timedelta(seconds=settings.online_timeout),
+            )
+        )
+        or 0
+    )
+    latest = latest_release(db)
     return {
         "users_total": total,
         "users_active": active,
         "users_banned": total - active,
         "nodes_total": n_total,
         "nodes_enabled": n_enabled,
-        "sessions_total": len(sessions),
-        "sessions_online": sum(1 for s in sessions if s.online),
+        "sessions_total": sessions_total,
+        "sessions_online": sessions_online,
         # 最新客户端版本 —— 概览页显示用。以前这里是 config_version，
         # 那是"中转层 + 全局配置版本号"时代的字段，改成订阅模式之后
         # 没有这个东西了（变更检测改走每个用户各自的 revision），
         # 面板那边就成了 undefined。
-        "latest_client_version": (latest_release(db).version if latest_release(db) else ""),
+        "latest_client_version": latest.version if latest else "",
         # 推送连接数：排查"为什么客户端没收到推送"时先看这里
         "push": hub.stats(),
     }
@@ -688,30 +800,37 @@ def admin_upload_release(
     没传完的包当成好包发布出去，客户端的校验根本救不了它。
     """
     filename = safe_filename(file.filename or "Canoe.zip")
-    try:
-        _dest, size, digest = store_release_file(
-            file.file, filename, expected_size=size, expected_sha256=sha256
-        )
-    except ReleaseTooLarge as exc:
-        raise HTTPException(413, {"code": "too_large", "detail": str(exc)}) from exc
-    except ReleaseMismatch as exc:
-        raise HTTPException(400, {"code": "incomplete", "detail": str(exc)}) from exc
-    except OSError as exc:
-        raise HTTPException(500, {"code": "io_error", "detail": f"写文件失败：{exc}"}) from exc
-    finally:
-        file.file.close()
+    with release_write_guard():
+        try:
+            dest, size, digest = store_release_file(
+                file.file, filename, expected_size=size, expected_sha256=sha256
+            )
+        except ReleaseTooLarge as exc:
+            raise HTTPException(413, {"code": "too_large", "detail": str(exc)}) from exc
+        except ReleaseMismatch as exc:
+            raise HTTPException(400, {"code": "incomplete", "detail": str(exc)}) from exc
+        except OSError as exc:
+            raise HTTPException(
+                500, {"code": "io_error", "detail": f"写文件失败：{exc}"}
+            ) from exc
+        finally:
+            file.file.close()
 
-    row = publish_release(
-        db,
-        version=version,
-        filename=filename,
-        size=size,
-        sha256=digest,
-        notes=notes,
-        min_version=min_version,
-    )
+        row = publish_release(
+            db,
+            version=version,
+            filename=dest.name,
+            size=size,
+            sha256=digest,
+            notes=notes,
+            min_version=min_version,
+        )
     db.add(
-        AuditLog(user_id=admin.id, action="release_upload", detail=f"{version} {filename} {size}B")
+        AuditLog(
+            user_id=admin.id,
+            action="release_upload",
+            detail=f"{version} {dest.name} {size}B",
+        )
     )
     db.commit()
     pushed = notify_release(row.version, notes=row.notes)

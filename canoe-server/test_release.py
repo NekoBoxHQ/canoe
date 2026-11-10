@@ -150,10 +150,11 @@ def main() -> int:
         check("发布成功", r.returncode == 0, (r.stdout + r.stderr)[:300])
         check("★ 版本号是从文件名抠的", "1.0.1" in r.stdout, r.stdout[:300])
         check("★ 打印了 sha256", digest in r.stdout, r.stdout[-400:])
+        stored_name = f"Canoe-1.0.1-win64-{digest[:16]}.zip"
         check("打印了下载地址（用 PUBLIC_BASE_URL 拼）",
-              "https://canoe.example.com/downloads/Canoe-1.0.1-win64.zip" in r.stdout, r.stdout[-400:])
+              f"https://canoe.example.com/downloads/{stored_name}" in r.stdout, r.stdout[-400:])
 
-        dest = releases / "Canoe-1.0.1-win64.zip"
+        dest = releases / stored_name
         check("★ 包落到了 RELEASE_DIR 下", dest.is_file(), str(list(releases.iterdir())))
         check("落盘的字节和源文件一致",
               dest.is_file() and dest.read_bytes() == pkg.read_bytes())
@@ -162,7 +163,7 @@ def main() -> int:
         print("\n[3] --list")
         r = run_cli(["--list"], env)
         check("列出版本号", "1.0.1" in r.stdout, r.stdout[:300])
-        check("列出文件名", "Canoe-1.0.1-win64.zip" in r.stdout, r.stdout[:300])
+        check("列出文件名", stored_name in r.stdout, r.stdout[:300])
         check("★ 说明了客户端会拿到哪个版本", "客户端现在会拿到" in r.stdout, r.stdout[:300])
 
         # --- 4. 同版本重发是覆盖 ---
@@ -186,7 +187,7 @@ def main() -> int:
         r = run_cli([str(big)], env_small)
         check("★ 超限的包被拒绝", r.returncode != 0, (r.stdout + r.stderr)[:200])
         check("提示里说了上限", "上限" in (r.stdout + r.stderr), (r.stdout + r.stderr)[:200])
-        check("★ 没在磁盘上留半个包", not (releases / "Canoe-9.9.9-win64.zip").exists(),
+        check("★ 没在磁盘上留半个包", not list(releases.glob("Canoe-9.9.9-win64-*")),
               str(list(releases.iterdir())))
 
         # --- 6. 文件名里的路径穿越 ---
@@ -231,7 +232,7 @@ def main() -> int:
         except ReleaseMismatch:
             check("★ 字节数对不上时必须拒绝（上传被截断）", True)
         check("★ 拒绝后磁盘上不留半个包",
-              not (releases / "Canoe-2.0.0-win64.zip").exists(),
+              not list(releases.glob("Canoe-2.0.0-win64-*")),
               str(list(releases.iterdir())))
 
         # 摘要对不上也一样
@@ -243,18 +244,37 @@ def main() -> int:
         except ReleaseMismatch:
             check("★ 摘要对不上时必须拒绝", True)
         check("★ 摘要对不上也不留文件",
-              not (releases / "Canoe-2.0.1-win64.zip").exists(),
+              not list(releases.glob("Canoe-2.0.1-win64-*")),
               str(list(releases.iterdir())))
 
         # 对得上就正常收下 —— 别把好包也拦了
-        _d, got_size, got_digest = store_release_file(
+        stored, got_size, got_digest = store_release_file(
             io.BytesIO(whole), "Canoe-2.0.2-win64.zip",
             expected_size=len(whole), expected_sha256=whole_digest,
         )
         check("★ 对得上就正常收下（没把好包一起拦了）",
               got_size == len(whole) and got_digest == whole_digest)
         check("★ 收下的包在磁盘上完整",
-              (releases / "Canoe-2.0.2-win64.zip").stat().st_size == len(whole))
+              stored.stat().st_size == len(whole))
+
+        # 同名上传失败不能覆盖此前已经成功发布的文件。
+        before = stored.read_bytes()
+        try:
+            store_release_file(
+                io.BytesIO(b"broken"),
+                "Canoe-2.0.2-win64.zip",
+                expected_sha256="0" * 64,
+            )
+        except ReleaseMismatch:
+            pass
+        check("★ 失败上传不会破坏已发布文件", stored.read_bytes() == before)
+
+        # 新内容即使沿用同一个输入文件名，也必须落到不同最终文件。
+        other, _, _ = store_release_file(
+            io.BytesIO(b"different-package"),
+            "Canoe-2.0.2-win64.zip",
+        )
+        check("★ 不同内容绝不覆盖同名旧包", other != stored and stored.is_file())
 
         # 不给这两个参数（老调用方）行为不变
         _d, got_size, _ = store_release_file(io.BytesIO(whole), "Canoe-2.0.3-win64.zip")
@@ -388,7 +408,7 @@ def main() -> int:
             row, verified = pull_from_github(db, repo="NekoBoxHQ/canoe")
             check("★ 版本号从资产文件名里抠出来", row.version == "9.9.9", row.version)
             check("★ 摘要核对过了（Release 上挂了 .sha256）", verified)
-            check("★ 包真的落到了 releases/ 下", (releases / pkg.name).is_file())
+            check("★ 包真的落到了 releases/ 下", (releases / row.filename).is_file())
             check("★ 发布记录里的 sha256 和本地一致", row.sha256 == want_sha,
                   (row.sha256 or "")[:16])
             check("★ 更新说明取 Release 正文第一行",

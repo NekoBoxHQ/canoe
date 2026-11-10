@@ -165,7 +165,7 @@ bun run test_panel.mjs
 .venv/bin/python smoke_test.py https://127.0.0.1:8443 --insecure   # 自签证书
 ```
 
-**104 项**，覆盖：注册 → 登录 → `/api/config`（核心安全断言）→ 改账号 → 心跳 →
+当前覆盖：注册 → 登录 → `/api/config`（核心安全断言）→ 改账号 → 心跳 →
 封禁踢下线 → 登出 → 客户端更新 → 节点绑定与加密订阅 → SSE 推送 → 鉴权 → 面板。
 
 其中一批断言专门盯着"客户端可见的响应里绝不出现节点信息"。
@@ -205,8 +205,8 @@ canoe-server/
 ├── serve.py                ★统一启动器（读 .env 决定端口与 TLS）
 ├── seed.py                 建库 + 种子数据
 ├── release.py              ★ 命令行发布客户端安装包（canoe release）
-├── smoke_test.py           端到端冒烟测试（104 项）
-├── test_release.py         发布命令的测试（25 项，自带临时库）
+├── smoke_test.py           端到端冒烟测试
+├── test_release.py         发布命令与原子落盘测试（自带临时库）
 └── run_local_https.py      HTTPS 启动（自签证书，本地联调用）
 ```
 

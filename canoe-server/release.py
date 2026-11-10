@@ -62,7 +62,7 @@ from canoe_server.services.updates import (
     list_releases,
     publish_release,
     pull_from_github,
-    release_dir,
+    release_write_guard,
     safe_filename,
     store_release_file,
 )
@@ -246,56 +246,57 @@ def main() -> int:
     #   那边核对），传完之后它也不许再变大。
     before = local.stat().st_size
     after = before
-    try:
-        with local.open("rb") as fh:
-            dest, size, digest = store_release_file(
-                fh, filename, expected_size=before,
-                expected_sha256=args.sha256.strip(),
-            )
-        after = local.stat().st_size
-    except ReleaseTooLarge as exc:
-        cleanup_temp(temp_root)
-        die(str(exc))
-    except ReleaseMismatch as exc:
-        cleanup_temp(temp_root)
-        die(str(exc))
-    except OSError as exc:
-        cleanup_temp(temp_root)
-        die(f"写文件失败：{exc}")
-    finally:
-        cleanup_temp(temp_root)
+    with release_write_guard():
+        try:
+            with local.open("rb") as fh:
+                dest, size, digest = store_release_file(
+                    fh, filename, expected_size=before,
+                    expected_sha256=args.sha256.strip(),
+                )
+            after = local.stat().st_size
+        except ReleaseTooLarge as exc:
+            cleanup_temp(temp_root)
+            die(str(exc))
+        except ReleaseMismatch as exc:
+            cleanup_temp(temp_root)
+            die(str(exc))
+        except OSError as exc:
+            cleanup_temp(temp_root)
+            die(f"写文件失败：{exc}")
+        finally:
+            cleanup_temp(temp_root)
 
-    if after != size:
-        (release_dir() / filename).unlink(missing_ok=True)
-        die(
-            f"这个包在传的过程中还在变大（{size} → {after} 字节）—— "
-            "它八成还没写完，或者还在复制。等它稳定了再发一次。"
-        )
-
-    with SessionLocal() as db:
-        row = publish_release(
-            db,
-            version=version,
-            filename=filename,
-            size=size,
-            sha256=digest,
-            notes=args.notes,
-            min_version=args.min_version,
-        )
-        # 审计里记是谁发的。命令行没有"当前管理员"这个身份，
-        # 就记到 .env 里那个管理员名下（找不到就留空，不编一个假的）。
-        admin = db.scalars(
-            select(User).where(User.username == settings.admin_username)
-        ).first()
-        db.add(
-            AuditLog(
-                user_id=admin.id if admin else None,
-                action="release_upload",
-                detail=f"{version} {filename} {size}B（命令行：canoe release）",
+        if after != size:
+            dest.unlink(missing_ok=True)
+            die(
+                f"这个包在传的过程中还在变大（{size} → {after} 字节）—— "
+                "它八成还没写完，或者还在复制。等它稳定了再发一次。"
             )
-        )
-        db.commit()
-        enabled_total = len([r for r in list_releases(db) if r.enabled])
+
+        with SessionLocal() as db:
+            row = publish_release(
+                db,
+                version=version,
+                filename=dest.name,
+                size=size,
+                sha256=digest,
+                notes=args.notes,
+                min_version=args.min_version,
+            )
+            # 审计里记是谁发的。命令行没有"当前管理员"这个身份，
+            # 就记到 .env 里那个管理员名下（找不到就留空，不编一个假的）。
+            admin = db.scalars(
+                select(User).where(User.username == settings.admin_username)
+            ).first()
+            db.add(
+                AuditLog(
+                    user_id=admin.id if admin else None,
+                    action="release_upload",
+                    detail=f"{version} {dest.name} {size}B（命令行：canoe release）",
+                )
+            )
+            db.commit()
+            enabled_total = len([r for r in list_releases(db) if r.enabled])
 
     print()
     print("=" * 56)
@@ -303,7 +304,7 @@ def main() -> int:
     print(f"  文件      {dest}")
     print(f"  大小      {size / 1024 / 1024:.1f} MB")
     print(f"  sha256    {digest}")
-    print(f"  下载      {public_base()}/downloads/{filename}")
+    print(f"  下载      {public_base()}/downloads/{dest.name}")
     print("=" * 56)
     print()
     print("  客户端下次点「更新」就会看到它；在线的客户端会收到推送。")

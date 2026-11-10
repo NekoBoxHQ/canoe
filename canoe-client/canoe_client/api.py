@@ -45,6 +45,12 @@ DEFAULT_TIMEOUT = 15
 _RETRIES = 2
 _RETRY_WAIT = 0.8
 
+#: 只有明确幂等的只读请求才自动重试。登录、注册会签发令牌，/api/config
+#: 会创建会话，响应丢失并不等于服务端没执行，盲目重试会产生错误反馈。
+_RETRYABLE = frozenset(
+    {Api.HEALTH, Api.ME, Api.CLIENT_LATEST, Api.SUBSCRIPTION}
+)
+
 
 class CanoeApiError(Exception):
     """带错误码的 API 异常。UI 直接拿 message 展示。"""
@@ -110,7 +116,9 @@ class CanoeApi:
         # ⚠ SSLError 是 ConnectionError 的子类，顺序不能反，否则永远
         #   走不到 SSLError 那条分支。
         last_exc: Exception | None = None
-        for attempt in range(_RETRIES + 1):
+        retryable = method.upper() in {"GET", "HEAD"} and path in _RETRYABLE
+        attempts = _RETRIES + 1 if retryable else 1
+        for attempt in range(attempts):
             try:
                 resp = self._http.request(
                     method, f"{self.base}{path}", headers=headers,
@@ -119,7 +127,7 @@ class CanoeApi:
                 break
             except requests.exceptions.SSLError as exc:
                 last_exc = exc
-                if attempt < _RETRIES:
+                if attempt + 1 < attempts:
                     time.sleep(_RETRY_WAIT * (attempt + 1))
                     continue
                 raise CanoeApiError(
@@ -129,7 +137,7 @@ class CanoeApi:
                 ) from exc
             except requests.exceptions.ConnectionError as exc:
                 last_exc = exc
-                if attempt < _RETRIES:
+                if attempt + 1 < attempts:
                     time.sleep(_RETRY_WAIT * (attempt + 1))
                     continue
                 raise CanoeApiError(ErrorCode.NETWORK, f"连不上渡口 {self.base}") from exc

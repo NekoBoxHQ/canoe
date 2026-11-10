@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 
 import requests
 from PySide6.QtCore import QObject, Signal
@@ -44,6 +43,7 @@ class EventStream(QObject):
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._token = ""
+        self._generation = 0
 
     @property
     def running(self) -> bool:
@@ -54,9 +54,16 @@ class EventStream(QObject):
         self.stop()
         if not token:
             return
+        self._generation += 1
+        generation = self._generation
         self._token = token
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
+        stop_event = threading.Event()
+        self._stop = stop_event
+        self._thread = threading.Thread(
+            target=self._loop,
+            args=(token, stop_event, generation),
+            daemon=True,
+        )
         self._thread.start()
 
     def stop(self) -> None:
@@ -65,28 +72,33 @@ class EventStream(QObject):
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.0)
 
+    def _emit_state(self, generation: int, connected: bool, message: str) -> None:
+        """旧线程退出途中不得覆盖新连接的状态。"""
+        if generation == self._generation and not self._stop.is_set():
+            self.state.emit(connected, message)
+
     # ------------------------------------------------------------------
-    def _loop(self) -> None:
+    def _loop(self, token: str, stop_event: threading.Event, generation: int) -> None:
         url = f"{config.server_url}{Api.EVENTS}"
-        headers = {"Authorization": f"Bearer {self._token}",
+        headers = {"Authorization": f"Bearer {token}",
                    "Accept": "text/event-stream",
                    "User-Agent": "Canoe-Client/1.0"}
         attempt = 0
 
-        while not self._stop.is_set():
+        while not stop_event.is_set():
             try:
                 with requests.get(url, headers=headers, stream=True,
                                   timeout=(10, READ_TIMEOUT),
                                   verify=config.ca_bundle) as resp:
                     if resp.status_code == 401 or resp.status_code == 403:
                         # 令牌废了 / 被封 —— 重连也没用，交给心跳那条路去处理
-                        self.state.emit(False, "未授权")
+                        self._emit_state(generation, False, "未授权")
                         return
                     resp.raise_for_status()
                     attempt = 0
-                    self.state.emit(True, "")
+                    self._emit_state(generation, True, "")
                     for line in resp.iter_lines(decode_unicode=True):
-                        if self._stop.is_set():
+                        if stop_event.is_set():
                             return
                         if not line or not line.startswith("data: "):
                             continue          # 空行和 ": ping" 保活帧都跳过
@@ -97,16 +109,16 @@ class EventStream(QObject):
                         if isinstance(payload, dict):
                             self.event.emit(payload)
             except requests.exceptions.RequestException as exc:
-                self.state.emit(False, type(exc).__name__)
+                self._emit_state(generation, False, type(exc).__name__)
             except Exception:  # noqa: BLE001 - 后台线程绝不能把程序带崩
-                self.state.emit(False, "内部错误")
+                self._emit_state(generation, False, "内部错误")
 
-            if self._stop.is_set():
+            if stop_event.is_set():
                 return
             delay = BACKOFF[min(attempt, len(BACKOFF) - 1)]
             attempt += 1
             # 用 wait 而不是 sleep，stop() 时能立刻醒来
-            if self._stop.wait(delay):
+            if stop_event.wait(delay):
                 return
 
 

@@ -48,7 +48,7 @@ from ..options import (
     PROFILE_SPLIT,
     RunOptions,
 )
-from ..session import STATE_DOCKED, STATE_SAILED, STATE_STORM, session
+from ..session import STATE_DOCKED, STATE_SAILED, STATE_SAILING, STATE_STORM, session
 from ..tun import check_tun_ready, relaunch_as_admin
 from ..worker import Worker
 from . import artwork as A
@@ -159,6 +159,15 @@ class MainView(FramelessWindow):
         #: 服务端下发的订阅指纹，用来判断"订阅变了没有"
         self._revision = ""
         self._heartbeat_seconds = 30
+        #: 启航/重连/靠岸的代际。迟到回调只有代际仍然匹配时才能改状态。
+        self._operation_seq = 0
+        self._kernel_cancel = threading.Event()
+        self._closed = False
+        self._heartbeat_inflight = False
+        self._reload_inflight = False
+        self._reload_pending = False
+        self._subscription_seq = 0
+        self._restart_inflight = False
 
         #: 订阅明文（节点链接）。**只在内存里** —— 不落盘、不导出。
         #: 进程一退就没了，下次登舟重新拉。这也正是"服务端随时能收回"的前提。
@@ -560,12 +569,11 @@ class MainView(FramelessWindow):
         if reconnect and session.sailing:
             link = self._active_link()
             if link is not None:
-                try:
-                    self._dock()
-                    kernel.start(link.outbound, self._opts)
-                    self._set_state(STATE_SAILED)
-                except Exception as exc:              # noqa: BLE001
-                    self._set_state(STATE_STORM, f"切换线路方向失败：{exc}")
+                self._restart_kernel_async(
+                    link,
+                    f"线路已切到{Route.SHORT[new]}",
+                    "切换线路方向失败",
+                )
         return f"线路已切到{Route.SHORT[new]}"
 
     def _on_options_changed(self) -> None:
@@ -725,8 +733,10 @@ class MainView(FramelessWindow):
             # 于是"系统代理加 TUN 的时候下不了更新"）。
             if sysproxy.has_backup():
                 try:
-                    sysproxy.clear_proxy()
-                    bus.system("系统代理已还原")
+                    if sysproxy.clear_proxy():
+                        bus.system("系统代理已还原")
+                    else:
+                        bus.error("系统代理还原失败，原始设置已保留待下次重试")
                 except OSError:
                     pass
             self._set_state(STATE_STORM, message)
@@ -737,7 +747,23 @@ class MainView(FramelessWindow):
             elif code in ("unauthorized", "banned", "expired", "bad_credentials"):
                 self.logged_out.emit()   # 令牌废了，回登录页
 
-        Worker(self._do_start_kernel).run_with(on_ok, on_err)
+        operation = self._new_operation()
+        cancelled = self._kernel_cancel
+
+        def valid() -> bool:
+            return self._operation_valid(operation)
+
+        def guarded_ok(payload) -> None:
+            if valid():
+                on_ok(payload)
+
+        def guarded_err(code: str, message: str) -> None:
+            if valid():
+                on_err(code, message)
+
+        Worker(self._do_start_kernel, cancelled, valid).run_with(
+            guarded_ok, guarded_err
+        )
 
     def _wipe_subscription(self) -> None:
         """销毁本地订阅。
@@ -759,7 +785,35 @@ class MainView(FramelessWindow):
         拉回来是空的就地销毁；在航的话自动靠岸 —— 这就是服务端
         "关掉订阅"能立刻生效的那条路径。
         """
-        Worker(self._refresh_after_login).run_with(self._on_reloaded, self._on_reload_failed)
+        if self._closed:
+            return
+        if self._reload_inflight:
+            # 连续推送只保留“还需要再拉一次”的事实，不在线程池里堆请求。
+            self._reload_pending = True
+            return
+
+        self._reload_inflight = True
+        self._subscription_seq += 1
+        request = self._subscription_seq
+
+        def done(payload) -> None:
+            self._reload_inflight = False
+            if not self._closed and request == self._subscription_seq:
+                self._on_reloaded(payload)
+            self._drain_pending_reload()
+
+        def failed(code: str, message: str) -> None:
+            self._reload_inflight = False
+            if not self._closed and request == self._subscription_seq:
+                self._on_reload_failed(code, message)
+            self._drain_pending_reload()
+
+        Worker(self._refresh_after_login).run_with(done, failed)
+
+    def _drain_pending_reload(self) -> None:
+        if self._reload_pending and not self._closed:
+            self._reload_pending = False
+            self._reload_subscription()
 
     def _on_reloaded(self, payload) -> None:
         revision, text, route_mode = payload
@@ -783,12 +837,13 @@ class MainView(FramelessWindow):
         # 连着的对不上（管理员改了链接，这条路径会走到）。
         # 线路方向换了也走这儿 —— 反正都要按新的 opts 重启一次。
         if session.sailing and link is not None:
-            try:
-                kernel.stop()
-                kernel.start(link.outbound, self._opts)
-            except Exception as exc:                  # noqa: BLE001
-                self._set_state(STATE_STORM, f"重新启航失败：{exc}")
-                return
+            tail = f"订阅已更新：{link.name}" if link else "订阅已更新"
+            self._restart_kernel_async(
+                link,
+                f"{note} · {tail}" if note else tail,
+                "重新启航失败",
+            )
+            return
         tail = f"订阅已更新：{link.name}" if link else "订阅已更新"
         bus.result(f"{note} · {tail}" if note else tail)
 
@@ -865,16 +920,49 @@ class MainView(FramelessWindow):
             bus.result(f"已选择：{link.name}")
             return
 
-        was_tun = self._opts.use_tun
-        try:
-            kernel.stop()
-            kernel.start(link.outbound, self._opts)
-        except Exception as exc:                      # noqa: BLE001 - 要兜住任何启动失败
-            self._set_state(STATE_STORM, f"切到「{link.name}」失败：{exc}")
-            if was_tun:
-                bus.error(f"切换失败：{exc}")
+        self._restart_kernel_async(
+            link,
+            f"已切换到：{link.name}",
+            f"切到「{link.name}」失败",
+        )
+
+    def _restart_kernel_async(self, link, success_text: str, failure_prefix: str) -> None:
+        """后台串行停止/启动内核；GUI 线程只处理状态和结果。"""
+        if self._restart_inflight:
+            bus.result("正在切换线路，请稍候")
             return
-        bus.result(f"已切换到：{link.name}")
+
+        self._restart_inflight = True
+        operation = self._new_operation()
+        cancelled = self._kernel_cancel
+        self._set_state(STATE_SAILING)
+
+        def work() -> None:
+            self._check_cancel(cancelled)
+            kernel.stop()
+            self._check_cancel(cancelled)
+            kernel.start(link.outbound, self._opts, cancelled=cancelled)
+
+        def on_ok(_result) -> None:
+            self._restart_inflight = False
+            if not self._operation_valid(operation):
+                return
+            self._set_state(STATE_SAILED)
+            bus.result(success_text)
+
+        def on_err(_code: str, message: str) -> None:
+            self._restart_inflight = False
+            if not self._operation_valid(operation):
+                return
+            if sysproxy.has_backup():
+                try:
+                    sysproxy.clear_proxy()
+                except OSError:
+                    pass
+            self._set_state(STATE_STORM, f"{failure_prefix}：{message}")
+            bus.error(f"{failure_prefix}：{message}")
+
+        Worker(work).run_with(on_ok, on_err)
 
     def _fetch_subscription(self) -> str:
         """拉订阅并解密。结果只留在内存，返回明文（可能为空串）。
@@ -892,7 +980,19 @@ class MainView(FramelessWindow):
         self._opts.route_mode = Route.clean(resp.route_mode)
         return text
 
-    def _do_start_kernel(self):
+    def _new_operation(self) -> int:
+        self._operation_seq += 1
+        self._kernel_cancel = threading.Event()
+        return self._operation_seq
+
+    def _operation_valid(self, operation: int) -> bool:
+        return not self._closed and operation == self._operation_seq
+
+    def _check_cancel(self, cancelled: threading.Event) -> None:
+        if cancelled.is_set():
+            raise SubscriptionError("操作已取消", code="cancelled")
+
+    def _do_start_kernel(self, cancelled: threading.Event, still_valid):
         """启航：拉订阅 -> 挑一个节点 -> 拉起内核。
 
         ★ 服务端不下发节点，也无从知道客户端连的是哪台 ——
@@ -909,11 +1009,13 @@ class MainView(FramelessWindow):
             mode = "system_proxy"
         # 先建会话：被封/到期在这里就会被挡下，不用等到启航一半
         cfg = api.fetch_config(mode)
+        self._check_cancel(cancelled)
         # 这次启航的线路方向，以服务端这次给的为准（工作线程：只改数据）
         self._opts.route_mode = Route.clean(cfg.route_mode)
 
         # 每次都重新拉，不吃缓存 —— 管理员刚清空订阅的话，这次启航就得失败
         text = self._fetch_subscription()
+        self._check_cancel(cancelled)
         if not text.strip():
             raise SubscriptionError(
                 "服务端没有下发订阅（账号可能已到期、被停用，或管理员清空了订阅栏）",
@@ -932,7 +1034,9 @@ class MainView(FramelessWindow):
         self._session_id = cfg.session_id
         self._node_name = link.name
         self._heartbeat_seconds = max(10, int(cfg.heartbeat_interval or 30))
-        kernel.start(link.outbound, self._opts)
+        if not still_valid():
+            raise SubscriptionError("操作已取消", code="cancelled")
+        kernel.start(link.outbound, self._opts, cancelled=cancelled)
         return cfg, found, index
 
     # ------------------------------------------------------------------
@@ -941,6 +1045,8 @@ class MainView(FramelessWindow):
     def _on_heartbeat(self) -> None:
         if not session.sailing or not self._session_id:
             self._hb_timer.stop()
+            return
+        if self._heartbeat_inflight:
             return
 
         # 内核半路没了，得当场发现并收拾。
@@ -955,6 +1061,8 @@ class MainView(FramelessWindow):
             return
 
         sid = self._session_id
+        operation = self._operation_seq
+        self._heartbeat_inflight = True
 
         def on_ok(data) -> None:
             if not isinstance(data, dict):
@@ -974,8 +1082,19 @@ class MainView(FramelessWindow):
             if code in ("unauthorized", "banned", "expired"):
                 bus.error(message)
                 self._dock()
+                self.logged_out.emit()
 
-        Worker(api.heartbeat, sid).run_with(on_ok, on_err)
+        def guarded_ok(data) -> None:
+            self._heartbeat_inflight = False
+            if self._operation_valid(operation) and session.sailing:
+                on_ok(data)
+
+        def guarded_err(code: str, message: str) -> None:
+            self._heartbeat_inflight = False
+            if self._operation_valid(operation) and session.sailing:
+                on_err(code, message)
+
+        Worker(api.heartbeat, sid).run_with(guarded_ok, guarded_err)
 
     def _handle_tun_blocked(self, reason: str) -> None:
         if "管理员" not in reason:
@@ -997,6 +1116,11 @@ class MainView(FramelessWindow):
             self._set_state(STATE_DOCKED)
 
     def _dock(self) -> None:
+        self._operation_seq += 1
+        self._kernel_cancel.set()
+        self._heartbeat_inflight = False
+        self._reload_pending = False
+        self._restart_inflight = False
         self.dock_btn.setEnabled(False)
         self.dock_btn.setText(Text.BTN_DOCK_BUSY)
         self._hb_timer.stop()
@@ -1009,11 +1133,17 @@ class MainView(FramelessWindow):
         #   先把代理还回去，最坏情况也只是"代理没生效"，绝不会"没网"。
         if sysproxy.has_backup():
             try:
-                sysproxy.clear_proxy()
-                bus.system("系统代理已还原")
-            except OSError as exc:
-                self._set_error(f"还原系统代理失败：{exc}")
-                bus.error(f"还原系统代理失败：{exc}")
+                restored = sysproxy.clear_proxy()
+            except OSError:
+                restored = False
+            if not restored:
+                message = "还原系统代理失败；为防断网，内核保持运行，请重试靠岸"
+                self._set_error(message)
+                self._set_state(STATE_SAILED)
+                self._set_error(message)
+                bus.error(message)
+                return
+            bus.system("系统代理已还原")
 
         # 告诉服务端这次会话结束了。
         # 用 /api/session/stop 而不是 /api/logout —— 后者会吊销登录令牌，
@@ -1324,10 +1454,15 @@ class MainView(FramelessWindow):
             bus.system("已收进托盘，右键托盘图标可以退出")
             return
 
+        self._closed = True
+        self._kernel_cancel.set()
+        self._operation_seq += 1
         self._log_timer.stop()
         self._hb_timer.stop()
         if session.sailing or kernel.running or sysproxy.has_backup():
             self._dock()
+        else:
+            kernel.stop()
         super().closeEvent(event)
 
         if self._force_close:
@@ -1349,6 +1484,14 @@ class MainView(FramelessWindow):
         后台拉一次订阅补上。拉不到也不拦着进主界面：用户至少能看到
         "为什么没有节点"，而不是卡在登录页。
         """
+        self._closed = False
+        self._operation_seq += 1
+        self._kernel_cancel = threading.Event()
+        self._heartbeat_inflight = False
+        self._reload_inflight = False
+        self._reload_pending = False
+        self._subscription_seq += 1
+        self._restart_inflight = False
         session.login(username, node_name, user_id=api.user_id)
         self._session_id = ""
         self._revision = ""

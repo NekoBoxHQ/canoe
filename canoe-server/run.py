@@ -1,8 +1,7 @@
 """开发用启动脚本：python run.py
 
-生产建议：
-    uvicorn canoe_server.app:app --host 0.0.0.0 --port 8000 --workers 4
-前面放 Nginx/Caddy 终止 HTTPS。
+生产统一使用 ``serve.py``（或安装后的 systemd 服务）。SSE 推送中心和
+进程内登录限速都要求单 Worker；不要按通用 FastAPI 模板改成多 Worker。
 """
 from __future__ import annotations
 

@@ -116,6 +116,34 @@ async def downloads_are_attachments(request: Request, call_next):
     return resp
 
 
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """所有响应统一安全头；面板 CSP 不允许内联脚本或外部资源。"""
+    resp = await call_next(request)
+    path = request.url.path
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault(
+        "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+    )
+    resp.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    if path.startswith("/api/"):
+        resp.headers.setdefault("Cache-Control", "no-store")
+    if path.startswith(settings.panel_path):
+        resp.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "img-src 'self' data:; object-src 'none'; base-uri 'none'; "
+            "frame-ancestors 'none'; form-action 'self'",
+        )
+    if request.url.scheme == "https":
+        resp.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return resp
+
+
 # 客户端安装包自托管：/api/client/latest 返回的下载地址就落在这里
 app.mount(
     Api.DOWNLOAD_PREFIX,

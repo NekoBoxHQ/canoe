@@ -124,6 +124,27 @@ def main() -> int:
     check("★ Clash 的开关保持开着", enabled() == 1, str(enabled()))
     check("★ 用户的 ProxyOverride 也还原了", read("ProxyOverride") == "<local>")
 
+    # --- B2. 部分还原失败不能丢备份 ---
+    print("\n[B2] ★ 还原中途失败时保留原始备份，允许重试")
+    reset_reg(enable=1, server="http=127.0.0.1:7890", override="<local>")
+    sysproxy.set_proxy("127.0.0.1", TEST_PORT)
+    real_set = winreg.SetValueEx
+
+    def flaky_set(key, name, reserved, kind, value):  # noqa: ANN001
+        if name == "ProxyServer":
+            raise OSError("simulated restore failure")
+        return real_set(key, name, reserved, kind, value)
+
+    winreg.SetValueEx = flaky_set
+    try:
+        check("★ 还原失败时 clear_proxy 明确返回 False", sysproxy.clear_proxy() is False)
+    finally:
+        winreg.SetValueEx = real_set
+    check("★ 失败后仍认为代理处于接管态", sysproxy.has_backup())
+    check("★ 失败后磁盘备份仍在", SCRATCH_BACKUP.is_file())
+    check("重试成功后恢复原代理", sysproxy.clear_proxy() is True)
+    check("★ 重试成功后才删备份", not SCRATCH_BACKUP.exists())
+
     # --- C. ★ 脏备份黑洞（核心回归）---
     print("\n[C] ★ 脏备份黑洞：崩溃留下死代理，靠岸绝不能把它写回去")
     reset_reg(enable=1, server=OUR_SERVER)   # 模拟：上次崩溃留下的脏状态

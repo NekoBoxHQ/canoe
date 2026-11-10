@@ -28,7 +28,7 @@ from canoe_client.kernel import kernel  # noqa: E402
 from canoe_client.logbus import LogBus  # noqa: E402
 from canoe_client.nettest import tcping, url_test  # noqa: E402
 from canoe_client.options import RunOptions  # noqa: E402
-from canoe_client import links  # noqa: E402
+from canoe_core import Api  # noqa: E402
 
 #: 样例订阅（真实运行时是登舟后从服务端加密拉取、在内存里解开的）
 SAMPLE_SUB = (
@@ -275,6 +275,26 @@ def main() -> int:
     except CanoeApiError as exc:
         check("★ 抖动过去之后照样成功（用户根本看不到报错）", False, exc.message)
 
+    class PostBoom:
+        calls = 0
+        headers: dict = {}
+
+        def request(self, *a, **k):
+            PostBoom.calls += 1
+            raise _rq.exceptions.ConnectionError("response lost")
+
+    client3 = CanoeApi()
+    client3._http = PostBoom()
+    try:
+        client3._request(
+            "POST", Api.REGISTER,
+            json={"username": "retry_test", "password": "retry-pass"},
+        )
+    except CanoeApiError:
+        pass
+    check("★ 注册这类非幂等请求绝不自动重试", PostBoom.calls == 1,
+          f"实际请求 {PostBoom.calls} 次")
+
     # --- 8. 端口占没占用的判断 ---
     #
     # 用户报过：纯系统代理模式点启航直接失败 ——
@@ -302,6 +322,63 @@ def main() -> int:
     check("★ 被占着的端口 -> 该去清残局（用户撞的就是这个）",
           _port_taken(held_port), str(held_port))
     held.close()
+
+    # --- 9. 已取消的启动不得落出内核进程 ---
+    print("\n[9] 启航取消")
+    from canoe_client.kernel import KernelError, SingBoxKernel  # noqa: PLC0415
+
+    cancelled = threading.Event()
+    cancelled.set()
+    isolated_kernel = SingBoxKernel()
+    try:
+        isolated_kernel.start({}, RunOptions(), cancelled=cancelled)
+        check("★ 已取消的启动应中止", False, "居然继续启动")
+    except KernelError as exc:
+        check("★ 已取消的启动立即中止", "取消" in str(exc), str(exc))
+    check("★ 取消后没有留下内核", not isolated_kernel.running)
+
+    # --- 10. SSE stop -> start 不能让旧线程继承新的停止开关 ---
+    print("\n[10] SSE 重启竞态")
+    from PySide6.QtCore import QCoreApplication  # noqa: PLC0415
+
+    from canoe_client import events as events_mod  # noqa: PLC0415
+
+    qt_app = QCoreApplication.instance() or QCoreApplication([])
+    old_entered = threading.Event()
+    release_old = threading.Event()
+    old_calls: list[str] = []
+    new_calls: list[str] = []
+    real_get = events_mod.requests.get
+
+    def fake_get(url, headers=None, **kwargs):  # noqa: ANN001
+        token = str((headers or {}).get("Authorization", ""))
+        if token.endswith("old-token"):
+            old_calls.append(token)
+            old_entered.set()
+            release_old.wait(5)
+        else:
+            new_calls.append(token)
+        raise events_mod.requests.exceptions.ConnectionError("test disconnect")
+
+    events_mod.requests.get = fake_get
+    stream = events_mod.EventStream()
+    try:
+        stream.start("old-token")
+        check("旧连接已进入请求", old_entered.wait(2))
+        stream.stop()                 # 1 秒 join 超时，线程仍阻塞在 fake_get
+        stream.start("new-token")
+        release_old.set()
+        for _ in range(100):
+            if len(old_calls) > 1 or not stream.running:
+                break
+            time.sleep(0.02)
+        check("★ 旧线程不会用新 stop Event 继续重连", old_calls == ["Bearer old-token"],
+              str(old_calls))
+        check("新连接可以正常启动", any("new-token" in x for x in new_calls), str(new_calls))
+    finally:
+        stream.stop()
+        events_mod.requests.get = real_get
+        _ = qt_app
 
     print(f"\n{'=' * 48}")
     print(f"通过 {passed} 项，失败 {failed} 项，跳过 {skipped} 项")

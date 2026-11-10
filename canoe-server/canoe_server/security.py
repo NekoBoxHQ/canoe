@@ -108,8 +108,8 @@ def gen_session_id() -> str:
 # 这一条路又通了：库 + 任何一份密文（反代日志里记的响应体、抓包、
 # 客服工单里贴过的接口返回）= 该会话的全部节点口令。
 #
-# 这里把它加密了再落库。密文带 "v1:" 前缀，好跟迁移前的老明文行区分开
-# （老行由 init_db 一次性就地重写，见 database._migrate_sub_keys）。
+# 这里把它加密了再落库。v2 密文把用途写进 AES-GCM 的 AAD，避免把
+# sub_key 密文和节点链接密文互换后仍能解开；v1 继续只读兼容。
 
 _AT_REST_KEY_FILE = DATA_DIR / "subkey.key"
 _at_rest_key: bytes | None = None
@@ -159,13 +159,39 @@ def _at_rest() -> bytes:
     return _at_rest_key
 
 
-def encrypt_sub_key(raw: str) -> str:
-    """加密待落库的 sub_key。空串原样返回（省得存一坨密文表示"没有"）。"""
+def _encrypt_secret(raw: str, purpose: str) -> str:
+    """用静态主密钥加密一个字符串；purpose 同时作为 AAD 防止跨用途替换。"""
     if not raw:
         return ""
     nonce = os.urandom(12)
-    blob = AESGCM(_at_rest()).encrypt(nonce, raw.encode("utf-8"), None)
-    return "v1:" + base64.urlsafe_b64encode(nonce + blob).decode().rstrip("=")
+    blob = AESGCM(_at_rest()).encrypt(
+        nonce, raw.encode("utf-8"), purpose.encode("utf-8")
+    )
+    return "v2:" + base64.urlsafe_b64encode(nonce + blob).decode().rstrip("=")
+
+
+def _decrypt_secret(stored: str, purpose: str) -> str:
+    """解出 v2/v1/迁移前明文；任何损坏都返回空串。"""
+    if not stored:
+        return ""
+    try:
+        if stored.startswith("v2:"):
+            blob = base64.urlsafe_b64decode(stored[3:] + "=" * (-len(stored[3:]) % 4))
+            return AESGCM(_at_rest()).decrypt(
+                blob[:12], blob[12:], purpose.encode("utf-8")
+            ).decode("utf-8")
+        if stored.startswith("v1:"):
+            blob = base64.urlsafe_b64decode(stored[3:] + "=" * (-len(stored[3:]) % 4))
+            return AESGCM(_at_rest()).decrypt(blob[:12], blob[12:], None).decode("utf-8")
+    except Exception:
+        return ""
+    # 迁移之前写进去的老明文行（正常路径下 init_db 已经改写过了）
+    return stored
+
+
+def encrypt_sub_key(raw: str) -> str:
+    """加密待落库的 sub_key。空串原样返回（省得存一坨密文表示"没有"）。"""
+    return _encrypt_secret(raw, "canoe/sub-key-at-rest/v2")
 
 
 def decrypt_sub_key(stored: str) -> str:
@@ -175,13 +201,14 @@ def decrypt_sub_key(stored: str) -> str:
     换过主密钥、数据被改过、或本来就是空，都会走到这条路上；**不能抛异常**，
     否则一条坏记录会让整个订阅接口 500。
     """
-    if not stored:
-        return ""
-    if not stored.startswith("v1:"):
-        # 迁移之前写进去的老明文行（正常路径下 init_db 已经改写过了）
-        return stored
-    try:
-        blob = base64.urlsafe_b64decode(stored[3:] + "=" * (-len(stored[3:]) % 4))
-        return AESGCM(_at_rest()).decrypt(blob[:12], blob[12:], None).decode("utf-8")
-    except Exception:
-        return ""
+    return _decrypt_secret(stored, "canoe/sub-key-at-rest/v2")
+
+
+def encrypt_node_link(raw: str) -> str:
+    """加密节点链接；返回空串表示没有链接。"""
+    return _encrypt_secret(raw, "canoe/node-link-at-rest/v2")
+
+
+def decrypt_node_link(stored: str) -> str:
+    """解出节点链接；密文损坏或用途不符时返回空串。"""
+    return _decrypt_secret(stored, "canoe/node-link-at-rest/v2")

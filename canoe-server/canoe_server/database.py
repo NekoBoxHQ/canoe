@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import settings
@@ -13,6 +13,20 @@ connect_args = {"check_same_thread": False} if settings.is_sqlite else {}
 engine = create_engine(
     settings.database_url, connect_args=connect_args, pool_pre_ping=True, future=True
 )
+
+
+if settings.is_sqlite:
+    @event.listens_for(engine, "connect")
+    def _configure_sqlite(dbapi_connection, _connection_record) -> None:
+        """统一 SQLite 的并发与外键语义，避免只在部分路径悄悄不同。"""
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA journal_mode=WAL")
+        finally:
+            cursor.close()
+
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
@@ -44,7 +58,10 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         # 160 是给 base64(nonce+密文+tag) 留的余量。
         "sub_key_enc": "VARCHAR(160) DEFAULT ''",
     },
-    "nodes": {"link": "TEXT DEFAULT ''"},
+    "nodes": {
+        "link": "TEXT DEFAULT ''",
+        "link_enc": "TEXT DEFAULT ''",
+    },
 }
 
 
@@ -129,6 +146,37 @@ def _migrate_sub_keys() -> None:
             )
 
 
+def _migrate_node_links() -> None:
+    """把旧库里的明文节点链接加密，并清空兼容列。
+
+    只有确认密文能解回原文后才清空旧列。主密钥损坏或数据异常时保留明文，
+    让下一次启动仍有机会修复，而不是直接丢失全部节点配置。
+    """
+    from sqlalchemy import text as sql_text
+
+    from .security import decrypt_node_link, encrypt_node_link
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sql_text("SELECT id, link, link_enc FROM nodes")
+        ).fetchall()
+        for row_id, legacy, encrypted in rows:
+            raw = (legacy or "").strip()
+            if raw:
+                enc = encrypt_node_link(raw)
+                if not enc or decrypt_node_link(enc) != raw:
+                    continue
+                conn.execute(
+                    sql_text("UPDATE nodes SET link_enc = :enc, link = '' WHERE id = :id"),
+                    {"enc": enc, "id": row_id},
+                )
+            elif legacy:
+                conn.execute(
+                    sql_text("UPDATE nodes SET link = '' WHERE id = :id"),
+                    {"id": row_id},
+                )
+
+
 def init_db() -> None:
     """建表 + 补列 + 一次性数据迁移。生产建议改用 Alembic（见 docs/03-database.md）。"""
     from . import models  # noqa: F401  确保模型注册到 metadata
@@ -137,3 +185,4 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
     _migrate_sub_keys()
+    _migrate_node_links()

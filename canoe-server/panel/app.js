@@ -14,10 +14,18 @@
 
 const TOKEN_KEY = 'canoe.panel.token';
 
+function readToken() {
+  try { return sessionStorage.getItem(TOKEN_KEY) || ''; }
+  catch (_) { return ''; }
+}
+
 const state = {
-  token: sessionStorage.getItem(TOKEN_KEY) || '',
+  token: readToken(),
   me: null,
   page: 'users',
+  renderSeq: 0,
+  userPage: 1,
+  userQuery: '',
 };
 
 async function api(path, opts = {}) {
@@ -68,8 +76,12 @@ class ApiError extends Error {
 
 function setToken(t) {
   state.token = t || '';
-  if (t) sessionStorage.setItem(TOKEN_KEY, t);
-  else sessionStorage.removeItem(TOKEN_KEY);
+  try {
+    if (t) sessionStorage.setItem(TOKEN_KEY, t);
+    else sessionStorage.removeItem(TOKEN_KEY);
+  } catch (_) {
+    /* 无痕模式不允许持久存储：令牌仍可只存在于当前页面内存。 */
+  }
 }
 
 /* =========================================================================
@@ -329,10 +341,51 @@ const userFields = [
 ];
 
 async function pageUsers(root) {
-  const data = await api('/api/admin/users?size=200');
+  const params = new URLSearchParams({
+    page: String(state.userPage),
+    size: '50',
+  });
+  if (state.userQuery) params.set('q', state.userQuery);
+  const [data, stats] = await Promise.all([
+    api('/api/admin/users?' + params.toString()),
+    statsGrid(),
+  ]);
   const rows = data.items || [];
+  const pages = Math.max(1, Math.ceil((data.total || 0) / (data.size || 50)));
 
-  root.append(await statsGrid());
+  root.append(stats);
+  const search = h('input', {
+    id: 'user-search', class: 'toolbar-input', type: 'search',
+    placeholder: '搜索用户名或备注',
+  });
+  search.value = state.userQuery;
+  const applySearch = () => {
+    state.userQuery = search.value.trim();
+    state.userPage = 1;
+    render();
+  };
+  search.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') applySearch();
+  });
+  const gotoPage = (page) => {
+    state.userPage = Math.max(1, Math.min(pages, page));
+    render();
+  };
+  root.append(h('div', { class: 'filters' },
+    search,
+    h('button', { class: 'btn btn-ghost btn-sm', text: '搜索', onclick: applySearch }),
+    h('button', {
+      class: 'btn btn-ghost btn-sm', text: '上一页',
+      disabled: state.userPage <= 1,
+      onclick: () => gotoPage(state.userPage - 1),
+    }),
+    h('span', { class: 'muted', text: `第 ${state.userPage} / ${pages} 页，共 ${data.total || 0} 人` }),
+    h('button', {
+      class: 'btn btn-ghost btn-sm', text: '下一页',
+      disabled: state.userPage >= pages,
+      onclick: () => gotoPage(state.userPage + 1),
+    }),
+  ));
   root.append(h('div', { class: 'card-actions' },
     h('button', {
       class: 'btn btn-primary btn-sm', text: '新建用户',
@@ -778,14 +831,18 @@ function buildNav() {
 // 也只是一闪而过的字，不如干脆等数据回来直接出内容 —— 接口都是本机
 // 或自家服务端，慢不到哪去。
 async function render() {
+  const seq = ++state.renderSeq;
   const meta = PAGES.find((p) => p.key === state.page) || PAGES[0];
   $('#page-title').textContent = meta.title;
-  const root = clear($('#page'));
+  const staging = document.createElement('div');
   try {
-    await meta.render(root);
+    await meta.render(staging);
+    if (seq !== state.renderSeq) return;
+    clear($('#page')).append(...staging.childNodes);
   } catch (err) {
+    if (seq !== state.renderSeq) return;
     if (err.status === 401) return;
-    clear(root).append(h('div', { class: 'card' },
+    clear($('#page')).append(h('div', { class: 'card' },
       h('h3', { text: '加载失败' }),
       h('div', { class: 'muted', text: err.message })));
   }
@@ -800,6 +857,7 @@ async function render() {
 function endBoot() { document.documentElement.classList.remove('booting'); }
 
 function showLogin(message) {
+  stopHealthPoll();
   endBoot();
   $('#app-screen').hidden = true;
   $('#login-screen').hidden = false;
@@ -830,10 +888,26 @@ async function showApp() {
   renderWhoami();
   buildNav();
   await render();
-  pollHealth();
+  startHealthPoll();
 }
 
-async function pollHealth() {
+let healthTimer = 0;
+let healthGeneration = 0;
+
+function stopHealthPoll() {
+  healthGeneration += 1;
+  if (healthTimer) clearTimeout(healthTimer);
+  healthTimer = 0;
+}
+
+function startHealthPoll() {
+  stopHealthPoll();
+  const generation = healthGeneration;
+  pollHealth(generation);
+}
+
+async function pollHealth(generation) {
+  if (generation !== healthGeneration || !state.token) return;
   const dot = $('#health-dot');
   try {
     // 顺便把服务端版本号抄到页脚 —— 同一份响应里就有，不用再要一次。
@@ -843,7 +917,9 @@ async function pollHealth() {
   } catch (_) {
     dot.className = 'dot bad'; dot.title = '连不上';
   }
-  setTimeout(pollHealth, 15000);
+  if (generation === healthGeneration && state.token) {
+    healthTimer = setTimeout(() => pollHealth(generation), 15000);
+  }
 }
 
 async function tryResume() {
@@ -897,6 +973,7 @@ function init() {
 
   $('#logout-btn').addEventListener('click', async () => {
     try { await api('/api/logout', { method: 'POST', body: {} }); } catch (_) {}
+    stopHealthPoll();
     setToken(''); state.me = null;
     $('#whoami').textContent = '';
     showLogin();
