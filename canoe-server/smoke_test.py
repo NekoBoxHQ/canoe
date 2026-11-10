@@ -389,7 +389,7 @@ def main() -> int:
     check(f"匿名 GET {Api.CLIENT_LATEST} 200", r.status_code == 200, r.text[:250])
     latest = r.json() if r.status_code == 200 else {}
     check("返回版本号", latest.get("version") == release_version, str(latest)[:200])
-    expected_name = f"Canoe-smoke-{digest[:16]}.zip"
+    expected_name = "Canoe-smoke.zip"
     check("返回下载地址", str(latest.get("url", "")).endswith(expected_name),
           str(latest.get("url", "")))
     check("返回 sha256", latest.get("sha256") == digest)

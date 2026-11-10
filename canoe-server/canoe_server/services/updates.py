@@ -73,20 +73,6 @@ def safe_filename(name: str) -> str:
     return base[:200] or "release.bin"
 
 
-def stored_release_name(filename: str, digest: str) -> str:
-    """生成内容寻址的最终文件名，避免不同包互相覆盖。
-
-    文件名仍保持原扩展名，方便下载器识别；摘要前缀足够区分版本。
-    即使两次上传并发，数据库最终指向哪份记录都不会出现“元数据和旧文件
-    内容混在一起”的状态。
-    """
-    safe = safe_filename(filename)
-    path = Path(safe)
-    suffix = path.suffix[:32]
-    stem = path.stem[: max(1, 180 - len(suffix))]
-    return f"{stem}-{digest[:16]}{suffix}"
-
-
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -190,7 +176,7 @@ def store_release_file(
             f"安装包摘要对不上（服务端算出 {stored[:16]}…），上传可能被截断了"
         )
 
-    dest = directory / stored_release_name(target_name, stored)
+    dest = directory / target_name
     try:
         os.replace(temp_path, dest)
     except BaseException:

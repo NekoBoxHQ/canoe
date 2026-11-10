@@ -150,7 +150,7 @@ def main() -> int:
         check("发布成功", r.returncode == 0, (r.stdout + r.stderr)[:300])
         check("★ 版本号是从文件名抠的", "1.0.1" in r.stdout, r.stdout[:300])
         check("★ 打印了 sha256", digest in r.stdout, r.stdout[-400:])
-        stored_name = f"Canoe-1.0.1-win64-{digest[:16]}.zip"
+        stored_name = "Canoe-1.0.1-win64.zip"
         check("打印了下载地址（用 PUBLIC_BASE_URL 拼）",
               f"https://canoe.example.com/downloads/{stored_name}" in r.stdout, r.stdout[-400:])
 
@@ -187,7 +187,7 @@ def main() -> int:
         r = run_cli([str(big)], env_small)
         check("★ 超限的包被拒绝", r.returncode != 0, (r.stdout + r.stderr)[:200])
         check("提示里说了上限", "上限" in (r.stdout + r.stderr), (r.stdout + r.stderr)[:200])
-        check("★ 没在磁盘上留半个包", not list(releases.glob("Canoe-9.9.9-win64-*")),
+        check("★ 没在磁盘上留半个包", not (releases / "Canoe-9.9.9-win64.zip").exists(),
               str(list(releases.iterdir())))
 
         # --- 6. 文件名里的路径穿越 ---
@@ -232,7 +232,7 @@ def main() -> int:
         except ReleaseMismatch:
             check("★ 字节数对不上时必须拒绝（上传被截断）", True)
         check("★ 拒绝后磁盘上不留半个包",
-              not list(releases.glob("Canoe-2.0.0-win64-*")),
+              not (releases / "Canoe-2.0.0-win64.zip").exists(),
               str(list(releases.iterdir())))
 
         # 摘要对不上也一样
@@ -244,7 +244,7 @@ def main() -> int:
         except ReleaseMismatch:
             check("★ 摘要对不上时必须拒绝", True)
         check("★ 摘要对不上也不留文件",
-              not list(releases.glob("Canoe-2.0.1-win64-*")),
+              not (releases / "Canoe-2.0.1-win64.zip").exists(),
               str(list(releases.iterdir())))
 
         # 对得上就正常收下 —— 别把好包也拦了
@@ -269,12 +269,13 @@ def main() -> int:
             pass
         check("★ 失败上传不会破坏已发布文件", stored.read_bytes() == before)
 
-        # 新内容即使沿用同一个输入文件名，也必须落到不同最终文件。
+        # 同名版本允许重发：成功后原子替换，数据库记录随后更新为新摘要。
         other, _, _ = store_release_file(
             io.BytesIO(b"different-package"),
             "Canoe-2.0.2-win64.zip",
         )
-        check("★ 不同内容绝不覆盖同名旧包", other != stored and stored.is_file())
+        check("★ 同名版本重发成功后原子替换",
+              other == stored and stored.read_bytes() == b"different-package")
 
         # 不给这两个参数（老调用方）行为不变
         _d, got_size, _ = store_release_file(io.BytesIO(whole), "Canoe-2.0.3-win64.zip")
