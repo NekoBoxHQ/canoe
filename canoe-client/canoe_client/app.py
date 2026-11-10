@@ -129,7 +129,7 @@ def _app_icon() -> QIcon | None:
     return None
 
 
-def run_selftest() -> int:
+def run_selftest(local_only: bool = False) -> int:
     """`Canoe.exe --selftest` —— 自检，不启动界面。
 
     打包后的程序没有控制台，用户报"打不开"时让他跑这个，
@@ -168,16 +168,19 @@ def run_selftest() -> int:
         except (OSError, subprocess.SubprocessError) as exc:
             report["singbox_version"] = f"<失败: {exc}>"
 
-    # ---- TUN：把系统里的现场一起报出来 ----
-    # TUN 出问题（起不来 / 起了没网）的时候，隔着屏幕靠一轮轮问"你那儿
-    # 网卡列表长什么样"太慢，用户也描述不准。这里一次捞全：网卡在不在、
-    # 有没有 IP、有没有幽灵设备、有几个内核在跑。
-    try:
-        from .tun import diagnostics
+    if local_only:
+        report["tun"] = {"skipped": "打包完整性检查不探测系统现场"}
+    else:
+        # ---- TUN：把系统里的现场一起报出来 ----
+        # TUN 出问题（起不来 / 起了没网）的时候，隔着屏幕靠一轮轮问"你那儿
+        # 网卡列表长什么样"太慢，用户也描述不准。这里一次捞全：网卡在不在、
+        # 有没有 IP、有没有幽灵设备、有几个内核在跑。
+        try:
+            from .tun import diagnostics
 
-        report["tun"] = diagnostics()
-    except Exception as exc:  # noqa: BLE001 - 自检不能因为这一段崩
-        report["tun"] = {"error": f"{exc.__class__.__name__}: {exc}"}
+            report["tun"] = diagnostics()
+        except Exception as exc:  # noqa: BLE001 - 自检不能因为这一段崩
+            report["tun"] = {"error": f"{exc.__class__.__name__}: {exc}"}
 
     ruleset_dir = BIN_DIR / "ruleset"
     report["ruleset"] = (
@@ -202,44 +205,51 @@ def run_selftest() -> int:
     except Exception as exc:  # noqa: BLE001 - 自检不能因为这一步失败就崩
         report["crypto"] = {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
 
-    # ---- TLS：客户端唯一的外部依赖就是"能不能连上服务端" ----
-    # 以前这里只报"内核在不在"，于是"更新报 TLS 握手失败"这种问题
-    # 只能靠用户描述。现在把 CA 从哪来、握手结果如何一并报出来：
-    # 打包之后 certifi 的路径和源码运行时不一样，出问题多半在这一段。
-    try:
-        import certifi
-        import requests
-
-        ca = certifi.where()
-        tls = {
-            "ca_bundle": ca,
-            "ca_exists": Path(ca).is_file(),
-            "ca_size": Path(ca).stat().st_size if Path(ca).is_file() else 0,
-            "server": config.server_url,
-        }
+    if local_only:
+        report["tls"] = {"skipped": "打包完整性检查不访问网络"}
+    else:
+        # ---- TLS：客户端唯一的外部依赖就是"能不能连上服务端" ----
+        # 以前这里只报"内核在不在"，于是"更新报 TLS 握手失败"这种问题
+        # 只能靠用户描述。现在把 CA 从哪来、握手结果如何一并报出来：
+        # 打包之后 certifi 的路径和源码运行时不一样，出问题多半在这一段。
         try:
-            resp = requests.get(
-                f"{config.server_url}/api/health", timeout=8, verify=config.ca_bundle
-            )
-            tls["http_status"] = resp.status_code
-            tls["ok"] = resp.status_code == 200
+            import certifi
+            import requests
+
+            ca = certifi.where()
+            tls = {
+                "ca_bundle": ca,
+                "ca_exists": Path(ca).is_file(),
+                "ca_size": Path(ca).stat().st_size if Path(ca).is_file() else 0,
+                "server": config.server_url,
+            }
+            try:
+                resp = requests.get(
+                    f"{config.server_url}/api/health", timeout=8, verify=config.ca_bundle
+                )
+                tls["http_status"] = resp.status_code
+                tls["ok"] = resp.status_code == 200
+            except Exception as exc:  # noqa: BLE001
+                tls["ok"] = False
+                tls["error"] = f"{exc.__class__.__name__}: {exc}"
+            report["tls"] = tls
         except Exception as exc:  # noqa: BLE001
-            tls["ok"] = False
-            tls["error"] = f"{exc.__class__.__name__}: {exc}"
-        report["tls"] = tls
-    except Exception as exc:  # noqa: BLE001
-        report["tls"] = {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
+            report["tls"] = {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
 
     text = json.dumps(report, indent=2, ensure_ascii=False)
-    print(text)
-
     out = CONFIG_DIR / "selftest.txt"
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         out.write_text(text, encoding="utf-8")
-        print(f"\n已写入 {out}")
     except OSError:
         pass
+
+    # --selftest 也会在 console=False 的 PyInstaller 成品里运行；这种进程的
+    # sys.stdout 是 None，直接 print 会在写报告之后/之前中断自检。
+    if sys.stdout is not None:
+        print(text)
+        if out.is_file():
+            print(f"\n已写入 {out}")
 
     ok = (
         report["singbox_found"]
@@ -250,6 +260,8 @@ def run_selftest() -> int:
 
 
 def main() -> int:
+    if "--selftest-local" in sys.argv:
+        return run_selftest(local_only=True)
     if "--selftest" in sys.argv:
         return run_selftest()
 

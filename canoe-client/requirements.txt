@@ -2,6 +2,8 @@
 #   pip install -e ../canoe-core
 #
 # canoe-core 会带进 cryptography —— 订阅解密（canoe_core/crypto.py）要用。
-PySide6>=6.6,<7
+# 固定到已通过 Python 3.13 + PyInstaller onefile 自检的版本，
+# 避免构建机 PATH 中的 Qt/ICU 组合变化导致发布包不可启动。
+PySide6==6.12.0
 requests>=2.31,<3
 pydantic>=2.7,<3

@@ -83,7 +83,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[str(BASE / "canoe_runtime_hook.py")],
     excludes=[
         # 用不到的重型模块，排掉能显著减小体积
         "PySide6.QtWebEngineCore",
@@ -102,6 +102,15 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+# Qt6Core on Windows uses the complete ICU shipped/fronted by Windows.
+# If the build machine's PATH contains a reduced ICU (for example Poppler's
+# copy), PyInstaller may collect it instead; that copy lacks ucnv_* exports and
+# makes Qt6Core fail to load in the packaged application.
+_BAD_ICU = {"icuuc.dll", "icudt78.dll"}
+a.binaries = [
+    entry for entry in a.binaries if Path(entry[0]).name.lower() not in _BAD_ICU
+]
 
 pyz = PYZ(a.pure)
 
