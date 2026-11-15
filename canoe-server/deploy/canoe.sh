@@ -184,14 +184,32 @@ local_port() {
     printf '%s' "$(client_port)"
 }
 
-health_url() {
-    printf '%s://127.0.0.1:%s/api/health' "$(scheme)" "$(local_port)"
+#: 健康检查连哪个主机名。
+#:
+#: 有域名就用域名 —— 配合 curl --resolve 把域名指到本机回环：既走本地，
+#: 又能真正校验证书链和域名。直接写 https://127.0.0.1 的话，证书是签给
+#: 域名的，只能 -k 跳过校验，那条"通过"其实什么都没验。
+health_host() {
+    local h
+    h="$(domain_display)"
+    [[ -n "$h" && "$h" != "<本机IP>" ]] && printf '%s' "$h" || printf '127.0.0.1'
 }
 
-health_check() {
-    # 自签证书时 curl 会报错，加 -k。生产是真实证书，加 -k 也无害（只连本机回环）
-    curl -fsSk --max-time 6 "$(health_url)" >/dev/null 2>&1
+health_url() {
+    printf '%s://%s:%s/api/health' "$(scheme)" "$(health_host)" "$(local_port)"
 }
+
+#: 0 = 严格通过（证书链 + 域名都验过）；1 = 只有放宽校验（-k）能过；
+#: 2 = 连不上。分开是因为"证书过期了但 -k 还能 curl 通"不该显示成健康。
+health_state() {
+    local h p url
+    h="$(health_host)"; p="$(local_port)"; url="$(health_url)"
+    curl -fsS  --resolve "$h:$p:127.0.0.1" --max-time 6 "$url" >/dev/null 2>&1 && { printf 0; return; }
+    curl -fsSk --resolve "$h:$p:127.0.0.1" --max-time 6 "$url" >/dev/null 2>&1 && { printf 1; return; }
+    printf 2
+}
+
+health_check() { [[ "$(health_state)" != "2" ]]; }
 
 # 版本号：以安装好的那份代码为准（可能刚升级过）
 app_version() {
@@ -409,11 +427,11 @@ cmd_status() {
     field "面板地址" "$pu"
     field "证书" "$(env_get TLS_CERT)"
 
-    if health_check; then
-        health="${C_OK}通过${C_OFF}  $(health_url)"
-    else
-        health="${C_ERR}失败${C_OFF}  $(health_url)"
-    fi
+    case "$(health_state)" in
+        0) health="${C_OK}通过${C_OFF}  $(health_url)" ;;
+        1) health="${C_WARN}通过${C_OFF}  $(health_url)  ${C_DIM}（证书没校验，靠 -k）${C_OFF}" ;;
+        *) health="${C_ERR}失败${C_OFF}  $(health_url)" ;;
+    esac
     printf '\n'
     field "健康检查" "$health"
 
