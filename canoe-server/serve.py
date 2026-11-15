@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 
 from canoe_server import app as app_module
@@ -95,6 +96,13 @@ def main(argv: list[str] | None = None) -> int:
     cert = args.cert if use_tls else None
     key = args.key if use_tls else None
     scheme = "https" if use_tls else "http"
+    # 面板口可以单独留在明文：放在雷池/其他 HTTPS 反代后面时，反代到上游
+    # 一般是 http。.env 里 PANEL_TLS=0 即关闭面板口的 TLS（客户端口不受影响）。
+    panel_tls = use_tls and os.environ.get("PANEL_TLS", "1").strip().lower() not in (
+        "0", "false", "no", "off"
+    )
+    panel_scheme = "https" if panel_tls else "http"
+    panel_base = f"{panel_scheme}://{args.host}"
 
     panel_port = args.panel_port or args.port
     if panel_port <= 0:
@@ -106,9 +114,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[*] {settings.app_name}")
     print(f"[*] 客户端口 {base}:{args.port}   （更新 / 订阅 / API）")
     if panel_port != args.port:
-        print(f"[*] 面板口   {base}:{panel_port}   （客户端口不再响应 {settings.panel_path}）")
+        print(f"[*] 面板口   {panel_base}:{panel_port}   （客户端口不再响应 {settings.panel_path}）")
     else:
-        print(f"[*] 面板     {base}:{args.port}{settings.panel_path}   （与客户端同口）")
+        print(f"[*] 面板     {panel_base}:{args.port}{settings.panel_path}   （与客户端同口）")
     if use_tls:
         print(f"[*] TLS 证书 {cert}")
     else:
@@ -122,7 +130,11 @@ def main(argv: list[str] | None = None) -> int:
 
     configs = [_uvicorn_config(args.host, args.port, cert, key, args.reload)]
     if panel_port != args.port:
-        configs.append(_uvicorn_config(args.host, panel_port, cert, key, args.reload))
+        configs.append(_uvicorn_config(
+            args.host, panel_port,
+            cert if panel_tls else None, key if panel_tls else None,
+            args.reload,
+        ))
 
     if len(configs) == 1:
         import uvicorn

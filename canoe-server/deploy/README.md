@@ -94,7 +94,7 @@ bash canoe.sh
 
 > ⚠️ **这条路只走第一次。** 机器上已经装好之后，install.sh 会检测到
 > （`.venv` + `.env` + systemd 单元都在）然后**停下来**，把 `canoe`
-> 那条命令指给你 —— 不会又从头问一遍「[1/3] 域名」。
+> 那条命令指给你 —— 不会又从头问一遍「[1/5] 域名」。
 > 确实要重走向导，加 `--reconfigure`（或环境变量 `CANOE_RECONFIGURE=1`）。
 
 ```bash
@@ -106,32 +106,46 @@ bash canoe-server/deploy/install.sh
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/NekoBoxHQ/canoe/main/canoe-server/deploy/install.sh)"
 ```
 
-向导会**一项一项问你四件事**：
+向导会**一项一项问你五件事** —— 客户端口的 TLS（第 4 步）和面板口的 TLS（第 5 步）是**分开问的**：
 
 ```
-[1/4] 域名
+[1/5] 域名
       用来申请证书、拼客户端下载地址（PUBLIC_BASE_URL）。
       没有域名就留空 —— 那样证书只能自签，客户端也得走 IP。
       域名: canoe.s-ui.com
 
-[2/4] 管理面板端口
+[2/5] 管理面板端口
       想只对自己开放的话，给面板另开一个口 —— 然后在防火墙/安全组里
       只放行你自己的 IP。那样客户端那个口就**不再响应 /panel**。
       面板端口（回车 = 和客户端同口）: 8899
 
-[3/4] 管理员账号
+[3/5] 管理员账号
       登录管理面板用它。用户名留空就是 admin。
       管理员用户名 [admin]: admin
       管理员密码（至少 8 位，回车 = 随机生成）:
       再输一遍:
 
-[4/4] 证书
+[4/5] 客户端口怎么加密（证书）
+      客户端把 https:// 写死在代码里，所以这一步实际就是「客户端口要不要 TLS」。
       1) Let's Encrypt 自动申请   推荐。要域名已解析到本机，且 80 端口空闲
       2) 自签证书                 自己用够了；浏览器会警告
       3) 我已有证书               你把证书和私钥文件给我
-      4) 不加密                   前面已经有 HTTPS 反代了
+      4) 不加密                   客户端口也走 HTTP（正常客户端会连不上）
       请选择 [1]:
+
+[5/5] 面板口要不要自己做 HTTPS？
+      1) 要，和客户端口一样        默认。用 https://域名:端口/panel 直接访问
+      2) 不要，面板口明文          面板前面已经挂了 HTTPS 反代（雷池 / Nginx），
+                                   反代到上游走 http
+      请选择 [1]: 2
+      面板对外的地址（反代之后用户实际访问的那个），例如
+      https://canoe.s-ui.com/panel
+      直接回车 = 不填，status 里就按端口拼
+      面板地址: https://canoe.s-ui.com/panel
 ```
+
+> 第 5 步只在「面板口另开了一个口、且客户端口有证书」时才会出现；
+> 面板口和客户端同口时它跟着客户端走，不会多问。
 
 **管理员密码就在这一步设**。不想现在想，一路回车也行 —— 那样会随机生成一个
 并**打印在屏幕上**（同时留一份在 `/opt/canoe/ADMIN_PASSWORD.txt`）。
@@ -159,6 +173,8 @@ bash deploy/install.sh --domain x.com --cert-mode existing \
 | `--domain NAME` | 域名。留空则用 IP 访问，证书只能自签 |
 | `--port N` | 客户端口，默认 **58588**。**一般不要动** —— 客户端把地址写死在代码里，改了已发出的客户端全失联 |
 | `--panel-port N` | **管理面板口**。留空 = 和客户端同口；填别的则另开口（见下） |
+| `--panel-tls 0/1` | 面板口自己是否做 TLS，默认 `1`。面板挂在 HTTPS 反代后面时用 `0`（反代到上游走 http）；客户端口不受影响 |
+| `--panel-public-url URL` | 面板对外地址，如 `https://canoe.s-ui.com/panel`。只影响 `canoe status` 和安装结束的提示 |
 | `--cert-mode le` | Let's Encrypt 自动申请（需域名已解析、80 端口空闲）。**推荐** |
 | `--cert-mode self` | 自签证书。浏览器会警告 |
 | `--cert-mode existing` | 用你已有的证书，配 `--cert` / `--key`。**不自动续期** |
@@ -229,6 +245,31 @@ bash deploy/install.sh --domain x.com --port 58588 --panel-port 58589 --cert-mod
 
 改完 `.env` 里的 `PANEL_PORT` 后 `systemctl restart canoe-api` 即可。
 `PANEL_PORT=0` 表示回到与客户端同口。
+
+### 面板挂在 HTTPS 反代（雷池 / Nginx）后面
+
+客户端口必须自己走 HTTPS（客户端把 `https://` 写死在代码里），
+面板口可以留明文、交给前面已有的 HTTPS 反代：
+
+```bash
+bash deploy/install.sh --domain canoe.s-ui.com --port 58588 --panel-port 8899 \
+     --cert-mode le --panel-tls 0 --panel-public-url https://canoe.s-ui.com/panel
+```
+
+`.env` 里对应两行：
+
+```ini
+PANEL_TLS=0
+PANEL_PUBLIC_URL=https://canoe.s-ui.com/panel
+```
+
+- 反代的**上游要填 `http://<本机>:8899`** —— 面板口是明文的，反代如果用
+  `https://` 去打会得到 502。
+- 面板口是明文直连的：防火墙/安全组里只给反代放行，不要对公网敞开。
+- 反代如果配了上游健康检查，路径同样走 http（雷池里就是
+  `http://<本机>:8899/api/health` 这类）。
+- 已经装过的机器上 `.env` 不会重写，直接编辑那两行再
+  `systemctl restart canoe-api` 即可。
 
 ### 改端口 / 换证书
 

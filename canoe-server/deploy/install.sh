@@ -24,6 +24,14 @@ PANEL_PATH="/panel"
 DOMAIN=""
 PORT=""
 PANEL_PORT=""      # 空 = 和 PORT 同口
+#: 面板口自己是否走 TLS。1（默认）= 和客户端口一样 HTTPS；
+#: 0 = 面板口明文，交给前面的 HTTPS 反代（雷池 / Nginx）。
+#: 客户端口不受影响 —— 它永远按 --cert-mode 走 TLS。
+PANEL_TLS="${PANEL_TLS:-1}"
+#: 这两个标记只用来决定向导里还问不问 —— 命令行给过就别再问一遍。
+PANEL_TLS_GIVEN=0
+#: 面板对外的真实地址（走反代时填），只用于 status / 安装结束的展示。
+PANEL_PUBLIC_URL="${PANEL_PUBLIC_URL:-}"
 CERT_MODE=""       # le | self | existing | none
 CERT_FILE=""
 KEY_FILE=""
@@ -195,7 +203,10 @@ usage() {
   bash deploy/install.sh --domain canoe.s-ui.com --port 58588 --cert-mode le
   bash deploy/install.sh --domain x.com --port 58588 --panel-port 58589
 
-不带参数会一项一项问你：域名 / 管理面板端口 / 证书。
+不带参数会一项一项问你：域名 / 管理面板端口 / 管理员账号 /
+客户端证书（客户端口 TLS）/ 面板口要不要自己做 HTTPS。
+客户端口和面板口的 TLS 是**分开问的** —— 面板挂在雷池 / Nginx 后面时，
+客户端口照样 HTTPS，面板口留明文给反代。
 
 客户端口**不问**，固定 58588 —— 客户端把它写死在代码里了，改了就失联。
 
@@ -210,6 +221,13 @@ usage() {
   --panel-port N        **管理面板口**。留空 = 和客户端同口；
                         填别的则另开一个口，客户端口不再响应 /panel。
                         两个口由同一个进程监听，推送照常互通。
+  --panel-tls 0|1       面板口自己是否做 TLS。默认 1（和客户端口一样 HTTPS）。
+                        0 = 面板口明文 HTTP —— 面板前面已经挂了 HTTPS 反代
+                        （雷池 / Nginx）时用这个，反代到上游必须走 http。
+                        客户端口不受影响，永远按 --cert-mode 走 TLS。
+  --panel-public-url U  面板对外的真实地址，比如 https://canoe.s-ui.com/panel。
+                        走反代时填上，status 和安装结束的提示会用它；不填的话
+                        会显示 https://域名:8899/panel 这种反代后连不上的地址。
   --cert-mode MODE      证书来源：
                           le       = Let's Encrypt 自动申请（需域名已解析、80 空闲）
                           self     = 自签证书（浏览器会警告）
@@ -260,6 +278,8 @@ while [[ $# -gt 0 ]]; do
         --domain)               DOMAIN="${2:-}"; shift 2 ;;
         --port)                 PORT="${2:-}"; shift 2 ;;
         --panel-port)           PANEL_PORT="${2:-}"; shift 2 ;;
+        --panel-tls)            PANEL_TLS="${2:-}"; PANEL_TLS_GIVEN=1; shift 2 ;;
+        --panel-public-url)     PANEL_PUBLIC_URL="${2:-}"; shift 2 ;;
         --cert-mode|--https)    CERT_MODE="${2:-}"; shift 2 ;;
         --cert)                 CERT_FILE="${2:-}"; shift 2 ;;
         --key)                  KEY_FILE="${2:-}"; shift 2 ;;
@@ -280,6 +300,13 @@ done
 # ---- 参数先校验：跟有没有 root 无关，早点报错 ----
 [[ -z "$PORT" ]] || [[ "$PORT" =~ ^[0-9]+$ ]] || die "端口必须是数字：$PORT"
 [[ -z "$PANEL_PORT" ]] || [[ "$PANEL_PORT" =~ ^[0-9]+$ ]] || die "面板端口必须是数字：$PANEL_PORT"
+case "$PANEL_TLS" in
+    0|1) ;;
+    *) die "--panel-tls 只能是 0 或 1（现在给的是 $PANEL_TLS）" ;;
+esac
+if [[ -n "$PANEL_PUBLIC_URL" && ! "$PANEL_PUBLIC_URL" =~ ^https?:// ]]; then
+    die "--panel-public-url 要以 http:// 或 https:// 开头：$PANEL_PUBLIC_URL"
+fi
 if [[ -n "$CERT_MODE" ]]; then
     case "$CERT_MODE" in
         le|self|existing|none) ;;
@@ -343,7 +370,7 @@ if [[ -t 0 ]]; then
 
     if [[ -z "$DOMAIN" ]]; then
         cat <<'TXT'
-[1/3] 域名
+[1/5] 域名
       用来申请证书、拼客户端下载地址（PUBLIC_BASE_URL）。
       没有域名就留空 —— 那样证书只能自签，客户端也得走 IP。
 TXT
@@ -352,7 +379,7 @@ TXT
 
     if [[ -z "$PANEL_PORT" ]]; then
         cat <<'TXT'
-[2/4] 管理面板端口
+[2/5] 管理面板端口
       想只对自己开放的话，给面板另开一个口 —— 然后在防火墙/安全组里
       只放行你自己的 IP。那样客户端那个口就**不再响应 /panel**。
       两个口是同一个进程在听，推送照常互通。
@@ -362,7 +389,7 @@ TXT
 
     if [[ -z "$ADMIN_PASS" ]]; then
         cat <<'TXT'
-[3/4] 管理员账号
+[3/5] 管理员账号
       登录管理面板用它。用户名留空就是 admin。
 TXT
         read -rp "      管理员用户名 [admin]: " ADMIN_USER || true
@@ -396,11 +423,13 @@ TXT
 
     if [[ -z "$CERT_MODE" ]]; then
         cat <<'TXT'
-[4/4] 证书
+[4/5] 客户端口怎么加密（证书）
+      客户端把 https:// 写死在代码里，所以这里实际就是「客户端口要不要 TLS」。
+      面板口如果也用同一张证书，选完这里再下一步问。
       1) Let's Encrypt 自动申请   推荐。要域名已解析到本机，且 80 端口空闲
       2) 自签证书                 自己用够了；浏览器会警告
       3) 我已有证书               你把证书和私钥文件给我
-      4) 不加密                   前面已经有 HTTPS 反代了
+      4) 不加密                   客户端口也走 HTTP（正常客户端会连不上）
 TXT
         read -rp "      请选择 [1]: " ans || true
         case "${ans:-1}" in
@@ -420,6 +449,40 @@ TXT
             read -rp "      私钥文件（.key/.pem）: " KEY_FILE || true
         fi
     fi
+
+    # ---- 面板口的 TLS 单独问，不跟客户端口合并 ----
+    #
+    # 客户端口必须 TLS（客户端写死了 https）；面板口则常常挂在雷池 / Nginx
+    # 后面 —— 反代到上游默认是 http，面板口再套一层 TLS 就会 502。
+    # 所以这里单独问一次，不问就按「跟客户端口一样」处理。
+    #
+    # 不适用的两种情况直接跳过：
+    #   · 面板口和客户端同口   —— 同一个监听器没法两种协议
+    #   · 客户端根本没证书     —— 面板也无证书可用
+    if [[ "$PANEL_TLS_GIVEN" != "1" && "$CERT_MODE" != "none" \
+          && -n "$PANEL_PORT" && "$PANEL_PORT" != "${PORT:-58588}" ]]; then
+        cat <<'TXT'
+[5/5] 面板口要不要自己做 HTTPS？
+      1) 要，和客户端口一样        默认。用 https://域名:端口/panel 直接访问
+      2) 不要，面板口明文          面板前面已经挂了 HTTPS 反代（雷池 / Nginx），
+                                   反代到上游走 http
+TXT
+        read -rp "      请选择 [1]: " ans || true
+        case "${ans:-1}" in
+            1) PANEL_TLS=1 ;;
+            2) PANEL_TLS=0 ;;
+            *) die "只能选 1-2" ;;
+        esac
+        if [[ "$PANEL_TLS" == "0" && -z "$PANEL_PUBLIC_URL" ]]; then
+            cat <<'TXT'
+      面板对外的地址（反代之后用户实际访问的那个），例如
+      https://canoe.s-ui.com/panel
+      直接回车 = 不填，status 里就按端口拼
+TXT
+            read -rp "      面板地址: " PANEL_PUBLIC_URL || true
+        fi
+    fi
+
     echo
 fi
 
@@ -443,6 +506,10 @@ fi
 if [[ -z "$CERT_MODE" ]]; then
     [[ -n "$DOMAIN" ]] && CERT_MODE="le" || CERT_MODE="self"
 fi
+# 客户端口都不加密了，面板口也就没有「跟客户端一样 HTTPS」可言 ——
+# 落成 0 比留个 1 更诚实（serve.py 在没证书时本来也走不了 TLS）。
+[[ "$CERT_MODE" == "none" ]] && PANEL_TLS=0
+
 if [[ "$CERT_MODE" == "le" && -z "$DOMAIN" ]]; then
     warn "Let's Encrypt 得有域名，自动改成自签证书"
     CERT_MODE="self"
@@ -760,6 +827,12 @@ mkdir -p /var/log/letsencrypt 2>/dev/null || true
 # ---------------------------------------------------------------------------
 # 5. .env
 # ---------------------------------------------------------------------------
+# 面板口跟客户端口同口时，一个监听器只能有一种协议 —— 没法只让面板明文。
+if [[ "$PANEL_TLS" == "0" && ( -z "${PANEL_PORT:-}" || "$PANEL_PORT" == "$PORT" ) ]]; then
+    warn "面板口与客户端口同口，做不到「面板明文、客户端 TLS」，面板口按 TLS 处理"
+    PANEL_TLS=1
+fi
+
 ENV_FILE="$SERVER_DIR/.env"
 if [[ -f "$ENV_FILE" ]]; then
     log ".env 已存在，保留不动（要改端口/证书请手动编辑 $ENV_FILE）"
@@ -790,6 +863,11 @@ HOST=0.0.0.0
 PORT=$PORT
 # 0 = 和 PORT 同口；填了别的就另开一个面板口
 PANEL_PORT=${PANEL_PORT:-0}
+# 面板口自己是否走 TLS：1 = 和客户端口一样 HTTPS；0 = 明文，交给前面的
+# HTTPS 反代（雷池 / Nginx）。客户端口永远按 TLS_CERT 走 HTTPS，不受影响。
+PANEL_TLS=$PANEL_TLS
+# 面板对外的真实地址（走反代时填），只影响 canoe status 的展示
+PANEL_PUBLIC_URL=$PANEL_PUBLIC_URL
 TLS_CERT=$TLS_CERT
 TLS_KEY=$TLS_KEY
 
@@ -893,8 +971,13 @@ fi
 BASE_SHOWN="${SCHEME}://${DOMAIN:-<本机IP>}"
 [[ "$PORT" != "443" && "$PORT" != "80" ]] && BASE_SHOWN="$BASE_SHOWN:$PORT"
 
-if [[ -z "$PANEL_PORT" || "$PANEL_PORT" == "$PORT" ]]; then
+if [[ -n "$PANEL_PUBLIC_URL" ]]; then
+    # 面板在 HTTPS 反代后面：对外地址和本机端口不是一回事
+    PANEL_URL="$PANEL_PUBLIC_URL"
+elif [[ -z "$PANEL_PORT" || "$PANEL_PORT" == "$PORT" ]]; then
     PANEL_URL="$BASE_SHOWN$PANEL_PATH"
+elif [[ "$PANEL_TLS" == "0" ]]; then
+    PANEL_URL="http://${DOMAIN:-<本机IP>}:$PANEL_PORT$PANEL_PATH"
 else
     PANEL_URL="${SCHEME}://${DOMAIN:-<本机IP>}:$PANEL_PORT$PANEL_PATH"
 fi
@@ -932,6 +1015,9 @@ if [[ -n "$PANEL_PORT" && "$PANEL_PORT" != "$PORT" ]]; then
     warn "面板另开了 $PANEL_PORT 口，记得在防火墙/安全组里："
     dim "$PORT       对所有用户开放（客户端要用）"
     dim "$PANEL_PORT   只放行你自己的 IP"
+    if [[ "$PANEL_TLS" == "0" ]]; then
+        dim "$PANEL_PORT   是明文的：只给反代放行，别直接对公网开"
+    fi
     dim "本机 ufw 已自动放行；云厂商的安全组要你自己加。"
 else
     printf '\n'

@@ -206,7 +206,10 @@ PY
 }
 
 panel_url() {
-    local s p pp host
+    local s p pp host pub
+    # 面板走雷池 / Nginx 反代时，对外地址和本机端口不是一回事，用 .env 覆盖
+    pub="$(env_get PANEL_PUBLIC_URL)"
+    if [[ -n "$pub" ]]; then printf '%s' "$pub"; return 0; fi
     s="$(scheme)"; p="$(client_port)"; pp="$(panel_port)"
     host="$(domain_display)"
     if [[ -z "$pp" || "$pp" == "$p" ]]; then
@@ -396,7 +399,14 @@ cmd_status() {
     else
         field "面板口" "同客户端口"
     fi
-    field "面板地址" "$(panel_url)"
+    # 面板口明文时，地址通常是对外的反代地址 —— 顺手标一下本机那半截，
+    # 免得看到 https://... 还以为 8899 自己就是 HTTPS。
+    local pu
+    pu="$(panel_url)"
+    if [[ "$(env_get PANEL_TLS)" == "0" ]]; then
+        pu="$pu  （本机 :${pp:-?} 明文，走前面的 HTTPS 反代）"
+    fi
+    field "面板地址" "$pu"
     field "证书" "$(env_get TLS_CERT)"
 
     if health_check; then
@@ -567,6 +577,31 @@ restart_now() {
 # ---------------------------------------------------------------------------
 # 7. 升级
 # ---------------------------------------------------------------------------
+
+#: 拉代码前把现场改动收进 stash，拉完再放回来。
+#:
+#: `git pull --ff-only` 见到未提交改动会直接拒绝，而现场补丁（面板口明文、
+#: status 里的面板地址等）恰恰是这台机器要保留的 —— 不能因为升级就丢。
+git_pull_keep_local() {
+    local stashed=0 rc=0
+    if [[ -n "$(git -C "$APP_DIR" status --porcelain --untracked-files=no)" ]]; then
+        warn "检出目录有本地改动，先收起，拉完自动还原"
+        git -C "$APP_DIR" stash push -q -m "canoe-upgrade-$(date +%Y%m%d-%H%M%S)" && stashed=1
+    fi
+    git -C "$APP_DIR" pull --ff-only || rc=$?
+    if [[ "$stashed" == "1" ]]; then
+        if git -C "$APP_DIR" stash pop -q; then
+            log "本地改动已还原"
+        else
+            err "本地改动和上游冲突，还原失败；补丁还在 stash 里："
+            dim "git -C $APP_DIR stash list"
+            dim "git -C $APP_DIR stash show -p | git -C $APP_DIR apply -3"
+            return 1
+        fi
+    fi
+    return "$rc"
+}
+
 cmd_upgrade() {
     need_root; require_installed
 
@@ -577,7 +612,7 @@ cmd_upgrade() {
     # 1) 拉代码 —— 只在确实是 git 检出时才 pull
     if [[ -d "$APP_DIR/.git" ]]; then
         log "拉取最新代码…"
-        if ! git -C "$APP_DIR" pull --ff-only; then
+        if ! git_pull_keep_local; then
             err "拉取失败。按顺序排查："
             dim "1) 本地有没有改动：  git -C $APP_DIR status"
             dim "2) 私有仓库的凭据还在不在（最常见）："
